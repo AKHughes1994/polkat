@@ -16,4 +16,7 @@ This is a modifed version of the semi-automated routine [oxkat](https://github.c
 ---
 ##### Changes of not with respect to oxkat
 
-* The ms file is averaged in the ``INFO.py''
+* The ms file is averaged to 1024 channels in the INFO step (oxkat does this in 1GC. The reason for this has to do with getting the numeric indexes of the (sub-)fields that are used in each calibration run. INFO also identifies the polarization calibator automatically. Currently, MeerKAT defaults to specifying the scan intent as "UNKOWN" for the polarization calibrator.
+
+* 1GC has a number of changes to the calibration routine:
+*   asda
