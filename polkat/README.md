@@ -1,6 +1,6 @@
 --- 
 
-## What is this?
+### What is this?
 
 This is a modifed version of the semi-automated routine [oxkat](https://github.com/IanHeywood/oxkat), that has been designed to make polarization calibration as hands-off as possible. I direct the reader to the original oxkat documentation for a more detailed description of the pipeline. Here I will highlight some key differences: 
 
