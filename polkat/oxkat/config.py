@@ -188,7 +188,7 @@ CAL_1GC_WHICH_MODE = 'BOTH'          # choose if you want the leakage only ms fi
 IMAGE_PCAL = True
 
 # Pre-processing, operations applied when master MS is split to working MS
-PRE_FIELDS = 'J1331+3030,SwiftJ1727,J1733-1304,J1939-6342'  # Comma-separated list of fields to select from raw MS
+PRE_FIELDS = ''  # Comma-separated list of fields to select from raw MS
                                      # Names or IDs, do not mix, do not use spaces
 PRE_SCANS = ''                       # Comma-separated list of scans to select from raw MS
 PRE_NCHANS = 1024                    # Integer number of channels for working MS
