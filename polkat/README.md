@@ -18,5 +18,10 @@ This is a modifed version of the semi-automated routine [oxkat](https://github.c
 
 * The ms file is averaged to 1024 channels in the INFO step (oxkat does this in 1GC. The reason for this has to do with getting the numeric indexes of the (sub-)fields that are used in each calibration run. INFO also identifies the polarization calibator automatically. Currently, MeerKAT defaults to specifying the scan intent as "UNKOWN" for the polarization calibrator.
 
-* 1GC has a number of changes to the calibration routine:
-*   asda
+* 1GC is the biggest change to the calibration routine:
+  1. We are now solving for additional leakage (Df) terms using the (unpolarized) primary calibrator, Cross-hand delay (KCROSS) terms using the polarization calibrator, and Cross-hand phase (Xf) terms using the polarization calibrator.
+  2. The Stokes I models for the secondary calibrator, and the polarization calibrator are solved for using interative imaging and self-calibration (Step name is `RECAL` and uses the `1GC_casa_refinement.py` script).
+  3. Ampltiude solutions are transferred from the primary calibrator (not the secondary), any temporal evolution is mapped onto the source through an additional gaintype "T" calibration table that solves for a single temporal evoltion for both the X and Y. This is to avoid transfering polarized signal from the (polarized) seconday onto the source due to differences betweenteen the X and Y gain solutions from the secondary. 
+  4. The calibration routine is now broken into three steps: (largely) parallel-hand XX,YY with `1GC_casa_refcal.py`, secondary/polarization model refinemnet with `1GC_casa_refinement.py`, and (mostly) cross-hand with `1GC_casa_polcal.py`
+ 
+* At the end of 1GC, by defualt, you will image the seconday in Stokes IQUV. You can use this to check the calibration against the [cataloged values](https://skaafrica.atlassian.net/wiki/spaces/ESDKB/pages/1452146701/L-band+gain+calibrators)
