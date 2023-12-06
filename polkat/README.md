@@ -49,7 +49,7 @@ ln -s /idia/raw/xkat/SCI-20230907-RF-01/1700301738/1700301738_sdp_l0.ms .
 ```
 Run INFO
 ```
-python3 setups/INFO.py idia
+python3 setups/0_GET_INFO.py idia
 ./submit_info_jobs.sh
 ```
 Repeat above step for 1GC.py and FLAG.py, and your final data products will be produced. 
