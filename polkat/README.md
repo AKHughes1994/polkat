@@ -16,7 +16,7 @@ This is a modifed version of the semi-automated routine [oxkat](https://github.c
 ---
 ##### Major changes with respect to oxkat
 
-* The ms file is averaged to 1024 channels in the INFO step (oxkat does this in 1GC. The reason for this has to do with getting the numeric indexes of the (sub-)fields that are used in each calibration run. INFO also identifies the polarization calibator automatically. Currently, MeerKAT defaults to specifying the scan intent as "UNKOWN" for the polarization calibrator.
+* The ms file is averaged to 1024 channels in the INFO step (oxkat does this in 1GC. The reason for this has to do with getting the numeric indexes of the (sub-)fields that are used in each calibration run. INFO also identifies the polarization calibator automatically. Currently, MeerKAT defaults to specifying the scan intent as "UNKNOWN" for the polarization calibrator.
 
 * 1GC is the biggest change to the calibration routine:
   1. We are now solving for additional leakage (Df) terms using the (unpolarized) primary calibrator, Cross-hand delay (KCROSS) terms using the polarization calibrator, and Cross-hand phase (Xf) terms using the polarization calibrator.
