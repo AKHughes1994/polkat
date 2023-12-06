@@ -28,7 +28,35 @@ This is a modifed version of the semi-automated routine [oxkat](https://github.c
  * FLAG and 2GC have been combined into a single step (at some point I'll break them up again) the major differences:
   1. is now the "datamask" and "pcalmask" images are full stokes IQUV.
   2. The routine no longer splits out the calibrated source(s) into separate ms file(s). The reason is that, for linear feeds, the parallactic angle corrections due not commute. More simply, What this means is that if you perform full polarization calibration (with parallactic angle corrections) and then split out the data for self-calibrating, you will "over-correcting" the parallactic angle. Further gain solutions will be incorrect as you are now solving for the values against the rotated visibilities. 
-  3. As a result of 2. the routine is now doing self-calibration using `casa` rather than `cubical`. I haven't been able to figure out (and it may not be possible) how to feed casa tables into cubical. 
+  3. As a result of 2. the routine is now doing self-calibration using `casa` rather than `cubical`. I haven't been able to figure out (and it may not be possible) how to feed casa tables into cubical.
 
 
 # VERY IMPORTANT: CHECK YOUR VISIBILITES + GAIN TABLES BEFORE MOVING ON FROM 1GC to FLAG, POLARIZATION CALIBRATION CAN DO WEIRD THINGS! 
+
+---
+##### Example run
+
+In it's current state, polkat should work as a "plug-and-chug" routine, an example run would be:
+
+Download and copy polkat into a working directory (edit the PRE_FIELDS parameter in the oxkat/config.py file to select a subset of fields; i.e., primary, secondary, pol. cal., source)
+```
+cp polkat working_directory/.
+```
+Create a symbolic link pointing to the ms file of interest
+```
+cd working_directory
+ln -s /idia/raw/xkat/SCI-20230907-RF-01/1700301738/1700301738_sdp_l0.ms .
+```
+Run INFO
+```
+python3 setups/INFO.py idia
+./submit_info_jobs.sh
+```
+Repeat above step for 1GC.py and FLAG.py, and your final data products will be produced. 
+
+---
+##### To Do List
+
+1. Add ionospheric corrections. The ionosphere can have RM values up to ~ 5 rad/m^2 which corresponds to ~30 degrees at the bottom of L-band. Do not use polkat for UHF until we figure out the ionospheric corrections.
+2. Investigate Peeling routines for bright polarized sources (Fraser is leading this).
+
