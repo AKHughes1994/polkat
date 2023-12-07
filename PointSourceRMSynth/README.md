@@ -39,6 +39,18 @@ From here you will have your final data products. Below I've included an example
 ![image](https://github.com/AKHughes1994/XKATPol/assets/49698839/914c8ded-cdfa-4fe7-8e7a-78665b8701a5)
 
 
+--- 
+
+The file with the final values has the suffix `RMclean.json`. The key values are (the errors have the letter 'd' infront of name): 
+
+* `freq0` -- The weigted average of the frequency.
+* `polAngleFit0_deg` -- Intrinsic Polarization angle
+* `phiPeakPIfit_rm2` -- Peak Faraday depth (i.e., the Rotation Measure)
+* `ampPeakPIfitEff`  -- De-rotated linear polarization intensity at `freq0`
+* `polAngleFit_deg`  -- Observed polarization agnle at `freq0`
+
+
+
 
 
 
