@@ -6,7 +6,7 @@
 
 * Interestingly, RM Synthesis is a direct (1-dimensional) analog to synthesis imaging with radio interferometers. The polarization intensity at different frequencies, can be fourier transformed into a "Faraday Dispersion Function" (FDF) at different "Faraday Depths". Due to incomplete sampling the intial FDF has artifacts is dirty, and therefore, is CLEANed. For many sources the CLEAN FDF will have a single pronounced peak, where the value of the peak is related to the de-rotated Polarization Intensity (i.e., absent any bandwidth depolarization), the ratio of the real and imaginary components at the Peak is the polariation angle, and the Faraday depth that corresponds to the peak is the rotation measure.
 
-Below is a somewhat detailed example. 
+Below is a somewhat detailed example.
 
 ---
 
