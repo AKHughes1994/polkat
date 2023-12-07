@@ -4,6 +4,8 @@
 
 * For those unfamiliar with RM Synthesis it the classic paper to read is [(Brentjens & de Bruyn 2005)](https://arxiv.org/abs/astro-ph/0507349), which details the methods used in the attached code. Note that this method coherently adds the polarization vectors from each spectral channel coherently. Therefore, the detection threshold is set by the integrated (i.e., band-averaged S/N) and not the signal to noise of the detections in each spectral channels. Exploratory studies have shown that for band-averaged S/N > 7 RM synthesis is reliable [(e.g., Macquart et al. 2012)](https://arxiv.org/abs/1203.2706). Don't use RM synthesis for 5sigma detections (you likely just will not be able to get reliable RM measures at these S/N)
 
+* Interestingly, RM Synthesis is a direct (1-dimensional) analog to synthesis imaging with radio interferometers
+
 Below is a somewhat detailed example. 
 
 ---
@@ -14,4 +16,9 @@ The first step requires a txt file in the appropriate format. There is an exampl
 singularity exec /idia/software/containers/polkat-0.0.1.sif casa --nologger -c tools/extract_rm_synth.py -r "circle[[17:27:43.41,-16.12.20.37],15arcsec]" -p "SwiftJ1727_rmsynth" -i "IMAGES/img_1696160474_sdp_l0_1024ch.ms_SwiftJ1727_pcalmask"
 ```
 
-and the necessary file is produced. 
+and the necessary file is produced.
+
+From here RM Synthesis is broken into two steps
+
+
+
