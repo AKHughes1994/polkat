@@ -14,4 +14,4 @@ The first step requires a txt file in the appropriate format. There is an exampl
 singularity exec /idia/software/containers/polkat-0.0.1.sif casa --nologger -c tools/extract_rm_synth.py -r "circle[[17:27:43.41,-16.12.20.37],15arcsec]" -p "SwiftJ1727_rmsynth" -i "IMAGES/img_1696160474_sdp_l0_1024ch.ms_SwiftJ1727_pcalmask"
 ```
 
-and this will produce the necessary file. 
+and the necessary file is produced. 
