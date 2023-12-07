@@ -4,7 +4,7 @@
 
 * For those unfamiliar with RM Synthesis it the classic paper to read is [(Brentjens & de Bruyn 2005)](https://arxiv.org/abs/astro-ph/0507349), which details the methods used in the attached code. Note that this method coherently adds the polarization vectors from each spectral channel coherently. Therefore, the detection threshold is set by the integrated (i.e., band-averaged S/N) and not the signal to noise of the detections in each spectral channels. Exploratory studies have shown that for band-averaged S/N > 7 RM synthesis is reliable [(e.g., Macquart et al. 2012)](https://arxiv.org/abs/1203.2706). Don't use RM synthesis for 5sigma detections (you likely just will not be able to get reliable RM measures at these S/N)
 
-* Interestingly, RM Synthesis is a direct (1-dimensional) analog to synthesis imaging with radio interferometers a
+* Interestingly, RM Synthesis is a direct (1-dimensional) analog to synthesis imaging with radio interferometers. The polarization intensity at different frequencies, can be fourier transformed into a "Faraday Dispersion Function" (FDF) at different "Faraday Depths". Due to incomplete sampling the intial FDF has artifacts is dirty, and therefore, is CLEANed. For many sources the CLEAN FDF will have a single pronounced peak, where the value of the peak is related to the de-rotated Polarization Intensity (i.e., absent any bandwidth depolarization), the ratio of the real and imaginary components at the Peak is the polariation angle, and the Faraday depth that corresponds to the peak is the rotation measure.
 
 Below is a somewhat detailed example. 
 
