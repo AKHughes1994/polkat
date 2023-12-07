@@ -36,6 +36,9 @@ python3 ../RMtools_1D/do_RMclean_1D.py ../datafiles/SwiftJ1727_rmsynth_60218.488
 
 From here you will have your final data products. Below I've included an example output which is a CLEAN FDF. 
 
+![image](https://github.com/AKHughes1994/XKATPol/assets/49698839/914c8ded-cdfa-4fe7-8e7a-78665b8701a5)
+
+
 
 
 
