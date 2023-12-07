@@ -1,5 +1,5 @@
 ### Here is a 1D RM Synthesis Script that is adopted from the CIRADA
 
-Original repo can be found [here](https://github.com/CIRADA-Tools/RM-Tools). The only major change is that I calculate the observed noise from the RMS rather than the MAD as the expeirence with this code the RMS is normally a factor of ~2 higher, and we want to make sure our results are conclusive. 
+* Original repo can be found [here](https://github.com/CIRADA-Tools/RM-Tools). The only major change is that I calculate the observed noise from the RMS rather than the MAD as the expeirence with this code the RMS is normally a factor of ~2 higher, and we want to make sure our results are conclusive. 
 
-For those unfamiliar with RM Synthesis it is a 
+* For those unfamiliar with RM Synthesis it the classic paper to read is [(Brentjens & de Bruyn 2005)](https://arxiv.org/abs/astro-ph/0507349), which details the methods used in the attached code. Note that this method coherently adds the polarization vectors from each spectral channel coherently. Therefore, the detection threshold is set by the integrated (i.e., band-averaged S/N) and not the signal to noise of the detections in each spectral channels. Exploratory studies have shown that for band-averaged S/N > 7 RM synthesis is reliable [(e.g., Macquart et al. 2012)](https://arxiv.org/abs/1203.2706). Don't use RM synthesis for 5sigma detections (you likely just will not be able to get reliable RM measures at these S/N)/
