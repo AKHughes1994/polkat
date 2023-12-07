@@ -11,5 +11,5 @@ Below is a somewhat detailed example.
 The first step requires a txt file in the appropriate format. There is an example in `datafiles`. The format is: freq (Hz), I_flux (Jy), Q_flux (Jy), U_flux (Jy), I_rms (Jy), Q_rms (Jy), U_rms (Jy). Note, that `polkat/tools` contains a script called `extract_rm_synth.py`. Following a sucessful polkat run, within the home directory run, for example,  
 
 ```
-
+TEST
 ```
