@@ -20,5 +20,22 @@ and the necessary file is produced.
 
 From here RM Synthesis is broken into two steps
 
+First the initial creation (or "synthesis") of the dirty FDF:
+
+```
+python3 ../RMtools_1D/do_RMsynth_1D.py ../datafiles/SwiftJ1727_rmsynth_60218.48831018519.txt -S -v -p -o 4
+```
+
+Here the `-S` means that you save all of the dirty files, `-v` is the verbosity flag which outputs the values to the terminal, `-p` toggles on the plots, `-o` is the order of the first to the Stokes I spectra (it doesn't have a large effect as long as the spectra is "wacky").  There are other useful inputs that I am not usinghere; in the past I've used `-d` which manually sets the widths of the Faraday depth bins (units of rad/m^2), and `-l` which specifies the maximum (+/-) Faraday depth. This is analagous to changing the cellsize and image dimensions during synthesis imaging. 
+
+Following make the dirty FDF you clean it: 
+
+```
+python3 ../RMtools_1D/do_RMclean_1D.py ../datafiles/SwiftJ1727_rmsynth_60218.48831018519.txt -v -p
+```
+
+From here you will have your final data products. Below I've included an example output which is a CLEAN FDF. 
+
+
 
 
