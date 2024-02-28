@@ -1,0 +1,4 @@
+# Text file containing information to feed into the RMSYNTH_01_extract_fluxes.py routine columns are:
+# Field name, image identifier (for IQUV cube, e.g., "pcalmask"), ra, dec (pixels) seperated by spaces (can include multiple RA/DEC for one image)
+
+SwiftJ1727 pcalmask 2559.887730727738,2559.7426775031877 2546.3349603089086,2538.647208251056
