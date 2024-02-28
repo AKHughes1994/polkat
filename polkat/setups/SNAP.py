@@ -73,7 +73,7 @@ def main():
     
     # ------------------------------------------------------------------------------
     #
-    # 2GC recipe definition
+    # SNAP recipe definition
     #
     # ------------------------------------------------------------------------------
 
@@ -125,9 +125,8 @@ def main():
             step = {}
             step['step'] = step_i
             step['comment'] = 'Splitting out field '+targetname
-            step['dependency'] = step_i - 1
+            step['dependency'] = None
             step['id'] = 'SNPTS'+code
-            absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
             syscall = CONTAINER_RUNNER + CASA_CONTAINER+' ' if USE_SINGULARITY else ''
             syscall += gen.generate_syscall_casa(casascript=cfg.OXKAT+f'/SNAP_split_sources.py {targetname}')
             step['syscall'] = syscall
