@@ -58,5 +58,5 @@ Repeat above step for 1GC.py and FLAG.py, and your final data products will be p
 ##### To Do List
 
 1. Add ionospheric corrections. The ionosphere can have RM values up to ~ 5 rad/m^2 which corresponds to ~30 degrees at the bottom of L-band. Do not use polkat for UHF until we figure out the ionospheric corrections.
-2. Investigate Peeling routines for bright polarized sources (Fraser is leading this).
+2. Investigate full self calibration polarisation routines.
 
