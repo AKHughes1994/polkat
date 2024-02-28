@@ -1,0 +1,19 @@
+2024-01-04 21:35:42	INFO	::casa	
+2024-01-04 21:35:42	INFO	::casa	
+2024-01-04 21:35:42	INFO	::casa	
+2024-01-04 21:35:42	INFO	::casa	
+2024-01-04 21:35:45	INFO	::casa	CASA Version PIPELINE 6.4.1.12
+2024-01-04 21:35:46	INFO	::casa	
+2024-01-04 21:35:46	INFO	::casa	Found an existing telemetry logfile: /home/ubuntu/.casa/casastats-6.4.1.12-fa163e6a87d8-20240104-041617.log
+2024-01-04 21:35:46	INFO	::casa	Telemetry log file: /home/ubuntu/.casa/casastats-6.4.1.12-fa163e6a87d8-20240104-041617.log
+2024-01-04 21:35:46	INFO	::casa	Checking telemetry submission interval
+2024-01-04 21:35:46	INFO	::casa	Telemetry submit interval not reached. Not submitting data.
+2024-01-04 21:35:46	INFO	::casa	Next telemetry data submission in: 6 days, 6:40:31.734481
+2024-01-04 21:35:46	INFO	::casa	
+2024-01-04 21:35:47	INFO	::casa	optional configuration file config.py not found, continuing CASA startup without it
+2024-01-04 21:35:47	INFO	::casa	
+2024-01-04 21:35:47	INFO	::casa	Checking Measures tables in data repository sub-directory /home/ubuntu/Software/casa-6.4.1-12-pipeline-2022.2.0.64/lib/py/lib/python3.6/site-packages/casadata/__data__/geodetic
+2024-01-04 21:35:47	INFO	::casa	  IERSeop2000 (version date, last date in table (UTC)): 2023/10/06/15:00, 2023/09/06/00:00:00
+2024-01-04 21:35:47	INFO	::casa	  IERSeop97 (version date, last date in table (UTC)): 2023/10/06/15:00, 2023/09/06/00:00:00
+2024-01-04 21:35:47	INFO	::casa	  IERSpredict (version date, last date in table (UTC)): 2023/11/05/15:00, 2024/02/03/00:00:00
+2024-01-04 21:35:47	INFO	::casa	  TAI_UTC (version date, last date in table (UTC)): 2023/10/13/15:00, 2017/01/01/00:00:00
