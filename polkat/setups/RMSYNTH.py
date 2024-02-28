@@ -95,7 +95,7 @@ def main():
         step = {}
         step['step'] = step_i
         step['comment'] = 'Calculate systematic effects by performing image plane analysis on polarization/primary calibrator'
-        step['dependency'] = None
+        step['dependency'] = step_i - 1
         step['slurm_config'] = cfg.SLURM_RM
         step['id'] = 'POSYS'+code
         syscall = CONTAINER_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
