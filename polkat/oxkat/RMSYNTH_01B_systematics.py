@@ -135,7 +135,7 @@ def fit_channel(i_chan_image, pix_I, pix_Q, pix_U, pos):
     freq_Hz  =  imhead(IQUVP_names[0], mode='get', hdkey = 'CRVAL3')['value']
 
     # Fit Stokes I
-    make_estimate('estimate_I.txt', IQUVP_names[0], pix_I[0], pix_I[1],  'abp')
+    check_position('estimate_I.txt', IQUVP_names[0], pix_I[0], pix_I[1], pos, snr_thresh=5.0)
     imf_I  = get_imfit_values('estimate_I.txt', IQUVP_names[0], pix_I[0], pix_I[1])
 
     # Fit Stokes Q
