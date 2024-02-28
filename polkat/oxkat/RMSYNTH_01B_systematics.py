@@ -337,12 +337,6 @@ def get_polcal_polarization(pacal_name, pacal_pos, bpcal_systematic):
     # Save the RMSynth file
     np.savetxt(f'/{file_prefix}_rmsynth.txt', np.array(rmsynth_arr))
 
-    # Make a new array with the systematic noise corrections
-    #rmsynth_sys_arr = np.array(rmsynth_arr)
-    #rmsynth_sys_arr[:,4] = calculate_sys_err(rmsynth_sys_arr[:,1] , rmsynth_sys_arr[:,4] , bpcal_systematic, pacal_systematic, stokes_I = True)
-    #rmsynth_sys_arr[:,5] = calculate_sys_err(rmsynth_sys_arr[:,2] , rmsynth_sys_arr[:,5] , bpcal_systematic, pacal_systematic, stokes_I = False)
-    #rmsynth_sys_arr[:,6] = calculate_sys_err(rmsynth_sys_arr[:,3] , rmsynth_sys_arr[:,6] , bpcal_systematic, pacal_systematic, stokes_I = False)
-
     # Save dictionary
     with open(f'/{file_prefix}_polarization.json', 'w') as jfile:
         jfile.write(json.dumps(MFS_dict, indent=4, sort_keys=True))
