@@ -380,6 +380,7 @@ WSC_INTERVAL0 = None
 WSC_INTERVAL1 = None
 WSC_INTERVALSOUT = None
 # Image dimensions
+WSC_CAL_IMSIZE = 1024
 WSC_IMSIZE = 10240
 WSC_CELLSIZE = '1.1asec'
 # Gridding / degridding
