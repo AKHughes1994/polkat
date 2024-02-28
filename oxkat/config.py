@@ -194,9 +194,9 @@ CAL_1GC_DIAGNOSTICS = True          #  Choose if you want to make diagnostic plo
 CAL_1GC_NEGATIVE_XF = False          #  Choose if you want to apply the negative to the V/U Xf solutions
 
 # Pre-processing, operations applied when master MS is split to working MS
-PRE_FIELDS = 'SwiftJ1727,J1733-1304,J1939-6342,J1331+3030'  # Comma-separated list of fields to select from raw MS
+PRE_FIELDS = ''  # Comma-separated list of fields to select from raw MS
                                      # Names or IDs, do not mix, do not use spaces
-SNAP_FIELDS = 'SwiftJ1727,J1733-1304'
+SNAP_FIELDS = '' # Comma-separated list of field to run snapshot imaging on
 PRE_SCANS = ''                       # Comma-separated list of scans to select from raw MS
 PRE_NCHANS = 1024                    # Integer number of channels for working MS
 PRE_TIMEBIN = '8s'                   # Integration time for working MS
