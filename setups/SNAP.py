@@ -79,11 +79,46 @@ def main():
 
 
     target_steps = []
-    codes = []
     ii = 1
 
-    # Loop over targets
+    # Initialize workflow by sequentially spliting
+    steps = []
+    kill_file = SCRIPTS+'/kill_snap_split_jobs_.sh'    
+    step_i = 0    
+    for tt in range(0,len(target_names)):
+        
+        targetname   = target_names[tt]
 
+        if targetname not in prefields_info['field_names']:
+
+            gen.print_spacer()
+            print(gen.col('Target')+targetname)
+            print(gen.col('MS')+'not found, skipping')
+
+        else:
+
+            # Logistics
+            code = gen.get_target_code(targetname)
+            dependency = step_i - 1
+            if step_i == 0:
+                dependency = None
+
+            step = {}
+            step['step'] = step_i
+            step['comment'] = 'Splitting out field '+targetname
+            step['dependency'] = dependency
+            step['id'] = 'SNPTS'+code
+            syscall = CONTAINER_RUNNER + CASA_CONTAINER+' ' if USE_SINGULARITY else ''
+            syscall += gen.generate_syscall_casa(casascript=cfg.OXKAT+f'/SNAP_split_sources.py {targetname}')
+            step['syscall'] = syscall
+            steps.append(step)
+            step_i += 1
+            last_split_code = 'SNPTS'+code # Save this as a variable to set dependencies for imaging
+        
+    target_steps.append((steps,kill_file,'Split MS Files'))
+
+
+    # Loop over targets for imaging -- run imaging concurrently 
     for tt in range(0,len(target_names)):
 
         targetname   = target_names[tt]
@@ -98,16 +133,11 @@ def main():
 
             # Logistics
             code = gen.get_target_code(targetname)
-            if code in codes:
-                code += '_'+str(ii)
-                ii += 1
-            codes.append(code)
-        
             steps = []        
             filename_targetname = gen.scrub_target_name(targetname)
 
             # Target-specific kill file
-            kill_file = SCRIPTS+'/kill_flag_jobs_'+filename_targetname+'.sh'
+            kill_file = SCRIPTS+'/kill_snap_jobs_'+filename_targetname+'.sh'
 
             # Define target ms 
             target_ms = myms.replace('.ms', f'_{targetname}.ms')
@@ -124,20 +154,8 @@ def main():
             step_i = 0
             step = {}
             step['step'] = step_i
-            step['comment'] = 'Splitting out field '+targetname
-            step['dependency'] = None
-            step['id'] = 'SNPTS'+code
-            syscall = CONTAINER_RUNNER + CASA_CONTAINER+' ' if USE_SINGULARITY else ''
-            syscall += gen.generate_syscall_casa(casascript=cfg.OXKAT+f'/SNAP_split_sources.py {targetname}')
-            step['syscall'] = syscall
-            steps.append(step)
-            step_i += 1
-
-
-            step = {}
-            step['step'] = step_i
             step['comment'] = 'Blind wsclean on DATA column of '+target_ms
-            step['dependency'] = step_i - 1
+            step['dependency'] = last_split_code
             step['id'] = 'SNPBL'+code
             step['slurm_config'] = cfg.SLURM_WSCLEAN
             step['pbs_config'] = cfg.PBS_WSCLEAN
@@ -218,10 +236,11 @@ def main():
             syscall += 'python3 '+cfg.OXKAT+f'/SNAP_intervals.py {targetname}'
             step['syscall'] = syscall
             steps.append(step)
+            step_i += 1
 
             step = {}
             step['step'] = step_i
-            step['comment'] = 'Performing per-interval dirty imaging of the uvsubtracted visbilities for '+targetname
+            step['comment'] = 'Performing static model restoration for '+targetname
             step['dependency'] = step_i - 1
             step['id'] = 'SNPRM'+code
             step['slurm_config'] = cfg.SLURM_WSCLEAN
@@ -262,8 +281,10 @@ def main():
 
             step_id = step['id']
             id_list.append(step_id)
-            if step['dependency'] is not None:
+            if type(step['dependency']) == int:
                 dependency = steps[step['dependency']]['id']
+            elif type(step['dependency']) == str:
+                dependency = step['dependency']
             else:
                 dependency = None
             syscall = step['syscall']

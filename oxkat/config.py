@@ -56,7 +56,7 @@ USE_SINGULARITY = True
 BIND = ''
 BINDPATH = '$PWD,'+CWD+','+BIND
 
-IDIA_CONTAINER_PATH = ['/idia/software/containers/',HOME+'/containers/', './']
+IDIA_CONTAINER_PATH = ['/idia/software/containers/',HOME+'/containers/']
 CHPC_CONTAINER_PATH = [HOME+'/containers/']
 HIPPO_CONTAINER_PATH = None
 NODE_CONTAINER_PATH = [HOME+'/containers/', '/mnt/ephem/containers']
@@ -191,11 +191,12 @@ CAL_1GC_PRIMARY_INTENT = 'BANDPASS'  # (partial) string to match for primary int
 CAL_1GC_SECONDARY_INTENT = 'PHASE'   # (partial) string to match for secondary intents
 CAL_1GC_POLANG_INTENT = 'UNKNOWN'    # (partial) string to match for secondary intents -- As of 2023 Oct 2 there is no intent for the polangle calibrator
 CAL_1GC_DIAGNOSTICS = True          #  Choose if you want to make diagnostic plots of the Leakage + Phase cal
+CAL_1GC_NEGATIVE_XF = False          #  Choose if you want to apply the negative to the V/U Xf solutions
 
 # Pre-processing, operations applied when master MS is split to working MS
-PRE_FIELDS = ''  # Comma-separated list of fields to select from raw MS
+PRE_FIELDS = 'SwiftJ1727,J1733-1304,J1939-6342,J1331+3030'  # Comma-separated list of fields to select from raw MS
                                      # Names or IDs, do not mix, do not use spaces
-SNAP_FIELDS = ''
+SNAP_FIELDS = 'SwiftJ1727,J1733-1304'
 PRE_SCANS = ''                       # Comma-separated list of scans to select from raw MS
 PRE_NCHANS = 1024                    # Integer number of channels for working MS
 PRE_TIMEBIN = '8s'                   # Integration time for working MS
@@ -338,7 +339,7 @@ CAL_2GC_DELAYCAL_PARSET = DATA+'/cubical/2GC_delaycal.parset'
 
 # ------------------------------------------------------------------------
 #
-# 3GC peeling settings
+# 3GC peeling settings -- 3GC Doesn't work yet
 #
 
 CAL_3GC_PEEL_NCHAN = 32
@@ -380,7 +381,6 @@ WSC_INTERVAL1 = None
 WSC_INTERVALSOUT = None
 # Image dimensions
 WSC_IMSIZE = 10240
-WSC_CAL_IMSIZE = 1024
 WSC_CELLSIZE = '1.1asec'
 # Gridding / degridding
 WSC_USEWGRIDDER = True
@@ -393,8 +393,9 @@ WSC_PADDING = 1.2
 WSC_USEIDG = False # use image-domain gridder (not useable yet)
 WSC_IDGMODE = 'CPU'
 WSC_PREDICTCHANNELS = 64
+WSC_PARALLELGRIDDING = 8
 # Weighting
-WSC_WEIGHT = 'uniform'
+WSC_WEIGHT = 'briggs -0.3'
 WSC_WEIGHT_CAL = 'uniform'
 WSC_TAPERGAUSSIAN = ''
 # Deconvolution
@@ -404,7 +405,7 @@ WSC_SCALES = '0,3,9'
 WSC_NITER = 80000
 WSC_GAIN = 0.15
 WSC_MGAIN = 0.9
-WSC_CHANNELSOUT = 8
+WSC_CHANNELSOUT = 32
 WSC_IQUV_CHANNELSOUT = 16
 WSC_FITSPECTRALPOL = 4
 WSC_JOINCHANNELS = True
@@ -419,7 +420,7 @@ WSC_THRESHOLD = False
 WSC_AUTOMASK = 5.0
 WSC_AUTOTHRESHOLD = 1.0
 WSC_LOCALRMS = False
-WSC_PARALLELGRIDDING = 8
+
 
 # Band modifiers
 if BAND == 'UHF':
