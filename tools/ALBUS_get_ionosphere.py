@@ -49,7 +49,7 @@ def main():
     RED_TYPE = 'RI_G03'
     TIME_STEP = 300
     MAX_DIST = 750E3
-    NUM_PROCESSORS = 32
+    NUM_PROCESSORS = 8
     DO_SER = 0
 
     # Intialize a directory to store the (larger number) of GPS output files 
