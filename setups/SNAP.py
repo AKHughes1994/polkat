@@ -218,7 +218,7 @@ def main():
             step['step'] = step_i
             step['comment'] = 'Performing UV-subtraction of the static sky model for '+targetname
             step['dependency'] = step_i - 1
-            step['id'] = 'SNPSS'+code
+            step['id'] = 'SNPUV'+code
             syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
             syscall += 'python3 '+cfg.OXKAT+f'/SNAP_uvsub.py {targetname}'
             step['syscall'] = syscall
