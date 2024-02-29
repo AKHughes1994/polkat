@@ -99,7 +99,7 @@ def make_estimate(fname, image, src_ra, src_dec, fix_var):
     # Make estimate file
     f = open(fname, 'w')
     for ra, dec, fix in zip(src_ra, src_dec, fix_var):
-        region = f'circle[[{ra}pix, {dec}pix], 1.5pix]'
+        region = f'circle[[{ra}pix, {dec}pix], 2.0pix]'
         ims = get_imstat_values(image, region)
         f.write(f'{ims[0]},{ra},{dec},{bmaj}arcsec,{bmin}arcsec,{bpa}deg, {fix}\n')
     f.close()            
@@ -136,7 +136,7 @@ def check_position(fname, xpix, ypix, image, snr_thresh=5.0):
 
     # If a component is weak (i.e., < snr-thresh*sigma fix the position to the the reference otherwise fit for the position wonder)
     for x, y in zip(xpix, ypix):
-        region = f'circle[[{x}pix, {y}pix], 1.5pix]'
+        region = f'circle[[{x}pix, {y}pix], 2.0pix]'
         ims = get_imstat_values(image, region = region)
         if abs(ims[0])/ims[3] > snr_thresh:
             fix_var.append('abp')
