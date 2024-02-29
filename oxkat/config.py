@@ -102,12 +102,12 @@ SLURM_TRICOLOUR = {
 }
 
 SLURM_RM = {
-    'TIME': '06:00:00',
-    'PARTITION': 'Main',
-    'NTASKS': '1',
-    'NODES': '1',
-    'CPUS': '32',
-    'MEM': '230GB'
+	'TIME': '12:00:00',
+	'PARTITION': 'Main',
+	'NTASKS': '1',
+	'NODES': '1',
+	'CPUS': '8',
+	'MEM': '64GB',
 }
 
 SLURM_WSCLEAN = {
