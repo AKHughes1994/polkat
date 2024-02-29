@@ -36,7 +36,7 @@ def main():
     args = parser.parse_args()
     OBJECT = f"meerkat_"+ str(args.field)
     RA = str(args.ra) 
-    DEC = str(args.dec)
+    DEC = str(args.dec).replace('minus','-').replace('plus','+')
     START_TIME = str(args.t0)
     END_TIME = str(args.tf)
 
