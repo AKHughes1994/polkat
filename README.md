@@ -16,7 +16,7 @@ This is a modified version of the semi-automated routine [oxkat](https://github.
 ---
 ##### Major changes with respect to oxkat
 
-* The ms file is averaged to 1024 channels in the INFO step (oxkat does this in 1GC). This has to do with getting the numeric indexes of the (sub-)fields used in each calibration run. INFO also identifies the polarization calibrator automatically—currently, MeerKAT defaults to specifying the scan intent as "UNKNOWN" for the polarization calibrator.
+* The ms file is averaged to 1024 channels in the INFO step (oxkat does this in 1GC). This involves getting the numeric indexes of the (sub-)fields used in each calibration run. INFO also identifies the polarization calibrator automatically—currently, MeerKAT defaults to specifying the scan intent as "UNKNOWN" for the polarization calibrator.
 
 * By default, `clean` uses its auto-threshold and auto-masking routine (alongside manual masking). The auto-routines use Gaussian kernels when looking for clean components and thus will often find single-pixel clean components for point sources. Anecdotally, I find that this results in better self-calibration, as standard thresholding will clean every pixel within the manual mask (but the difference is often non-specific). This should also help for messy fields where the RMS is well above the systematic threshold of the instrument due to, for example, diffuse emission!
 
@@ -26,7 +26,7 @@ This is a modified version of the semi-automated routine [oxkat](https://github.
   3. Solve for KCROSS (Cross-hand delay) and Xf (cross-hand phase) using the polarization angle calibrator. Solving for Xf for a linear-feed system is (pseudo)-model-independent. The only requirement is that the model for the polarization angle calibrator be initialized such that the flux has U > Q and a V = 0.0. By default, this is done with `setjy` with the parameter `fluxdensity=[1.0,0.0,0.5,0.0].`
   6. At the end of 1GC, by default, you will image the (unpolarized) primary and the (known polarization) polarization angle calibrator. This can be turned off in `config.py` (setting `CAL_1GC_DIAGNOSTICS = False`). I would suggest against turning this off, as these act as built-in check sources to probe the accuracy of our calibration. Any excess polarization in the primary can be used as a systematic error (probably caused by residual leakage), and the polarization calibrator can have its angle/fraction(s) checked against their known values as a further systematic. I'll talk about this more later on.
  
- * FLAG and 2GC have been combined into a single step. The major differences:
+* FLAG and 2GC have been combined into a single step. The major differences:
   1. "datamask" and "pcalmask" images are full stokes IQUV.
   2. The routine no longer splits out the calibrated source(s) into separate ms file(s). The reason is that, for linear feeds, the parallactic angle corrections due not commute. More simply, What this means is that if you perform full polarization calibration (with parallactic angle corrections) and then split out the data for self-calibrating, you will "over-correct" the parallactic angle. Further gain solutions will be incorrect as you are now solving for the values against the rotated visibilities. 
   3. As a result of 2. the routine is now self-calibration using `casa` rather than `cubical.` I am investigating whether we can use Quartical for full-polarization self-calibration, but this is a large work in progress. 
@@ -35,35 +35,70 @@ This is a modified version of the semi-automated routine [oxkat](https://github.
   1. SNAP added the Heywood snapshot imaging routine into the standard workflow (only Stokes-I currently)
   2. RMSYNTH (pseudo-)automatically extracts full IQUV images from the source of interest
  
+* 3GC has yet to work; don't try it. 
+ 
 [AD MORE INFO ON SNAP AND RMSYNTH]
 
 
-# VERY IMPORTANT: CHECK YOUR VISIBILITES + GAIN TABLES BEFORE MOVING ON FROM 1GC to FLAG, POLARIZATION CALIBRATION CAN DO WEIRD THINGS! 
+# VERY IMPORTANT: CHECK YOUR VISIBILITES + GAIN TABLES BEFORE MOVING ON FROM 1GC to 2GC; POLARIZATION CALIBRATION CAN DO WEIRD THINGS! WHAT YOU WANT TO ENSURE IS THAT THE STOKES V FOR THE POLARIZATION CALIBRATOR IS ~0.IN VISIBILITY SPACE, THIS CORRESPONDS TO THE IMAGINARY COMPONENT OF XY AND YX 
 
 ---
 ##### Example run
 
-In it's current state, polkat should work as a "plug-and-chug" routine, an example run would be:
+## Quick start
 
-Download and copy polkat into a working directory (edit the PRE_FIELDS parameter in the oxkat/config.py file to select a subset of fields; i.e., primary, secondary, pol. cal., source)
-```
-cp polkat working_directory/.
-```
-Create a symbolic link pointing to the ms file of interest
-```
-cd working_directory
-ln -s /idia/raw/xkat/SCI-20230907-RF-01/1700301738/1700301738_sdp_l0.ms .
-```
-Run INFO
-```
-python3 setups/0_GET_INFO.py idia
-./submit_info_jobs.sh
-```
-Repeat above step for 1GC.py and FLAG.py, and your final data products will be produced. 
+1. Navigate to a working area / scratch space:
+
+   ```
+   $ cd /scratch/users/emperor-zerg/
+   ```
+
+2. Clone the root contents of this repo into it:
+
+   ```
+   $ git clone -b master https://github.com/AKHughes1994/polkat.git .
+   ```
+
+3. Make a symlink to your MeerKAT Measurement Set (or place it in the working folder, it will not be modified at all):
+
+   ```
+   $ ln -s /idia/raw/xkat/SCI-20230907-RF-01/1708829174/1708829174_sdp_l0.ms .
+   ```
+
+4. The first step is to run a script that gathers some required information about the observation:
+
+   ```
+   $ python setups/0_GET_INFO.py idia
+   $ ./submit_info_job.sh
+   ```
+
+5. Once this is complete, you can generate and submit the jobs required for the reference calibration (1GC):
+
+   ```
+   $ python setups/1GC.py idia
+   $ ./submit_1GC_jobs.sh
+   ```
+
+6. Once this is complete, you can generate and submit the jobs required for the target imaging and self-calibration (2GC):
+
+   ```
+   $ python setups/2GC.py idia
+   $ ./submit_2GC_jobs.sh
+   ```
+
+6. If something goes wrong, you can kill the running and queued jobs on a cluster with, e.g.,:
+
+   ```
+   $ source SCRIPTS/kill_1GC_jobs.sh
+   ```
+
+7. Once all the jobs have been completed, you can examine the products and move on to the setup for the next steps, namely RMSYNTH and SNAP for data analysis.
+
+Please see the [setups README](setups/README.md) for more details about the general workflow. Most settings can be tuned via the [`config.py`](oxkat/config.py) file.
 
 ---
-##### To Do List
+##### To-Do List
 
-1. Add ionospheric corrections. The ionosphere can have RM values up to ~ 5 rad/m^2 which corresponds to ~30 degrees at the bottom of L-band. Do not use polkat for UHF until we figure out the ionospheric corrections.
-2. Investigate full self calibration polarisation routines.
+1. Investigate full self-calibration polarisation routines.
+2. Add peeling capabilities
 
