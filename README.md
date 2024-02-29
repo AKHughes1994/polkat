@@ -99,6 +99,7 @@ Please see the [setups README](setups/README.md) for more details about the gene
 ---
 ##### To-Do List
 
+1. Figure out if there is a significant difference between the `-mf-weighting` and `-no-mf-weighting` channelized images
 1. Investigate full self-calibration polarisation routines.
-2. Add peeling capabilities
+3. Add peeling capabilities
 
