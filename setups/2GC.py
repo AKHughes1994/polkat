@@ -237,7 +237,7 @@ def main():
             step['comment'] = 'Run wsclean, masked deconvolution of the CORRECTED_DATA (self-calibrated) for {}'.format(targetname)
             step['dependency'] = step_i - 1
             step['id'] = 'WSCMA'+code
-            step['slurm_config'] = cfg.SLURM_HIGHMEM
+            step['slurm_config'] = cfg.SLURM_WSCLEAN
             step['pbs_config'] = cfg.PBS_WSCLEAN
             absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
             syscall = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
