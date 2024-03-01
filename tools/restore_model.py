@@ -142,10 +142,10 @@ if __name__ == '__main__':
 
         for i in range(0,len(fits_list)):
             try: 
-                print('Fitting: ' + fits_list[i].split(cfg.INTERVALS + '/')[-1])
+                print('Convolving: ' + fits_list[i].split(cfg.INTERVALS + '/')[-1])
                 convolve_fits(fits_list[i],model_image,ids[i])
             except:
-                print('Fitting Failed Skipping:' + fits_list[i].split(cfg.INTERVALS + '/')[-1])
+                print('Convolving Failed Skipping:' + fits_list[i].split(cfg.INTERVALS + '/')[-1])
 
         # pool = Pool(processes=j)
         # pool.starmap(convolve_fits,zip(fits_list,repeat(model_image),ids))
