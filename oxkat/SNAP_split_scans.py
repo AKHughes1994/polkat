@@ -17,5 +17,5 @@ for scan in scans:
     scan_ms = target_ms.replace('.ms', f'_scan{scan}.ms')
     mstransform(vis = target_ms,    
                                 outputvis = scan_ms,
-                                scan=scan,
+                                scan=str(scan),
                                 datacolumn='all')
