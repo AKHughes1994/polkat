@@ -497,6 +497,7 @@ def generate_syscall_wsclean(mslist,
                           wgridderaccuracy = cfg.WSC_WGRIDDERACCURACY,
                           useidg = cfg.WSC_USEIDG,
                           idgmode = cfg.WSC_IDGMODE,
+                          tukeytaper=cfg.WSC_TUKEYTAPER,
                           paralleldeconvolution = cfg.WSC_PARALLELDECONVOLUTION,
                           parallelreordering = cfg.WSC_PARALLELREORDERING,
                           parallelgridding = cfg.WSC_PARALLELGRIDDING):
@@ -547,6 +548,8 @@ def generate_syscall_wsclean(mslist,
         syscall += '-minuv-l '+str(minuvl)+' '
     if maxuvl != '':
         syscall += '-maxuv-l '+str(maxuvl)+' '
+    if tukeytaper:
+        syscall += '-log-time -minuv-l 0.0 -taper-inner-tukey {} '.format(tukeytaper)
     if even:
         syscall += '-even-timesteps '
     if odd:
