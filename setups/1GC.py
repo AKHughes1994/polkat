@@ -127,7 +127,9 @@ def main():
 
         for cal_name in [project_info['polang_name'], project_info['primary_name']]:
             cal_index  = prefields_info['field_names'].index(cal_name)
-            img_prefix  = f"{cfg.IMAGES}/img_{myms}_{cal_name}_postXf"
+
+            name_ms = myms.replace('.ms', f'_{cal_name}.ms') # This makes the naming convention the same as oxkat
+            img_prefix  = f"{cfg.IMAGES}/img_{name_ms}_postXf"
 
             step = {}
             step['step'] = step_i

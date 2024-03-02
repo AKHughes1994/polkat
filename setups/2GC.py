@@ -110,9 +110,10 @@ def main():
             codes.append(code)
         
             # Image prefix
-            img_prefix = IMAGES+'/img_'+myms+'_{}_datablind'.format(targetname)
-            data_img_prefix = IMAGES+'/img_'+myms+'_{}_datamask'.format(targetname)
-            pcal_img_prefix = IMAGES+'/img_'+myms+'_{}_pcalmask'.format(targetname)
+            name_ms = myms.replace('.ms', f'_{targetname}.ms') # This makes the naming convention the same as oxkat
+            img_prefix = IMAGES+f'/img_{name_ms}_datablind'
+            data_img_prefix = IMAGES+f'/img_{name_ms}_datamask'
+            pcal_img_prefix = IMAGES+f'/img_{name_ms}_pcalmask'
 
             # Target-specific kill file
             kill_file = SCRIPTS+'/kill_2GC_jobs_'+filename_targetname+'.sh'

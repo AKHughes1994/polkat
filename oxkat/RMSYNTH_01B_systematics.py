@@ -206,6 +206,7 @@ def get_polcal_polarization(pacal_name, pacal_pos, bpcal_systematic):
         MFS_dict       = Dictionary containing MFS information for the fill stokes  
     '''
 
+
     # Get imstat parameters from Stokes I image
     image_I = glob.glob(cfg.IMAGES + f'/*{pacal_name}_postXf-MFS-I-image.fits')[0]
     freqMFS_GHz  =  imhead(image_I, mode='get', hdkey = 'CRVAL3')['value'] / 1.0e9
@@ -431,9 +432,11 @@ def main():
     bpcal_pos     =  '19:39:25.0264,-63.42.45.624'
 
     # Primary Calibrator
+    msg(f'Fitting Primary Systematics')
     bpcal_systematic = get_primary_systematic(bpcal_name, bpcal_pos)
 
     # Polarization Calibrator
+    msg(f'Fitting Polcal MFS image')
     pacal_MFS_dict = get_polcal_polarization(pacal_name, pacal_pos, bpcal_systematic)
 
     # Update all rmsynth.txt files to include systematic errors
@@ -441,11 +444,10 @@ def main():
         update_rmsynth_file(f, pacal_MFS_dict)
 
     # Update the source dictionary with the sysematic corrections
-    rmsynth_info = np.genfromtxt(cfg.DATA + '/rmsynth/rmsynth_info.txt', skip_header = 3, dtype=str)
+    rmsynth_info = np.genfromtxt(cfg.DATA + '/rmsynth/rmsynth_info.txt', skip_header = 2, dtype=str)
 
     # If this is a 1-D array convert to two 2-D
-    if len(rmsynth_info.shape) == 1:
-        rmsynth_info = rmsynth_info[np.newaxis, :]
+    rmsynth_info = np.atleast_2d(rmsynth_info)
 
     # Break the columns into the relevant properties
     src_names = rmsynth_info[:,0]
