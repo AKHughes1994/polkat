@@ -208,7 +208,7 @@ def get_polcal_polarization(pacal_name, pacal_pos, bpcal_systematic):
 
 
     # Get imstat parameters from Stokes I image
-    image_I = glob.glob(cfg.IMAGES + f'/*{pacal_name}_postXf-MFS-I-image.fits')[0]
+    image_I = glob.glob(cfg.IMAGES + f'/*{pacal_name}*postXf-MFS-I-image.fits')[0]
     freqMFS_GHz  =  imhead(image_I, mode='get', hdkey = 'CRVAL3')['value'] / 1.0e9
     date_obs  =  imhead(image_I, mode='get', hdkey = 'DATE-OBS').replace('/','-',2).replace('/','T')
     ims_I       = get_imstat_values(image_I, pacal_pos)
