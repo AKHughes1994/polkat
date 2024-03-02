@@ -403,7 +403,7 @@ def get_primary_systematic(bpcal_name, bpcal_pos):
     '''
 
     # Get imstat parameters from Stokes I image
-    image_I = glob.glob(cfg.IMAGES + f'/*{bpcal_name}_postXf-MFS-I-image.fits')[0]
+    image_I = glob.glob(cfg.IMAGES + f'/*{bpcal_name}*postXf-MFS-I-image.fits')[0]
     image_I, image_Q, image_U, image_V, image_P = get_IQUVP_names(image_I)
     ims_I       = get_imstat_values(image_I, bpcal_pos)
     
