@@ -549,7 +549,7 @@ def generate_syscall_wsclean(mslist,
     if maxuvl != '':
         syscall += '-maxuv-l '+str(maxuvl)+' '
     if tukeytaper:
-        syscall += '-log-time -minuv-l 0.0 -taper-inner-tukey {} '.format(tukeytaper)
+        syscall += f'-minuv-l 0.0 -taper-inner-tukey {tukeytaper} '
     if even:
         syscall += '-even-timesteps '
     if odd:
