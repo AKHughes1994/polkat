@@ -484,6 +484,7 @@ def generate_syscall_wsclean(mslist,
                           padding = cfg.WSC_PADDING,
                           nomodel = cfg.WSC_NOMODEL,
                           mask = cfg.WSC_MASK,
+                          mfweight = cfg.WSC_MFWEIGHT,
                           threshold = cfg.WSC_THRESHOLD,
                           autothreshold = cfg.WSC_AUTOTHRESHOLD,
                           automask = cfg.WSC_AUTOMASK,
@@ -585,6 +586,11 @@ def generate_syscall_wsclean(mslist,
     syscall += '-weight '+str(weight)+' '
     if tapergaussian != '':
         syscall += '-taper-gaussian '+str(tapergaussian)+' '
+    if mfweight:
+        syscal  += '-mf-weighting '
+    else:
+        syscall += '-no-mf-weighting '
+
 
     # Deconvolution
     if paralleldeconvolution != 0:
