@@ -30,17 +30,42 @@ This is a modified version of the semi-automated routine [oxkat](https://github.
   1. "datamask" and "pcalmask" images are full stokes IQUV.
   2. The routine no longer splits out the calibrated source(s) into separate ms file(s). The reason is that, for linear feeds, the parallactic angle corrections due not commute. More simply, What this means is that if you perform full polarization calibration (with parallactic angle corrections) and then split out the data for self-calibrating, you will "over-correct" the parallactic angle. Further gain solutions will be incorrect as you are now solving for the values against the rotated visibilities. 
   3. As a result of 2. the routine is now self-calibration using `casa` rather than `cubical.` I am investigating whether we can use Quartical for full-polarization self-calibration, but this is a large work in progress. 
-
-* There are two new setups, namely RMSYNTH and SNAP.
-  1. SNAP added the Heywood snapshot imaging routine into the standard workflow (only Stokes-I currently)
-  2. RMSYNTH (pseudo-)automatically extracts full IQUV images from the source of interest
  
 * 3GC has yet to work; don't try it. 
  
-[AD MORE INFO ON SNAP AND RMSYNTH]
-
-
 ### VERY IMPORTANT: CHECK YOUR VISIBILITES + GAIN TABLES BEFORE MOVING ON FROM 1GC to 2GC; POLARIZATION CALIBRATION CAN DO WEIRD THINGS! WHAT YOU WANT TO ENSURE IS THAT THE STOKES V FOR THE POLARIZATION CALIBRATOR IS ~0.IN VISIBILITY SPACE, THIS CORRESPONDS TO THE IMAGINARY COMPONENT OF XY AND YX 
+
+---
+##### The New Setups
+
+There are two new setups:
+
+###### SNAP
+
+This routine added the Heywood snapshot imaging routine to the general workflow. After 2GC you can run:
+   ```
+   $ python setups/0_GET_INFO.py idia
+   $ ./submit_info_job.sh
+   ```
+By default, the routine will make snapshot images of all Targets in the MS file. However, you can modify the `SNAP_FIELDS` variable inside of `config.py` if you want to specify the sources for snapshot imaging (e.g., want to snapshot image a calibrator as a check source)
+
+###### RMSYNTH
+
+This semi-automated routine should fit/extract the properties of an arbitrary number of Gaussian components for your IQUV imaging cube(s). The only thing that needs to be modified is the file `data/rmsynth/rmsynth_info.txt` below is an example file:
+
+```
+# Text file containing information to feed into the RMSYNTH_01_extract_fluxes.py routine columns are:
+# Field name, image identifier (for IQUV cube, e.g., "pcalmask"), ra, dec (pixels) seperated by spaces (can include multiple RA/DEC for one image)
+Field1 pcalmask 17:27:43.3346781657,17:27:43.3378907659 -16.12.19.5120108691,-16.12.26.3558690263
+Field2 datamask 18:00:00 -17:00:00
+```
+
+Ignoring the preamble, the code will look for the four columns to get the necessary information for fitting:
+  1. The first column is the field name (as seen in the ms file)
+  2. The second column is the image identifier; if you want to fit the self-called images, use 'pcalmask'
+  3. The third/fourth column is the RA/Dec guess(es) in the standard CASA format (note the period separators for declination). These can be single-coordinates or comma-separated lists for multi-component fitting (e.g., if you have core + jet ejecta)
+
+The RMSYNTH step will also measure the polarization systematics using the calibrators, measure RM/pol angle using RM Synthesis, and get estimates of the ionospheric RM contributions using ALBUS! I will go into detail about the fitting approaches soon!
 
 ---
 ##### Example run
