@@ -44,8 +44,8 @@ There are two new setups:
 
 This routine added the Heywood snapshot imaging routine to the general workflow. After 2GC you can run:
    ```
-   $ python setups/0_GET_INFO.py idia
-   $ ./submit_info_job.sh
+   $ python setups/SNAP.py idia
+   $ ./submit_snap_job.sh
    ```
 By default, the routine will make snapshot images of all Targets in the MS file. However, you can modify the `SNAP_FIELDS` variable inside of `config.py` if you want to specify the sources for snapshot imaging (e.g., want to snapshot image a calibrator as a check source)
 
