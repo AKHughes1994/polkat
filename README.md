@@ -70,6 +70,8 @@ Ignoring the preamble, the code will look for the four columns to get the necess
   2. The second column is the image identifier; if you want to fit the self-called images, use 'pcalmask'
   3. The third/fourth column is the RA/Dec guess(es) in the standard CASA format (note the period separators for declination). These can be single-coordinates or comma-separated lists for multi-component fitting (e.g., if you have core + jet ejecta)
 
+For this example, you will fit the Field1 self-calibrated image with a two-component fit, and the Field2 masked image (no self-cal) with a one-component fit.
+
 The RMSYNTH step will also measure the polarization systematics using the calibrators, measure RM/pol angle using RM Synthesis, and get estimates of the ionospheric RM contributions using ALBUS! I will go into detail about the fitting approaches soon!
 
 ---
