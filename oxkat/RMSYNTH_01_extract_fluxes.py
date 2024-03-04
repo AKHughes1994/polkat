@@ -285,7 +285,7 @@ def fit_channel(i_image, xpix_I, ypix_I, xpix_Q, ypix_Q, xpix_U, ypix_U, xpix_P,
     imf_V  = get_imfit_values('estimate_V.txt', IQUVP_names[3], xpix_V, ypix_V)
 
     # Fit Stokes P
-    check_position('estimate_P.txt', IQUVP_names[4], xpix_P, ypix_P, P_image=True)
+    check_position('estimate_P.txt', IQUVP_names[4], xpix_P, ypix_P, P_image=True, snr_thresh=7.0)
     imf_P  = get_imfit_values('estimate_P.txt', IQUVP_names[4], xpix_P, ypix_P)
        
     # Get the number of components
@@ -401,7 +401,7 @@ def extract_polarization_properties(src_name,  src_im_identifier, src_ra, src_de
     ypix_I = [imf_I['results'][key]['pixelcoords'][1] for key in imf_I['results'].keys() if 'component' in key]
 
     # Make estimate and fit for Lin. Pol. Intensity -- checking against position of stokes I components
-    check_position('estimate_P.txt', IQUVP_names[4], xpix_I, ypix_I, P_image=True)
+    check_position('estimate_P.txt', IQUVP_names[4], xpix_I, ypix_I, P_image=True, snr_thresh=7.0)
     imf_P  = get_imfit_values('estimate_P.txt', IQUVP_names[4], xpix_I, ypix_I)
     xpix_P = [imf_P['results'][key]['pixelcoords'][0] for key in imf_P['results'].keys() if 'component' in key]
     ypix_P = [imf_P['results'][key]['pixelcoords'][1] for key in imf_P['results'].keys() if 'component' in key]
