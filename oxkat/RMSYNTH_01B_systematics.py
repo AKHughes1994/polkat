@@ -183,13 +183,13 @@ def check_position(fname, image, x,y, pos, snr_thresh=5.0):
     # Make the estimate file
     make_estimate(fname, image, x, y, fix_var)
 
-def calculate_sys_err(flux, rms, bpcal_sys, pacal_sys, stokes_I = False):
+def calculate_sys_err(flux, rms, flux_I, bpcal_sys, pacal_sys, stokes_I = False):
 
     if type(flux) is list:
         flux = np.array(flux)
         rms = np.array(rms)
     
-    sys_err_sq = rms ** 2 + (flux * bpcal_sys) ** 2
+    sys_err_sq = rms ** 2 + (flux_I * bpcal_sys) ** 2
     if not stokes_I:
         sys_err_sq += (flux * pacal_sys) ** 2
     
@@ -224,13 +224,13 @@ def get_polcal_polarization(pacal_name, pacal_pos, bpcal_systematic):
     estimate_P  = make_estimate('estimate_P.txt', image_P, ims_I[1], ims_I[2], 'xyabp')
 
     # Imfit estimate files for I, Q, U, and P
-    imf_I   = get_imfit_values('estimate_I.txt',  image_I,  ims_I[1], ims_I[2])
+    imf_I = get_imfit_values('estimate_I.txt',  image_I,  ims_I[1], ims_I[2])
     imf_Q = get_imfit_values('estimate_Q.txt', image_Q, ims_I[1], ims_I[2])
     imf_U = get_imfit_values('estimate_U.txt', image_U, ims_I[1], ims_I[2])
     imf_P = get_imfit_values('estimate_P.txt', image_P, ims_I[1], ims_I[2])
 
     # Get imstat regions for I,Q,U,P,V
-    ims_I   = get_imstat_values(image_I,  pacal_pos)
+    ims_I = get_imstat_values(image_I,  pacal_pos)
     ims_Q = get_imstat_values(image_Q, pacal_pos)
     ims_U = get_imstat_values(image_U, pacal_pos)
     ims_P = get_imstat_values(image_P, pacal_pos)
@@ -261,10 +261,10 @@ def get_polcal_polarization(pacal_name, pacal_pos, bpcal_systematic):
     pacal_systematic = abs(flux_V) / (flux_P ** 2 + flux_V **2) ** (0.5)
 
     # Calculate error that include the systematic effects from insuffiicent leakage/cross-hand phase calibration
-    sys_I = calculate_sys_err(flux_I, rms_I, bpcal_systematic, pacal_systematic, stokes_I = True)
-    sys_Q = calculate_sys_err(flux_Q, rms_Q, bpcal_systematic, pacal_systematic, stokes_I = False)
-    sys_U = calculate_sys_err(flux_U, rms_U, bpcal_systematic, pacal_systematic, stokes_I = False)
-    sys_V = calculate_sys_err(flux_V, rms_V, bpcal_systematic, pacal_systematic, stokes_I = False)
+    sys_I = calculate_sys_err(flux_I, rms_I, flux_I, bpcal_systematic, pacal_systematic, stokes_I = True)
+    sys_Q = calculate_sys_err(flux_Q, rms_Q, flux_I, bpcal_systematic, pacal_systematic, stokes_I = False)
+    sys_U = calculate_sys_err(flux_U, rms_U, flux_I, bpcal_systematic, pacal_systematic, stokes_I = False)
+    sys_V = calculate_sys_err(flux_V, rms_V, flux_I, bpcal_systematic, pacal_systematic, stokes_I = False)
     sys_P = 0.5 * (sys_Q + sys_U)
 
     # Calculate other parameters
@@ -351,9 +351,9 @@ def update_rmsynth_file(fname, MFS_dict):
     pacal_systematic = MFS_dict['Polarization_Calibrator_Fractional_Systematic'] 
     
     data_arr = np.genfromtxt(fname)
-    data_arr[:,4] = calculate_sys_err(data_arr[:,1] , data_arr[:,4] , bpcal_systematic, pacal_systematic, stokes_I = True)
-    data_arr[:,5] = calculate_sys_err(data_arr[:,2] , data_arr[:,5] , bpcal_systematic, pacal_systematic, stokes_I = False)
-    data_arr[:,6] = calculate_sys_err(data_arr[:,3] , data_arr[:,6] , bpcal_systematic, pacal_systematic, stokes_I = False)
+    data_arr[:,4] = calculate_sys_err(data_arr[:,1] , data_arr[:,4] , data_arr[:,1] , bpcal_systematic, pacal_systematic, stokes_I = True)
+    data_arr[:,5] = calculate_sys_err(data_arr[:,2] , data_arr[:,5] , data_arr[:,1] , bpcal_systematic, pacal_systematic, stokes_I = False)
+    data_arr[:,6] = calculate_sys_err(data_arr[:,3] , data_arr[:,6] , data_arr[:,1] , bpcal_systematic, pacal_systematic, stokes_I = False)
 
     np.savetxt(fname.replace('.txt', '_sys.txt'), np.array(data_arr))
 
@@ -372,10 +372,14 @@ def update_src_pol_dict(fname, MFS_dict):
     comps = [key for key in src_dict['MFS'].keys() if 'component' in key]
     for comp in comps:
         for subdict in ['MFS', 'CHAN']:
-            src_dict[subdict][comp]['I_sys_mJy'] = calculate_sys_err(src_dict[subdict][comp]['I_flux_mJy'], src_dict[subdict][comp]['I_rms_mJy'], bpcal_systematic, pacal_systematic, stokes_I = True)
-            src_dict[subdict][comp]['Q_sys_mJy'] = calculate_sys_err(src_dict[subdict][comp]['Q_flux_mJy'], src_dict[subdict][comp]['Q_rms_mJy'], bpcal_systematic, pacal_systematic, stokes_I = False)
-            src_dict[subdict][comp]['U_sys_mJy'] = calculate_sys_err(src_dict[subdict][comp]['U_flux_mJy'], src_dict[subdict][comp]['U_rms_mJy'], bpcal_systematic, pacal_systematic, stokes_I = False)
-            src_dict[subdict][comp]['V_sys_mJy'] = calculate_sys_err(src_dict[subdict][comp]['V_flux_mJy'], src_dict[subdict][comp]['V_rms_mJy'], bpcal_systematic, pacal_systematic, stokes_I = False)
+            src_dict[subdict][comp]['I_sys_mJy'] = calculate_sys_err(src_dict[subdict][comp]['I_flux_mJy'], src_dict[subdict][comp]['I_rms_mJy'], src_dict[subdict][comp]['I_flux_mJy'],
+                                                                     bpcal_systematic, pacal_systematic, stokes_I = True)
+            src_dict[subdict][comp]['Q_sys_mJy'] = calculate_sys_err(src_dict[subdict][comp]['Q_flux_mJy'], src_dict[subdict][comp]['Q_rms_mJy'], src_dict[subdict][comp]['I_flux_mJy'], 
+                                                                     bpcal_systematic, pacal_systematic, stokes_I = False)
+            src_dict[subdict][comp]['U_sys_mJy'] = calculate_sys_err(src_dict[subdict][comp]['U_flux_mJy'], src_dict[subdict][comp]['U_rms_mJy'], src_dict[subdict][comp]['I_flux_mJy'],
+                                                                     bpcal_systematic, pacal_systematic, stokes_I = False)
+            src_dict[subdict][comp]['V_sys_mJy'] = calculate_sys_err(src_dict[subdict][comp]['V_flux_mJy'], src_dict[subdict][comp]['V_rms_mJy'], src_dict[subdict][comp]['I_flux_mJy'],
+                                                                     bpcal_systematic, pacal_systematic, stokes_I = False)
             sys_Q = src_dict[subdict][comp]['Q_sys_mJy'] 
             sys_U = src_dict[subdict][comp]['U_sys_mJy'] 
             if type(sys_Q) is list:
