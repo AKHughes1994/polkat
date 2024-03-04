@@ -51,7 +51,12 @@ By default, the routine will make snapshot images of all Targets in the MS file.
 
 ###### RMSYNTH
 
-This semi-automated routine should fit/extract the properties of an arbitrary number of Gaussian components for your IQUV imaging cube(s). The only thing that needs to be modified is the file `data/rmsynth/rmsynth_info.txt` below is an example file:
+This semi-automated routine should fit/extract the properties of an arbitrary number of Gaussian components for your IQUV imaging cube(s).
+   ```
+   $ python setups/RMSYNTH.py idia
+   $ ./submit_rmsynth_job.sh
+   ```
+The only thing that needs to be modified is the file `data/rmsynth/rmsynth_info.txt` below is an example file:
 
 ```
 # Text file containing information to feed into the RMSYNTH_01_extract_fluxes.py routine columns are:
