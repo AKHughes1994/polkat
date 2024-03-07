@@ -118,7 +118,7 @@ def get_imfit_values(fname, image, x, y, n_beams = 4.0):
 
     return imf
 
-def fit_channel(i_chan_image, pix_I, pix_Q, pix_U, pos):
+def fit_channel(i_chan_image, pix_I, pix_Q, pix_U, pix_P, pos):
     '''
     Extract the IQUP parameters from the working channelized image
     Inputs:
@@ -146,17 +146,32 @@ def fit_channel(i_chan_image, pix_I, pix_Q, pix_U, pos):
     check_position('estimate_U.txt', IQUVP_names[2], pix_U[0], pix_U[1], pos, snr_thresh=5.0)
     imf_U  = get_imfit_values('estimate_U.txt', IQUVP_names[2], pix_U[0], pix_U[1])
 
+    # Fit Linear Intensity
+    check_position('estimate_P.txt', IQUVP_names[4], pix_P[0], pix_P[1], pos, snr_thresh=5.0)
+    imf_P  = get_imfit_values('estimate_P.txt', IQUVP_names[4], pix_P[0], pix_P[1])
+
     # Seperate fluxes
-    flux_I   = imf_I['results']['component0']['peak']['value'] 
+    flux_I = imf_I['results']['component0']['peak']['value'] 
     flux_Q = imf_Q['results']['component0']['peak']['value'] 
-    flux_U = imf_U['results']['component0']['peak']['value'] 
+    flux_U = imf_U['results']['component0']['peak']['value']
+    flux_P = imf_P['results']['component0']['peak']['value']  
 
     # RMS values
-    rms_I   =  get_imstat_values(IQUVP_names[0], pos)[3] 
+    rms_I =  get_imstat_values(IQUVP_names[0], pos)[3] 
     rms_Q =  get_imstat_values(IQUVP_names[1], pos)[3]
     rms_U =  get_imstat_values(IQUVP_names[2], pos)[3]
+    rms_P =  0.5 * (rms_Q + rms_U)
 
-    return [freq_Hz, flux_I, flux_Q, flux_U, rms_I, rms_Q, rms_U]   
+    # Calculate the additional Linear Polarization parameters
+    if flux_P > 4.0 * rms_P:
+        flux_P0 = (flux_P ** 2 - 2.3 * rms_P ** 2) ** 0.5
+    else:
+        flux_P0 = flux_P 
+
+    LP_frac     = flux_P0 / flux_I * 100.0
+    LP_frac_err = LP_frac * ((rms_P / flux_P0) ** 2 + (rms_I / flux_I) ** 2) ** 0.5 
+
+    return [freq_Hz, flux_I, flux_Q, flux_U, rms_I, rms_Q, rms_U, flux_P0, rms_P, LP_frac, LP_frac_err]   
         
 
 def check_position(fname, image, x,y, pos, snr_thresh=5.0):
@@ -183,20 +198,49 @@ def check_position(fname, image, x,y, pos, snr_thresh=5.0):
     # Make the estimate file
     make_estimate(fname, image, x, y, fix_var)
 
-def calculate_sys_err(flux, rms, flux_I, bpcal_sys, pacal_sys, stokes_I = False):
+def calculate_sys_err(flux, rms, bpcal_sys, pacal_sys, stokes = 'I'):
+    '''
+    Code to calculate a systematic error using the the residual polarized signals
+    in the calibrators:
+        For Bandpass Calibrator (BP) this is ANY polarization
+        For Polartization Angle (PA) Calibrator this is ONLY Stokes V
+    Inputs:
+        flux = array containing [I,Q,U,V,P] fluxes
+        rms  = array containing [I,Q,U,V,P] rms
+        bpcal_sys = fractional systematic error from BP
+        pacal_sys = fractional systematic error from PA
+        Stokes = Stokes parameter that will be solved (systematic is Stokes Depedant)
+    Outputs:
+        systematic error (single number or array)
+    '''
 
     if type(flux) is list:
         flux = np.array(flux)
-        rms = np.array(rms)
+        rms  = np.array(rms)
+
+    # Break apart the input arrays for readability
+    I, Q, U, V, P      = flux
+    dI, dQ, dU, dV, dP = rms
     
-    sys_err_sq = rms ** 2 + (flux_I * bpcal_sys) ** 2
-    if not stokes_I:
-        sys_err_sq += (flux * pacal_sys) ** 2
+    if stokes == 'I':
+        sys_err_sq = dI ** 2 +  (bpcal_sys * P) ** 2
+
+    elif stokes == 'Q':
+        sys_err_sq = dQ ** 2 +  (bpcal_sys * P) ** 2
+
+    elif stokes == 'U':
+        sys_err_sq = dU ** 2 +  (bpcal_sys * I) ** 2 + (pacal_sys * P) ** 2
+
+    elif stokes == 'V':
+        sys_err_sq = dV ** 2 +  (bpcal_sys * I) ** 2 + (pacal_sys * P) ** 2
+
+    else:
+        raise NameError("Sorry, must specify I, Q, U, or V")          
     
     return (sys_err_sq ** (0.5)).tolist()
 
 
-def get_polcal_polarization(pacal_name, pacal_pos, bpcal_systematic):
+def get_polcal_polarization(pacal_name, pacal_pos, bpcal_sys):
     '''
     Get the MFS parameters for the polarization calibrator and ouput a dictionary
     Inputs: 
@@ -207,30 +251,36 @@ def get_polcal_polarization(pacal_name, pacal_pos, bpcal_systematic):
     '''
 
 
-    # Get imstat parameters from Stokes I image
+    # Stokes I image
     image_I = glob.glob(cfg.IMAGES + f'/*{pacal_name}*postXf-MFS-I-image.fits')[0]
-    freqMFS_GHz  =  imhead(image_I, mode='get', hdkey = 'CRVAL3')['value'] / 1.0e9
-    date_obs  =  imhead(image_I, mode='get', hdkey = 'DATE-OBS').replace('/','-',2).replace('/','T')
-    ims_I       = get_imstat_values(image_I, pacal_pos)
-    file_prefix = image_I.split('-MFS')[0].replace('IMAGES', 'RESULTS')
 
     # Now get the Full IQUV polarization properties for the polarization calibrator
     image_I, image_Q, image_U, image_V, image_P = get_IQUVP_names(image_I)
 
+    # Get the basic properties from the image header
+    freqMFS_GHz  =  imhead(image_I, mode='get', hdkey = 'CRVAL3')['value'] / 1.0e9
+    date_obs  =  imhead(image_I, mode='get', hdkey = 'DATE-OBS').replace('/','-',2).replace('/','T')
+
+    # Define the output file prefix
+    file_prefix = image_I.split('-MFS')[0].replace('IMAGES', 'RESULTS')
+
+    # Get imstat to get estimate of Stokes I position
+    ims_I = get_imstat_values(image_I, pacal_pos)
+
     # Make estimate files for I, Q, U, and P
-    estimate_I   = make_estimate('estimate_I.txt',  image_I,  ims_I[1], ims_I[2], 'abp')
-    estimate_Q = make_estimate('estimate_Q.txt', image_Q, ims_I[1], ims_I[2], 'abp')
-    estimate_U = make_estimate('estimate_U.txt', image_U, ims_I[1], ims_I[2], 'abp')
-    estimate_P  = make_estimate('estimate_P.txt', image_P, ims_I[1], ims_I[2], 'xyabp')
+    estimate_I   = make_estimate('estimate_I.txt', image_I, ims_I[1], ims_I[2], 'abp')
+    estimate_Q   = make_estimate('estimate_Q.txt', image_Q, ims_I[1], ims_I[2], 'abp')
+    estimate_U   = make_estimate('estimate_U.txt', image_U, ims_I[1], ims_I[2], 'abp')
+    estimate_P   = make_estimate('estimate_P.txt', image_P, ims_I[1], ims_I[2], 'abp')
 
     # Imfit estimate files for I, Q, U, and P
-    imf_I = get_imfit_values('estimate_I.txt',  image_I,  ims_I[1], ims_I[2])
+    imf_I = get_imfit_values('estimate_I.txt', image_I, ims_I[1], ims_I[2])
     imf_Q = get_imfit_values('estimate_Q.txt', image_Q, ims_I[1], ims_I[2])
     imf_U = get_imfit_values('estimate_U.txt', image_U, ims_I[1], ims_I[2])
     imf_P = get_imfit_values('estimate_P.txt', image_P, ims_I[1], ims_I[2])
 
     # Get imstat regions for I,Q,U,P,V
-    ims_I = get_imstat_values(image_I,  pacal_pos)
+    ims_I = get_imstat_values(image_I, pacal_pos)
     ims_Q = get_imstat_values(image_Q, pacal_pos)
     ims_U = get_imstat_values(image_U, pacal_pos)
     ims_P = get_imstat_values(image_P, pacal_pos)
@@ -238,8 +288,9 @@ def get_polcal_polarization(pacal_name, pacal_pos, bpcal_systematic):
 
     # Get I, Q, U, P -- MFS pixel positions
     pix_I = imf_I['results']['component0']['pixelcoords']
-    pix_Q = imf_I['results']['component0']['pixelcoords']
-    pix_U = imf_I['results']['component0']['pixelcoords']
+    pix_Q = imf_Q['results']['component0']['pixelcoords']
+    pix_U = imf_U['results']['component0']['pixelcoords']
+    pix_P = imf_P['results']['component0']['pixelcoords']
 
     #  Separate out the fluxes and the RMS values
     flux_I  = imf_I['results']['component0']['peak']['value'] * 1e3
@@ -258,19 +309,21 @@ def get_polcal_polarization(pacal_name, pacal_pos, bpcal_systematic):
     rms_V = ims_V[3] * 1e3
 
     # Since 3C286 is meant to be unpolarized in Stokes V, any residual Stokes V is from improper cross-hand phase calculate fractional systematic
-    pacal_systematic = abs(flux_V) / (flux_P ** 2 + flux_V **2) ** (0.5)
+    pacal_sys = abs(flux_V) / (flux_P ** 2 + flux_V **2) ** (0.5)
+    flux = [flux_I, flux_Q, flux_U, flux_V, flux_P]
+    rms  = [rms_I, rms_Q, rms_U, rms_V, rms_P]
 
     # Calculate error that include the systematic effects from insuffiicent leakage/cross-hand phase calibration
-    sys_I = calculate_sys_err(flux_I, rms_I, flux_I, bpcal_systematic, pacal_systematic, stokes_I = True)
-    sys_Q = calculate_sys_err(flux_Q, rms_Q, flux_I, bpcal_systematic, pacal_systematic, stokes_I = False)
-    sys_U = calculate_sys_err(flux_U, rms_U, flux_I, bpcal_systematic, pacal_systematic, stokes_I = False)
-    sys_V = calculate_sys_err(flux_V, rms_V, flux_I, bpcal_systematic, pacal_systematic, stokes_I = False)
+    sys_I = calculate_sys_err(flux, rms, bpcal_sys, pacal_sys, stokes = 'I')
+    sys_Q = calculate_sys_err(flux, rms, bpcal_sys, pacal_sys, stokes = 'Q')
+    sys_U = calculate_sys_err(flux, rms, bpcal_sys, pacal_sys, stokes = 'U')
+    sys_V = calculate_sys_err(flux, rms, bpcal_sys, pacal_sys, stokes = 'V')
     sys_P = 0.5 * (sys_Q + sys_U)
 
     # Calculate other parameters
     flux_P0 = np.sqrt(flux_P ** 2 - 2.3 * rms_P ** 2)
    
-    LP_frac        = flux_P0 / flux_I * 100.0
+    LP_frac     = flux_P0 / flux_I * 100.0
     LP_frac_err = LP_frac * np.sqrt( (rms_I / flux_I) ** 2 + (rms_P / flux_P0) ** 2)
 
     LP_EVPA         = 0.5 * np.arctan2(flux_U, flux_Q) * 180.0 / np.pi 
@@ -285,101 +338,163 @@ def get_polcal_polarization(pacal_name, pacal_pos, bpcal_systematic):
     MFS_dict['beam']['bpa_deg']   = imf_I['results']['component0']['beam']['beamarcsec']['positionangle']['value']
     MFS_dict['beam']['bpa_deg']   = imf_I['results']['component0']['beam']['beamarcsec']['positionangle']['value']
         
-    # Image information
-    MFS_dict['freqMFS_GHz'] = freqMFS_GHz
-    MFS_dict['date_isot'] = date_obs
-
-   #  Fluxes
-    MFS_dict['I_flux_mJy']   = flux_I
+    # Fluxes
+    MFS_dict['I_flux_mJy'] = flux_I
     MFS_dict['Q_flux_mJy'] = flux_Q
     MFS_dict['U_flux_mJy'] = flux_U
     MFS_dict['V_flux_mJy'] = flux_V
     MFS_dict['P_flux_mJy'] = flux_P
     MFS_dict['P0_flux_mJy'] = flux_P0
 
-   #  RMS
-    MFS_dict['I_rms_mJy']   = rms_I
+    # RMS
+    MFS_dict['I_rms_mJy'] = rms_I
     MFS_dict['Q_rms_mJy'] = rms_Q
     MFS_dict['U_rms_mJy'] = rms_U
     MFS_dict['V_rms_mJy'] = rms_V
     MFS_dict['P_rms_mJy'] = rms_P
 
-   #  Systematic error
-    MFS_dict['I_sys_mJy']   = sys_I
+    # Systematic error
+    MFS_dict['I_sys_mJy'] = sys_I
     MFS_dict['Q_sys_mJy'] = sys_Q
     MFS_dict['U_sys_mJy'] = sys_U
     MFS_dict['V_sys_mJy'] = sys_V
     MFS_dict['P_sys_mJy'] = sys_P
 
-    # Position (Use Stokes I and Lin. Pol.)
-    MFS_dict['I_RA_deg']  = imf_I['results']['component0']['shape']['direction']['m0']['value'] * 180 / np.pi
+    # Position
+    MFS_dict['I_RA_deg']   = imf_I['results']['component0']['shape']['direction']['m0']['value'] * 180 / np.pi
     MFS_dict['I_Dec_deg']  = imf_I['results']['component0']['shape']['direction']['m1']['value'] * 180 / np.pi
-    MFS_dict['P_RA_deg'] = imf_P['results']['component0']['shape']['direction']['m0']['value'] * 180 / np.pi
-    MFS_dict['P_Dec_deg'] = imf_P['results']['component0']['shape']['direction']['m1']['value'] * 180 / np.pi 
+    MFS_dict['P_RA_deg']   = imf_P['results']['component0']['shape']['direction']['m0']['value'] * 180 / np.pi
+    MFS_dict['P_Dec_deg']  = imf_P['results']['component0']['shape']['direction']['m1']['value'] * 180 / np.pi 
 
     # Polarization Parameters
     MFS_dict['LP_frac'] = LP_frac
     MFS_dict['LP_frac_err'] = LP_frac_err
     MFS_dict['LP_EVPA'] = LP_EVPA
     MFS_dict['LP_EVPA_err'] = LP_EVPA_err
-    MFS_dict['Polarization_Calibrator_Fractional_Systematic'] = pacal_systematic
-    MFS_dict['Primary_Calibrator_Fractional_Systematic'] = bpcal_systematic
+
+    # Global Information
+    MFS_dict['freqMFS_GHz'] = freqMFS_GHz
+    MFS_dict['date_isot'] = date_obs
+
+    # Initialize Channel dictionary
+    chan_dict = {'freq_GHz' : [], 'I_flux_mJy': [], 'Q_flux_mJy': [], 'U_flux_mJy': [], 'P0_flux_mJy': [], 'LP_frac': [],  
+                                         'I_rms_mJy': [], 'Q_rms_mJy': [], 'U_rms_mJy': [], 'P_rms_mJy': [], 'LP_frac_err': [],
+                                         'I_sys_mJy': [], 'Q_sys_mJy': [], 'U_sys_mJy': [], 'P_sys_mJy': []}
 
     # Iterate through channelized images extracting fluxes to make RM Synthesis files
     rmsynth_arr = []
     for i_chan_image in sorted(glob.glob(cfg.IMAGES + f'/*{pacal_name}*postXf-00*-I-image.fits')):
         try:                
             msg(f'Fitting Image: {i_chan_image}')
-            rmsynth_arr.append(fit_channel(i_chan_image, pix_I, pix_Q, pix_U, pacal_pos))
+            # Measured Errors + values
+            chan_data = fit_channel(i_chan_image, pix_I, pix_Q, pix_U, pix_P, pacal_pos)
+            chan_dict['freq_GHz'].append(chan_data[0] / 1e9)
+            chan_dict['I_flux_mJy'].append(chan_data[1] * 1e3)
+            chan_dict['Q_flux_mJy'].append(chan_data[2] * 1e3)
+            chan_dict['U_flux_mJy'].append(chan_data[3] * 1e3)
+            chan_dict['I_rms_mJy'].append(chan_data[4] * 1e3)
+            chan_dict['Q_rms_mJy'].append(chan_data[5] * 1e3)
+            chan_dict['U_rms_mJy'].append(chan_data[6] * 1e3)
 
-        except:
+            chan_dict['P0_flux_mJy'].append(chan_data[7] * 1e3)
+            chan_dict['P_rms_mJy'].append(chan_data[8] * 1e3)
+            chan_dict['LP_frac'].append(chan_data[9])
+            chan_dict['LP_frac_err'].append(chan_data[10])
+
+            # Systematic Errors
+            flux = [chan_data[1], chan_data[2], chan_data[3], chan_data[1], chan_data[7]] # Don't need stokes V -- dummy variable just make it I
+            rms  = [chan_data[4], chan_data[5], chan_data[6], chan_data[1], chan_data[1]] # Don't need dV or dP -- dummy variables
+            chan_sys_I = calculate_sys_err(flux, rms, bpcal_sys, pacal_sys, stokes = 'I')
+            chan_sys_Q = calculate_sys_err(flux, rms, bpcal_sys, pacal_sys, stokes = 'Q')
+            chan_sys_U = calculate_sys_err(flux, rms, bpcal_sys, pacal_sys, stokes = 'U')
+
+            chan_dict['I_sys_mJy'].append(chan_sys_I * 1e3)
+            chan_dict['Q_sys_mJy'].append(chan_sys_Q * 1e3)
+            chan_dict['U_sys_mJy'].append(chan_sys_U * 1e3)     
+            chan_dict['P_sys_mJy'].append((chan_sys_Q + chan_sys_U) * 0.5 * 1e3)
+            
+            rmsynth_arr.append(chan_data[:7])
+
+        except TypeError:
             msg('Fitting Failed: Channel is likely flagged')
  
     # Save the RMSynth file
     np.savetxt(f'/{file_prefix}_rmsynth.txt', np.array(rmsynth_arr))
 
+
+    # Make over arching dictionary
+    pacal_dict = {}
+    pacal_dict['date_isot'] = date_obs
+    pacal_dict['Leakage_Fractional_Systematic']   = bpcal_sys
+    pacal_dict['CrossHand_Fractional_Systematic'] = pacal_sys
+    pacal_dict['MFS'] = MFS_dict
+    pacal_dict['CHAN'] = chan_dict
+
     # Save dictionary
     with open(f'/{file_prefix}_polarization.json', 'w') as jfile:
-        jfile.write(json.dumps(MFS_dict, indent=4, sort_keys=True))
+        jfile.write(json.dumps(pacal_dict, indent=4, sort_keys=True))
 
     # Save RM files
-    return MFS_dict
+    return pacal_dict
 
-def update_rmsynth_file(fname, MFS_dict):
+def update_rmsynth_file(fname, pacal_dict):
+    '''
+    Load in RMsynth text files and update them, 
+    such that we apply the systematic errors from the Leakage and Cross-hand
+    calibration errors
+    Input:
+        fname    = Input string containing the path to the rmsynth file
+        MFS_dict = Dictionary containing the fractional systematic terms
+    Output:
+        None -- But saves a new file
+    '''
 
-    bpcal_systematic = MFS_dict['Primary_Calibrator_Fractional_Systematic'] 
-    pacal_systematic = MFS_dict['Polarization_Calibrator_Fractional_Systematic'] 
-    
+
+    # Load in the data
+    bpcal_sys = pacal_dict['Leakage_Fractional_Systematic'] 
+    pacal_sys = pacal_dict['CrossHand_Fractional_Systematic'] 
     data_arr = np.genfromtxt(fname)
-    data_arr[:,4] = calculate_sys_err(data_arr[:,1] , data_arr[:,4] , data_arr[:,1] , bpcal_systematic, pacal_systematic, stokes_I = True)
-    data_arr[:,5] = calculate_sys_err(data_arr[:,2] , data_arr[:,5] , data_arr[:,1] , bpcal_systematic, pacal_systematic, stokes_I = False)
-    data_arr[:,6] = calculate_sys_err(data_arr[:,3] , data_arr[:,6] , data_arr[:,1] , bpcal_systematic, pacal_systematic, stokes_I = False)
+    
+    # Solve for the individual fluxes
+    I, Q, U    = data_arr[:,1], data_arr[:,2], data_arr[:,3]
+    dI, dQ, dU = data_arr[:,4], data_arr[:,5], data_arr[:,6]
+
+    # Solve for P flux
+    P = (Q ** 2 + U **2) ** (0.5)
+    
+    flux = [I, Q, U, I, P] # Don't need stokes V -- dummy variable just make it I
+    rms = [dI, dQ, dU, dI, dI] # Don't need dV or dP -- dummy variables
+
+    data_arr[:,4] = calculate_sys_err(flux, rms, bpcal_sys, pacal_sys, stokes = 'I')
+    data_arr[:,5] = calculate_sys_err(flux, rms, bpcal_sys, pacal_sys, stokes = 'Q')
+    data_arr[:,6] = calculate_sys_err(flux, rms, bpcal_sys, pacal_sys, stokes = 'U')
 
     np.savetxt(fname.replace('.txt', '_sys.txt'), np.array(data_arr))
 
-def update_src_pol_dict(fname, MFS_dict):
+    return 0
+
+def update_src_pol_dict(fname, input_dict):
 
     with open(fname, 'r') as jfile:
         src_dict = json.load(jfile)
 
-    bpcal_systematic = MFS_dict['Primary_Calibrator_Fractional_Systematic'] 
-    pacal_systematic = MFS_dict['Polarization_Calibrator_Fractional_Systematic'] 
+    bpcal_sys = input_dict['Leakage_Fractional_Systematic'] 
+    pacal_sys = input_dict['CrossHand_Fractional_Systematic'] 
 
-    src_dict['Polarization_Calibrator_Fractional_Systematic'] = pacal_systematic
-    src_dict['Primary_Calibrator_Fractional_Systematic'] = bpcal_systematic
+    src_dict['Leakage_Fractional_Systematic'] = bpcal_sys
+    src_dict['CrossHand_Fractional_Systematic'] = pacal_sys
 
     #Append Systematic errors
     comps = [key for key in src_dict['MFS'].keys() if 'component' in key]
     for comp in comps:
         for subdict in ['MFS', 'CHAN']:
-            src_dict[subdict][comp]['I_sys_mJy'] = calculate_sys_err(src_dict[subdict][comp]['I_flux_mJy'], src_dict[subdict][comp]['I_rms_mJy'], src_dict[subdict][comp]['I_flux_mJy'],
-                                                                     bpcal_systematic, pacal_systematic, stokes_I = True)
-            src_dict[subdict][comp]['Q_sys_mJy'] = calculate_sys_err(src_dict[subdict][comp]['Q_flux_mJy'], src_dict[subdict][comp]['Q_rms_mJy'], src_dict[subdict][comp]['I_flux_mJy'], 
-                                                                     bpcal_systematic, pacal_systematic, stokes_I = False)
-            src_dict[subdict][comp]['U_sys_mJy'] = calculate_sys_err(src_dict[subdict][comp]['U_flux_mJy'], src_dict[subdict][comp]['U_rms_mJy'], src_dict[subdict][comp]['I_flux_mJy'],
-                                                                     bpcal_systematic, pacal_systematic, stokes_I = False)
-            src_dict[subdict][comp]['V_sys_mJy'] = calculate_sys_err(src_dict[subdict][comp]['V_flux_mJy'], src_dict[subdict][comp]['V_rms_mJy'], src_dict[subdict][comp]['I_flux_mJy'],
-                                                                     bpcal_systematic, pacal_systematic, stokes_I = False)
+            flux = [src_dict[subdict][comp]['I_flux_mJy'], src_dict[subdict][comp]['Q_flux_mJy'], src_dict[subdict][comp]['U_flux_mJy'], src_dict[subdict][comp]['V_flux_mJy'], src_dict[subdict][comp]['P_flux_mJy']]
+            rms = [src_dict[subdict][comp]['I_rms_mJy'], src_dict[subdict][comp]['Q_rms_mJy'], src_dict[subdict][comp]['U_rms_mJy'], src_dict[subdict][comp]['V_rms_mJy'], src_dict[subdict][comp]['P_rms_mJy']]
+
+            src_dict[subdict][comp]['I_sys_mJy'] = calculate_sys_err(flux, rms, bpcal_sys, pacal_sys, stokes = 'I')
+            src_dict[subdict][comp]['Q_sys_mJy'] = calculate_sys_err(flux, rms, bpcal_sys, pacal_sys, stokes = 'Q')
+            src_dict[subdict][comp]['U_sys_mJy'] = calculate_sys_err(flux, rms, bpcal_sys, pacal_sys, stokes = 'U')
+            src_dict[subdict][comp]['V_sys_mJy'] = calculate_sys_err(flux, rms, bpcal_sys, pacal_sys, stokes = 'V')
             sys_Q = src_dict[subdict][comp]['Q_sys_mJy'] 
             sys_U = src_dict[subdict][comp]['U_sys_mJy'] 
             if type(sys_Q) is list:
@@ -391,8 +506,6 @@ def update_src_pol_dict(fname, MFS_dict):
     # Resave the dictionary
     with open(fname, 'w') as jfile:
         jfile.write(json.dumps(src_dict, indent=4, sort_keys=True))
-    
-   
 
 def get_primary_systematic(bpcal_name, bpcal_pos):
     '''
@@ -422,9 +535,9 @@ def get_primary_systematic(bpcal_name, bpcal_pos):
     flux_V = get_imstat_values(image_V, bpcal_pos, n_beams=1.0)[0]
 
     # Caculate systematic and return it
-    bpcal_systematic = (flux_Q ** 2 + flux_U ** 2 + flux_V ** 2) ** 0.5 / (flux_I)
+    bpcal_sys = (flux_Q ** 2 + flux_U ** 2 + flux_V ** 2) ** 0.5 / (flux_I)
 
-    return bpcal_systematic
+    return bpcal_sys
 
 def main():
 
@@ -437,15 +550,15 @@ def main():
 
     # Primary Calibrator
     msg(f'Fitting Primary Systematics')
-    bpcal_systematic = get_primary_systematic(bpcal_name, bpcal_pos)
+    bpcal_sys = get_primary_systematic(bpcal_name, bpcal_pos)
 
     # Polarization Calibrator
     msg(f'Fitting Polcal MFS image')
-    pacal_MFS_dict = get_polcal_polarization(pacal_name, pacal_pos, bpcal_systematic)
+    pacal_dict = get_polcal_polarization(pacal_name, pacal_pos, bpcal_sys)
 
     # Update all rmsynth.txt files to include systematic errors
     for f in glob.glob(cfg.RESULTS + '/*_rmsynth.txt'):
-        update_rmsynth_file(f, pacal_MFS_dict)
+        update_rmsynth_file(f, pacal_dict)
 
     # Update the source dictionary with the sysematic corrections
     rmsynth_info = np.genfromtxt(cfg.DATA + '/rmsynth/rmsynth_info.txt', skip_header = 2, dtype=str)
@@ -460,7 +573,7 @@ def main():
     # Add systematic errors to src dictionary
     for src_name, src_im_identifier in zip(src_names, src_im_identifiers):
         fname = glob.glob(cfg.RESULTS + f'/*{src_name}*{src_im_identifier}*_polarization.json')[0]
-        update_src_pol_dict(fname, pacal_MFS_dict)
+        update_src_pol_dict(fname, pacal_dict)
 
 
 if __name__ == "__main__":
