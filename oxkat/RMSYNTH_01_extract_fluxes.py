@@ -475,7 +475,7 @@ def extract_polarization_properties(src_name,  src_im_identifier, src_ra, src_de
                 chan_dict[comp]['P_rms_mJy'].append(chan_data[13][k])
                 chan_dict[comp]['LP_frac_err'].append(chan_data[14][k])
                 chan_dict[comp]['LP_EVPA_err'].append(chan_data[15][k])
-        except TypeError:
+        except:
             msg('Fitting Failed: Channel is likely flagged')
 
     # Attach the sub_directories to the large directory + save as JSON
