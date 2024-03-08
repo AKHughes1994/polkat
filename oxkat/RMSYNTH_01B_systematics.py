@@ -415,7 +415,7 @@ def get_polcal_polarization(pacal_name, pacal_pos, bpcal_sys):
             
             rmsynth_arr.append(chan_data[:7])
 
-        except TypeError:
+        except:
             msg('Fitting Failed: Channel is likely flagged')
  
     # Save the RMSynth file
