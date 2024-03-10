@@ -66,6 +66,7 @@ PYTHON3_PATTERN = 'polkat-0.0.2'
 CASA_PATTERN = 'polkat-0.0.2'
 QUARTICAL_PATTERN = 'polkat-0.0.2'
 WSCLEAN_PATTERN = 'polkat-0.0.2'
+SHADEMS_PATTERN = 'polkat-0.0.2'
 ALBUS_PATTERN = 'polkat-albus'
 TRICOLOUR_PATTERN = 'oxkat-0.41'
 

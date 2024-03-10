@@ -36,6 +36,8 @@ def main():
         if caltab not in exclude:
             gaintype = caltab.split('.')[-1]
             gaintype = ''.join([i for i in gaintype if not i.isdigit()])
+            if gaintype == 'Ga' or gaintype == 'Gp':
+                gaintype = 'G'
             htmlname = GAINPLOTS+'/'+caltab.split('/')[-1]+'.html'
             plotname = GAINPLOTS+'/'+caltab.split('/')[-1]+'.png'
             if not os.path.isfile(htmlname):

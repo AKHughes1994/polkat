@@ -50,6 +50,7 @@ def main():
 
     CASA_CONTAINER = gen.get_container(CONTAINER_PATH,cfg.CASA_PATTERN,USE_SINGULARITY)
     WSCLEAN_CONTAINER = gen.get_container(CONTAINER_PATH,cfg.WSCLEAN_PATTERN,USE_SINGULARITY)
+    SHADEMS_CONTAINER = gen.get_container(CONTAINER_PATH,cfg.SHADEMS_PATTERN,USE_SINGULARITY)
     PYTHON3_CONTAINER = gen.get_container(CONTAINER_PATH,cfg.PYTHON3_PATTERN,USE_SINGULARITY)
 
 
@@ -121,7 +122,27 @@ def main():
     syscall += gen.generate_syscall_casa(casascript=cfg.OXKAT+'/1GC_05_casa_refcal.py')
     step['syscall'] = syscall
     steps.append(step)
-    step_i = 5
+
+    step = {}
+    step['step'] = 5
+    step['comment'] = 'Plot the final gain tables'
+    step['dependency'] = 4
+    step['id'] = 'PLTAB'+code
+    syscall = CONTAINER_RUNNER+SHADEMS_CONTAINER+' ' if USE_SINGULARITY else ''
+    syscall += 'python3 '+cfg.OXKAT+'/1GC_06_plot_gaintables.py cal_1GC_*'
+    step['syscall'] = syscall
+    steps.append(step)
+
+    step = {}
+    step['step'] = 6
+    step['comment'] = 'Plot the corrected calibrator visibilities'
+    step['dependency'] = 4
+    step['id'] = 'PLVIS'+code
+    syscall = CONTAINER_RUNNER+SHADEMS_CONTAINER+' ' if USE_SINGULARITY else ''
+    syscall += 'python3 '+cfg.OXKAT+'/1GC_07_plot_visibilities.py'
+    step['syscall'] = syscall
+    steps.append(step)
+    step_i  = 7
     
     if cfg.CAL_1GC_DIAGNOSTICS:
 
@@ -180,29 +201,18 @@ def main():
             steps.append(step)
             step_i += 1
 
-    step = {}
-    step['step'] = step_i
-    step['comment'] = 'Make Linear Polarization Intensity Images'
-    step['dependency'] = step_i - 1
-    step['id'] = 'MKLPI'+code
-    step['slurm_config'] = cfg.SLURM_WSCLEAN
-    step['pbs_config'] = cfg.PBS_WSCLEAN
-    syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
-    syscall += f"python3 {cfg.TOOLS}/make_linpol_images.py"
-    step['syscall'] = syscall
-    steps.append(step)
-    step_i += 1
-   
-    #step = {}
-    #step['step'] = step_i
-    #step['comment'] = 'Plot the corrected calibrator visibilities'
-    #step['dependency'] = step_i-1
-    #step['id'] = 'PLVIS'+code
-    #syscall = CONTAINER_RUNNER+SHADEMS_CONTAINER+' ' if USE_SINGULARITY else ''
-    #syscall += 'python3 '+cfg.OXKAT+'/1GC_10_plot_visibilities.py'
-    #step['syscall'] = syscall
-    #steps.append(step)
-    #step_i += 1
+        step = {}
+        step['step'] = step_i
+        step['comment'] = 'Make Linear Polarization Intensity Images'
+        step['dependency'] = step_i - 1
+        step['id'] = 'MKLPI'+code
+        step['slurm_config'] = cfg.SLURM_WSCLEAN
+        step['pbs_config'] = cfg.PBS_WSCLEAN
+        syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
+        syscall += f"python3 {cfg.TOOLS}/make_linpol_images.py"
+        step['syscall'] = syscall
+        steps.append(step)
+        step_i += 1
 
     # ------------------------------------------------------------------------------
     #

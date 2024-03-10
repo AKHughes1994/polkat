@@ -27,7 +27,7 @@ def main():
     myms = project_info['working_ms']
     bpcal = project_info['primary_name']
     pcals = project_info['secondary_ids']
-    targets = project_info['target_ids'] 
+    #targets = project_info['target_ids'] 
     pacal = project_info['polang_name']
 
     if cfg.PRE_FIELDS != '':
@@ -37,10 +37,11 @@ def main():
     fields = [bpcal,pacal]
     for pcal in pcals:
         fields.append(pcal)
-    for target in targets:
-        fields.append(target)
+    #for target in targets:
+    #    fields.append(target)
 
     plots = ['--xaxis CORRECTED_DATA:real:XX,CORRECTED_DATA:real:YY --yaxis CORRECTED_DATA:imag:XX,CORRECTED_DATA:imag:YY',
+             '--xaxis CORRECTED_DATA:real:XY,CORRECTED_DATA:real:YX --yaxis CORRECTED_DATA:imag:XY,CORRECTED_DATA:imag:YX',
         '--xaxis FREQ,FREQ,FREQ,FREQ --yaxis CORRECTED_DATA:amp:XX,CORRECTED_DATA:amp:YY,CORRECTED_DATA:phase:XX,CORRECTED_DATA:phase:YY',
         '--xaxis BASELINE,BASELINE --yaxis CORRECTED_DATA:amp:XX,CORRECTED_DATA:amp:YY',
         '--xaxis FREQ,FREQ --yaxis CORRECTED_DATA:amp:YX,CORRECTED_DATA:amp:XY',
