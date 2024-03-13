@@ -211,7 +211,7 @@ applycal(vis=myms,
     interp = ['linear','linear','linear', 'linear', 'nearest'], flagbackup=False)
 
 
-# ------- Flag primary (aggresively) on CORRECTED_DATA - MODEL_DATA
+# ------- Flag primary on CORRECTED_DATA - MODEL_DATA
 
 flagdata(vis=myms,
     mode='rflag',
@@ -223,24 +223,6 @@ flagdata(vis=myms,
     mode='tfcrop',
     datacolumn='residual',
     field=bpcal_name,
-    flagbackup=False) 
-
-# --------- Second round with time averaging to get really bad frequency channels
-
-flagdata(vis=myms,
-    mode='rflag',
-    datacolumn='residual',
-    field=bpcal_name ,
-    timeavg=True, 
-    timebin='10000000s',
-    flagbackup=False) 
-
-flagdata(vis=myms,
-    mode='tfcrop',
-    datacolumn='residual',
-    field=bpcal_name ,
-    timeavg=True, 
-    timebin='10000000s',
     flagbackup=False) 
 
 flagmanager(vis=myms,
