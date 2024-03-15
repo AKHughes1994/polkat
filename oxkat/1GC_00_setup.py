@@ -242,7 +242,7 @@ def get_polang(master_ms,
             polang_name = field_name
             polang_id = field_id
 
-    return polang_dirs, polang_names, polang_ids
+    return polang_dir, polang_names, polang_ids
 
 
 def get_secondaries(master_ms,
