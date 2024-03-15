@@ -511,7 +511,7 @@ def main():
 
     if POLANG_NAME != '':
         polang_dir, polang_name, polang_id = get_polang(master_ms,
-                                                            unknown_state,
+                                                            POLANG_NAME,
                                                             field_dirs,
                                                             field_names,
                                                             field_ids)
