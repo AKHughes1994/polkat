@@ -247,9 +247,8 @@ elif BAND == 'L':
     CAL_1GC_0408_MODEL = ([17.066,0.0,0.0,0.0],[-1.179],'1284MHz')
 
     CAL_1GC_BAD_FREQS = ['*:850~900MHz',      # Lower band edge
-                        '*:1658~1800MHz',     # Upper bandpass edge
-                        '*:1419.8~1421.3MHz', # Galactic HI  
-                        '*:1620~1720MHz'] 
+                        '*:1650~1800MHz',     # Upper bandpass edge
+                        '*:1419.8~1421.3MHz'] # Galactic HI 
 
     CAL_1GC_BL_FLAG_UVRANGE = '<600'
     CAL_1GC_BL_FREQS = ['*:900MHz~915MHz',    # GSM and aviation
