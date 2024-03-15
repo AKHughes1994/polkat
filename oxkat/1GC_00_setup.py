@@ -521,7 +521,7 @@ def main():
     else:
         mylogger.info('No Polarization Angle Calibrator')
         polang_name = ''
-        poland_id   = ''
+        polang_id   = ''
 
     # ------------------------------------------------------------------------------
     #
