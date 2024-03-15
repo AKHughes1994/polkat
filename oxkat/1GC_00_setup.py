@@ -38,8 +38,8 @@ def get_dummy():
         'primary_name':'1934-638',
         'primary_id':'0',
         'primary_tag':'1934',
-        'polang_id':'3',
-        'polang_name':'J1331+3030',
+        'polang_id':'',
+        'polang_name':'',
         'secondary_names':['mysecondary'],
         'secondary_ids':['1'],
         'secondary_dirs':[(180.5,-56.0)],
@@ -226,33 +226,23 @@ def get_primary_candidates(master_ms,
     return candidate_dirs, candidate_names, candidate_ids
 
 def get_polang(master_ms,
-                unknown_state,
+                POLANG_NAME,
                 field_dirs,
                 field_names,
                 field_ids):
 
-    """ Automatically identify polang calibrator from master_ms (should be either J0521+1638 | 3C138 or J1331+3030 | 3C286) """
+    """ Find polarization angle calibrator from master_ms (needs to be manually specified) """
 
-    polang_ids = []
-    polang_names = []
-    polang_dirs = []
-
-    main_tab = table(master_ms,ack=False)
     for i in range(0,len(field_ids)):
         field_dir = field_dirs[i]
         field_name = field_names[i]
         field_id = field_ids[i]
-        sub_tab = main_tab.query(query='FIELD_ID=='+str(field_id))
-        states = numpy.unique(sub_tab.getcol('STATE_ID'))
-        for state in states:
-            if state == unknown_state:
-                polang_dirs.append(field_dir)
-                polang_names.append(field_name)
-                polang_ids.append(str(field_id))
-        sub_tab.close()
-    main_tab.close()
+        if field_name == POLANG_NAME:
+            polang_dir = field_dir
+            polang_name = field_name
+            polang_id = field_id
 
-    return polang_dirs[0], polang_names[0], polang_ids[0]
+    return polang_dirs, polang_names, polang_ids
 
 
 def get_secondaries(master_ms,
@@ -416,15 +406,14 @@ def main():
 
 
     PRE_NCHANS = cfg.PRE_NCHANS
+    POLANG_NAME = cfg.POLANG_NAME
     CAL_1GC_PRIMARY = cfg.CAL_1GC_PRIMARY
-    CAL_1GC_POLANG = cfg.CAL_1GC_POLANG
     CAL_1GC_SECONDARIES = cfg.CAL_1GC_SECONDARIES
     CAL_1GC_TARGETS = cfg.CAL_1GC_TARGETS
     CAL_1GC_REF_ANT = cfg.CAL_1GC_REF_ANT
     CAL_1GC_PRIMARY_INTENT = cfg.CAL_1GC_PRIMARY_INTENT
     CAL_1GC_SECONDARY_INTENT = cfg.CAL_1GC_SECONDARY_INTENT
     CAL_1GC_TARGET_INTENT = cfg.CAL_1GC_TARGET_INTENT
-    CAL_1GC_POLANG_INTENT = cfg.CAL_1GC_POLANG_INTENT
 
     working_ms = master_ms.replace('.ms','_'+str(PRE_NCHANS)+'ch.ms')
 
@@ -520,19 +509,19 @@ def main():
     #
     # POLANG CALIBRATORS
 
-    if CAL_1GC_SECONDARIES != 'auto':
-        polang_id = [str(x) for x in CAL_1GC_POLANG.split(',')]
-        polang_id = list(dict.fromkeys(polang_id)) # 
-        polang_name = [field_names[i] for i in polang_id]
-        polang_dir = [field_dirs[i] for i in polang_id]
-    else:
+    if POLANG_NAME != '':
         polang_dir, polang_name, polang_id = get_polang(master_ms,
                                                             unknown_state,
                                                             field_dirs,
                                                             field_names,
                                                             field_ids)
-    mylogger.info('Polarization Angle Calibrator:    '+str(polang_id)+': '+ polang_name)
-    mylogger.info('')
+        mylogger.info('Polarization Angle Calibrator:    '+str(polang_id)+': '+ polang_name)
+        mylogger.info('')
+
+    else:
+        mylogger.info('No Polarization Angle Calibrator')
+        polang_name = ''
+        poland_id   = ''
 
     # ------------------------------------------------------------------------------
     #

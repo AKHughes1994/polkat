@@ -190,13 +190,13 @@ PBS_EXTRALONG = {
 CAL_1GC_TARGET_INTENT = 'TARGET'     # (partial) string to match for target intents
 CAL_1GC_PRIMARY_INTENT = 'BANDPASS'  # (partial) string to match for primary intents
 CAL_1GC_SECONDARY_INTENT = 'PHASE'   # (partial) string to match for secondary intents
-CAL_1GC_POLANG_INTENT = 'UNKNOWN'    # (partial) string to match for secondary intents -- As of 2023 Oct 2 there is no intent for the polangle calibrator
 CAL_1GC_DIAGNOSTICS = True          #  Choose if you want to make diagnostic plots of the Leakage + Phase cal
-CAL_1GC_NEGATIVE_XF = False          #  Choose if you want to apply the negative to the V/U Xf solutions
 
 # Pre-processing, operations applied when master MS is split to working MS
 PRE_FIELDS = ''  # Comma-separated list of fields to select from raw MS
                                      # Names or IDs, do not mix, do not use spaces
+POLANG_NAME = ''         # Specify the name of the field you want to use as a Polarization angle calibrator
+                         # Must be in PRE_FIELDS if specified, if left blank will assume no polarization angle calibration
 SNAP_FIELDS = '' # Comma-separated list of field to run snapshot imaging on
 PRE_SCANS = ''                       # Comma-separated list of scans to select from raw MS
 PRE_NCHANS = 1024                    # Integer number of channels for working MS
@@ -211,7 +211,7 @@ CAL_1GC_REF_POOL = ['m000','m001','m002','m003','m004','m006']
 CAL_1GC_PRIMARY = 'auto'             # Primary calibrator field ID
 CAL_1GC_TARGETS = 'auto'             # Comma-separated target field IDs
 CAL_1GC_SECONDARIES = 'auto'         # Comma-separated secondary IDs
-CAL_1GC_POLANG = 'auto'         # Comma-separated secondary IDs
+
                                      # - Lists of equal length in targets and secondaries maps cals to targets
                                      # - A single ID in uses same secondary for all targets
                                      # - A length mismatch reverts to auto, so double check!
