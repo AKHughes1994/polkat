@@ -195,7 +195,7 @@ CAL_1GC_DIAGNOSTICS = True          #  Choose if you want to make diagnostic plo
 # Pre-processing, operations applied when master MS is split to working MS
 PRE_FIELDS = ''  # Comma-separated list of fields to select from raw MS
                                      # Names or IDs, do not mix, do not use spaces
-POLANG_NAME = ''         # Specify the name of the field you want to use as a Polarization angle calibrator
+POLANG_NAME = 'J1331+3030'         # Specify the name of the field you want to use as a Polarization angle calibrator
                          # Must be in PRE_FIELDS if specified, if left blank will assume no polarization angle calibration
 SNAP_FIELDS = '' # Comma-separated list of field to run snapshot imaging on
 PRE_SCANS = ''                       # Comma-separated list of scans to select from raw MS
