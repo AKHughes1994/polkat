@@ -146,17 +146,71 @@ def main():
     
     if cfg.CAL_1GC_DIAGNOSTICS:
 
-        for cal_name in [project_info['polang_name'], project_info['primary_name']]:
-            cal_index  = prefields_info['field_names'].index(cal_name)
+        bpcal_name  = project_info['primary_name']
+        bpcal_index = prefields_info['field_names'].index(bpcal_name)
+        name_ms = myms.replace('.ms', f'_{bpcal_name}.ms') # This makes the naming convention the same as oxkat
+        img_prefix  = f"{cfg.IMAGES}/img_{name_ms}_postXf"
 
-            name_ms = myms.replace('.ms', f'_{cal_name}.ms') # This makes the naming convention the same as oxkat
+        step = {}
+        step['step'] = step_i
+        step['comment'] = f'Image {bpcal_name} calibrator post-Xf to investigate systematic effects'
+        step['dependency'] = step_i - 1 
+        step['id'] = 'DIAGN' + (bpcal_name[-3:])
+        step['slurm_config'] = cfg.SLURM_WSCLEAN
+        step['pbs_config'] = cfg.PBS_WSCLEAN
+        absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
+        syscall = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
+        syscall += gen.generate_syscall_wsclean(mslist = [myms],
+            imgname = img_prefix,
+            datacol = 'CORRECTED_DATA',
+            field = bpcal_index,
+            weight=cfg.WSC_WEIGHT_CAL,
+            pol='I',
+            mask = False,
+            imsize = cfg.WSC_CAL_IMSIZE,
+            automask = 5.0,
+            autothreshold = 1.0,
+            localrms=True,
+            threshold = False,
+            nomodel  = True,
+            sourcelist = False,
+            absmem = absmem) + '\n\n'
+        syscall += CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
+        syscall += gen.generate_syscall_breizorro(restoredimage = f"{img_prefix}-MFS-image.fits", 
+                                                      outfile = f"{img_prefix}-MFS-image.mask.fits", thresh = 6.0)[0] + '\n\n'
+        syscall += CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
+        syscall += gen.generate_syscall_wsclean(mslist = [myms],
+            imgname = img_prefix,
+            datacol = 'CORRECTED_DATA',
+            field = bpcal_index,
+            weight=cfg.WSC_WEIGHT_CAL,
+            chanout = cfg.WSC_IQUV_CHANNELSOUT,
+            pol='IQUV',
+            joinpolarizations=True,
+            imsize = cfg.WSC_CAL_IMSIZE,
+            mask = img_prefix +'-MFS-image.mask.fits',
+            automask = 5.0,
+            autothreshold = 1.0,
+            localrms=False,
+            threshold = False,
+            nomodel  = True,
+            sourcelist = False,
+            absmem = absmem) + '\n\n'
+        step['syscall'] = syscall
+        steps.append(step)
+        step_i += 1
+
+        if cfg.POLANG_NAME != '':
+            pacal_name  = project_info['polang_name']
+            pacal_index = prefields_info['field_names'].index(pacal_name)
+            name_ms = myms.replace('.ms', f'_{pacal_name}.ms') # This makes the naming convention the same as oxkat
             img_prefix  = f"{cfg.IMAGES}/img_{name_ms}_postXf"
 
             step = {}
             step['step'] = step_i
-            step['comment'] = f'Image {cal_name} calibrator post-Xf to investigate systematic effects'
+            step['comment'] = f'Image {pacal_name} calibrator post-Xf to investigate systematic effects'
             step['dependency'] = step_i - 1 
-            step['id'] = 'DIAGN' + (cal_name[-3:])
+            step['id'] = 'DIAGN' + (pacal_name[-3:])
             step['slurm_config'] = cfg.SLURM_WSCLEAN
             step['pbs_config'] = cfg.PBS_WSCLEAN
             absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
@@ -164,7 +218,7 @@ def main():
             syscall += gen.generate_syscall_wsclean(mslist = [myms],
                 imgname = img_prefix,
                 datacol = 'CORRECTED_DATA',
-                field = cal_index,
+                field = pacal_index,
                 weight=cfg.WSC_WEIGHT_CAL,
                 pol='I',
                 mask = False,
@@ -178,12 +232,12 @@ def main():
                 absmem = absmem) + '\n\n'
             syscall += CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
             syscall += gen.generate_syscall_breizorro(restoredimage = f"{img_prefix}-MFS-image.fits", 
-                                                          outfile = f"{img_prefix}-MFS-image.mask.fits", thresh = 6.0)[0] + '\n\n'
+                                                      outfile = f"{img_prefix}-MFS-image.mask.fits", thresh = 6.0)[0] + '\n\n'
             syscall += CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
             syscall += gen.generate_syscall_wsclean(mslist = [myms],
                 imgname = img_prefix,
                 datacol = 'CORRECTED_DATA',
-                field = cal_index,
+                field = pacal_index,
                 weight=cfg.WSC_WEIGHT_CAL,
                 chanout = cfg.WSC_IQUV_CHANNELSOUT,
                 pol='IQUV',
@@ -200,6 +254,8 @@ def main():
             step['syscall'] = syscall
             steps.append(step)
             step_i += 1
+
+
 
         step = {}
         step['step'] = step_i
