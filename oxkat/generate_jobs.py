@@ -587,7 +587,7 @@ def generate_syscall_wsclean(mslist,
     if tapergaussian != '':
         syscall += '-taper-gaussian '+str(tapergaussian)+' '
     if mfweight:
-        syscal  += '-mf-weighting '
+        syscall  += '-mf-weighting '
     else:
         syscall += '-no-mf-weighting '
 
