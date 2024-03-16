@@ -34,7 +34,9 @@ def main():
         from oxkat import user_field_handler as ufh
         pcals   = ufh.user_pcals
         targets = ufh.user_targets
-    fields = [bpcal,pacal]
+    fields = [bpcal]
+    if pacal != '':
+        fields = [bpcal, pacal]
     for pcal in pcals:
         fields.append(pcal)
     #for target in targets:

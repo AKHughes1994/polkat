@@ -58,6 +58,16 @@ xftab  = GAINTABLES+'/cal_1GC_'+myms+'.Xf'
 
 # -------- Solve for the K Solutions using self-cal model
 
+
+if pacal_name != '':
+    gaintables = [bptab, ftab, dftab, kcross, xftab]
+    gainfields = [bpcal_name, related_pcal, bpcal_name, pacal_name, pacal_name]
+    interps = ['linear','linear', 'nearest','nearest','nearest']
+else:
+    gaintables = [bptab, ftab, dftab]
+    gainfields = [bpcal_name, related_pcal, bpcal_name]
+    interps = ['linear','linear', 'nearest']
+
 gaincal(vis=myms,
     field=field,
     #uvrange=myuvrange,
@@ -65,9 +75,9 @@ gaincal(vis=myms,
     refant = str(ref_ant),
     gaintype = 'K',
     solint = 'inf',
-    gaintable = [bptab, ftab, dftab, kcross, xftab],
-    gainfield = [bpcal_name, related_pcal, bpcal_name, pacal_name, pacal_name],
-    interp = ['linear','linear', 'nearest','nearest','nearest'])
+    gaintable = gaintables,
+    gainfield = gainfields,
+    interp = interps)
 
 # -------- Solve for the Gp Solutions using self-cal model
 
@@ -80,20 +90,18 @@ gaincal(vis=myms,
     solint=solint,
     minsnr=5,
     calmode='p',
-    gaintable = [ktab,bptab,ftab, dftab, kcross, xftab],
-    gainfield = [field, bpcal_name, related_pcal, bpcal_name, pacal_name, pacal_name],
-    interp = ['nearest','linear','linear', 'nearest','nearest','nearest'])
-
+    gaintable = gaintables + [ktab],
+    gainfield = gainfields + [field],
+    interp = interps + ['linear'])
 
 applycal(vis=myms,
     #applymode='calflagstrict',
     field=field,
     calwt=False,
     parang=True,
-    gaintable = [ktab,gptab,bptab,ftab, dftab, kcross, xftab],
-    gainfield = [field,field, bpcal_name, related_pcal, bpcal_name, pacal_name, pacal_name],
-    interp = ['nearest','nearest','linear','linear', 'nearest','nearest','nearest'],
-    flagbackup=False)
+    gaintable = gaintables + [ktab, gptab],
+    gainfield = gainfields + [field, field],
+    interp = interps + ['linear', 'linear'])
 
 # ----- Save final flags for selfcal iteration
 
