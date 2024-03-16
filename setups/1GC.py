@@ -259,13 +259,13 @@ def main():
 
         step = {}
         step['step'] = step_i
-        step['comment'] = 'Make Linear Polarization Intensity Images'
+        step['comment'] = 'Make Polarization Intensity Images'
         step['dependency'] = step_i - 1
         step['id'] = 'MKLPI'+code
         step['slurm_config'] = cfg.SLURM_WSCLEAN
         step['pbs_config'] = cfg.PBS_WSCLEAN
         syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
-        syscall += f"python3 {cfg.TOOLS}/make_linpol_images.py"
+        syscall += f"python3 {cfg.TOOLS}/make_pol_images.py"
         step['syscall'] = syscall
         steps.append(step)
         step_i += 1

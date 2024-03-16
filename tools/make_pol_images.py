@@ -41,18 +41,22 @@ def main():
         # Get the other image names
         image_U = image_Q.replace('-Q-', '-U-')
         image_V = image_Q.replace('-Q-', '-V-')
-        image_P = image_Q.replace('-Q-', '-P-')
+        image_Plin = image_Q.replace('-Q-', '-Plin-')
+        image_Ptot = image_Q.replace('-Q-', '-Ptot-')
 
         # Initialize the P image by duplicating the Q image
-        subprocess.run([f'cp {image_Q} {image_P}'], shell = True)
-        msg(f'Making image: {image_P.split(cfg.IMAGES)[-1]}')
+        subprocess.run([f'cp {image_Q} {image_Plin}'], shell = True)
+        subprocess.run([f'cp {image_Q} {image_Ptot}'], shell = True)
+        msg(f'Making image: {image_Plin.split(cfg.IMAGES)[-1]}')
 
-        # Run calculations and return P image
+        # Run calculations and return P images
         flux_Q = get_image(image_Q)
         flux_U = get_image(image_U)
         flux_V = get_image(image_V)
-        flux_P = (flux_Q ** 2 + flux_U ** 2 + flux_V ** 2) ** (0.5)
-        flush_fits(flux_P, image_P)
+        flux_Plin = (flux_Q ** 2 + flux_U ** 2 + flux_V ** 2) ** (0.5)
+        flux_Ptot = (flux_Q ** 2 + flux_U ** 2 + flux_V ** 2) ** (0.5)
+        flush_fits(flux_Plin, image_Plin)
+        flush_fits(flux_Ptot, image_Ptot)
   
 if __name__ == "__main__":
     main()
