@@ -198,6 +198,7 @@ PRE_FIELDS = ''  # Comma-separated list of fields to select from raw MS
 
 POLANG_NAME = 'J1331+3030'         # Specify the name of the field you want to use as a Polarization angle calibrator
 POLANG_DIR  = '13:31:08.2881,+30.30.32.959' # CASA Format
+POLANG_MOD  = [1.0, 0.0, 0.5, 0.0]
 UNIFORM_IMAGE = True
 
                          # Must be in PRE_FIELDS if specified, if left blank will assume no polarization angle calibration

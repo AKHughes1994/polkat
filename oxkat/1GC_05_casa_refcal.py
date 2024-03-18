@@ -105,7 +105,7 @@ if pacal_name != ''
     setjy(vis=myms,
         field=pacal_name,
         standard='manual',
-        fluxdensity = [1.0, 0.0, 0.5, 0.0],
+        fluxdensity = POLANG_MOD,
         usescratch=True)
 
 # --------------------------------------------------------------- #
