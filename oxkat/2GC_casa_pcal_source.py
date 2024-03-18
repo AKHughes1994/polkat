@@ -48,7 +48,7 @@ myspw = CAL_1GC_FREQRANGE
 
 tt = stamp()
 
-ktab = GAINTABLES+'/cal_1GC_'+myms+f'_{field}.K'
+ktab = GAINTABLES+'/cal_1GC_'+myms+'.K'
 gptab = GAINTABLES+'/cal_1GC_'+myms+f'_{field}.Gp'
 bptab = GAINTABLES+'/cal_1GC_'+myms+'.B'
 ftab = GAINTABLES+'/cal_1GC_'+myms+'.F'
@@ -56,52 +56,38 @@ dftab  = GAINTABLES+'/cal_1GC_'+myms+'.Df'
 kcross  = GAINTABLES+'/cal_1GC_'+myms+'.KCROSS'
 xftab  = GAINTABLES+'/cal_1GC_'+myms+'.Xf'
 
-# -------- Solve for the K Solutions using self-cal model
-
-
 if pacal_name != '':
-    gaintables = [bptab, ftab, dftab, kcross, xftab]
-    gainfields = [bpcal_name, related_pcal, bpcal_name, pacal_name, pacal_name]
-    interps = ['linear','linear', 'nearest','nearest','nearest']
+    gaintables = [ktab, bptab, ftab, dftab, kcross, xftab]
+    gainfields = [related_pcal, bpcal_name, related_pcal, bpcal_name, pacal_name, pacal_name]
+    interps = ['linear', 'linear','linear', 'nearest','nearest','nearest']
 else:
-    gaintables = [bptab, ftab, dftab]
-    gainfields = [bpcal_name, related_pcal, bpcal_name]
-    interps = ['linear','linear', 'nearest']
-
-gaincal(vis=myms,
-    field=field,
-    #uvrange=myuvrange,
-    caltable=ktab,
-    refant = str(ref_ant),
-    gaintype = 'K',
-    solint = 'inf',
-    gaintable = gaintables,
-    gainfield = gainfields,
-    interp = interps)
+    gaintables = [ktab, bptab, ftab, dftab]
+    gainfields = [related_pcal, bpcal_name, related_pcal, bpcal_name]
+    interps = ['linear', 'linear','linear', 'nearest']
 
 # -------- Solve for the Gp Solutions using self-cal model
 
 gaincal(vis=myms,
     field=field,
-    uvrange=myuvrange,
+   # uvrange=myuvrange,
     caltable=gptab,
     gaintype='G',
     refant = str(ref_ant),
     solint=solint,
-    minsnr=5,
+    minsnr=3,
     calmode='p',
-    gaintable = gaintables + [ktab],
-    gainfield = gainfields + [field],
-    interp = interps + ['linear'])
+    gaintable = gaintables,
+    gainfield = gainfields,
+    interp = interps)
 
 applycal(vis=myms,
     #applymode='calflagstrict',
     field=field,
 #    calwt=False,
     parang=True,
-    gaintable = gaintables + [ktab, gptab],
-    gainfield = gainfields + [field, field],
-    interp = interps + ['linear', 'linear'])
+    gaintable = gaintables + [gptab],
+    gainfield = gainfields + [field],
+    interp = interps + ['linear'])
 
 # ----- Save final flags for selfcal iteration
 

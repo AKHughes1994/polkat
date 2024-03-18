@@ -79,8 +79,10 @@ def main():
 
     for ulim in np.linspace(0.2,10,500):
             p0_arr = np.linspace(0,ulim,100000)
-            if trapz(F(pPeak/dp,p0_arr)/N(pPeak/dp),x = p0_arr) >= 0.9973:
+            frac = trapz(F(pPeak/dp,p0_arr)/N(pPeak/dp),x = p0_arr) * 100.0
+            if frac >= 99.73:
                 p0_ulim = ulim * dp
+                print(f'Fraction: {frac:.2f}')
                 break
 
     # Print Upper Limit in polarization fraction
