@@ -100,7 +100,7 @@ for i in range(0,len(pcals)):
         reffreq = '1000MHz',
         usescratch = True)
 
-if pacal_name != ''
+if pacal_name != '':
     # Initialize the Polarization Calibrator model to have 0.0 Stokes V and Non-zero Stokes U
     setjy(vis=myms,
         field=pacal_name,
