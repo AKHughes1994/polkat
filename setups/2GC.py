@@ -114,6 +114,7 @@ def main():
             img_prefix = IMAGES+f'/img_{name_ms}_datablind'
             data_img_prefix = IMAGES+f'/img_{name_ms}_datamask'
             pcal_img_prefix = IMAGES+f'/img_{name_ms}_pcalmask'
+            pcal_img_prefix = IMAGES+f'/img_{name_ms}_uniform'
 
             # Target-specific kill file
             kill_file = SCRIPTS+'/kill_2GC_jobs_'+filename_targetname+'.sh'
@@ -269,6 +270,44 @@ def main():
             step['syscall'] = syscall
             steps.append(step)
             step_i += 1
+
+            if UNIFORM_IMAGE:
+                step = {}
+                step['step'] = step_i
+                step['comment'] = 'Run high angular resolution, wsclean, masked deconvolution of the CORRECTED_DATA (self-calibrated) for {}'.format(targetname)
+                step['dependency'] = step_i - 1
+                step['id'] = 'WSCMA'+code
+                step['slurm_config'] = cfg.SLURM_WSCLEAN
+                step['pbs_config'] = cfg.PBS_WSCLEAN
+                absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
+                syscall = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
+                syscall += gen.generate_syscall_wsclean(mslist = [myms],
+                    imgname = uniform_img_prefix,
+                    datacol = 'CORRECTED_DATA',
+                    mask = img_prefix+'-MFS-image.mask.fits',
+                    chanout = cfg.WSC_IQUV_CHANNELSOUT,
+                    nomodel=True,
+                    field=targetindex,
+                    wieght='uniform',
+                    mfweight=True,
+                    pol='I',
+                    joinpolarizations=False,
+                    sourcelist = False,
+                    absmem = absmem)
+                step['syscall'] = syscall
+                steps.append(step)
+                step_i += 1
+
+                step = {}
+                step['step'] = step_i
+                step['comment'] = 'Apply primary beam correction to '+targetname+'(UNIFORM) image'
+                step['dependency'] = step_i - 1
+                step['id'] = 'PBPCL'+code
+                syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
+                syscall += 'python3 '+TOOLS+'/pbcor_katbeam.py --band '+band[0]+' '+uniform_img_prefix+'-MFS-image.fits'
+                step['syscall'] = syscall
+                steps.append(step)
+                step_i += 1
 
             step = {}
             step['step'] = step_i
