@@ -143,7 +143,7 @@ def main():
 
             step = {}
             step['step'] = step_i
-            step['comment'] = 'Blind wsclean on CORRECTED_DATA column of '+myms
+            step['comment'] = 'Shallow blind wsclean on CORRECTED_DATA column of '+myms
             step['dependency'] = step_i - 1
             step['id'] = 'WSDBL'+code
             step['slurm_config'] = cfg.SLURM_WSCLEAN
@@ -154,7 +154,9 @@ def main():
                         imgname = img_prefix,
                         datacol = 'CORRECTED_DATA',
                         nomodel = True,
-                        localrms = True,
+                        localrms = False,
+                        automask = 10.0,
+                        autothreshold = 3.0,
                         field=targetindex,
                         absmem = absmem)
             step['syscall'] = syscall
