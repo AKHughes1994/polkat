@@ -114,7 +114,7 @@ def main():
             img_prefix = IMAGES+f'/img_{name_ms}_datablind'
             data_img_prefix = IMAGES+f'/img_{name_ms}_datamask'
             pcal_img_prefix = IMAGES+f'/img_{name_ms}_pcalmask'
-            pcal_img_prefix = IMAGES+f'/img_{name_ms}_uniform'
+            uniform_img_prefix = IMAGES+f'/img_{name_ms}_uniform'
 
             # Target-specific kill file
             kill_file = SCRIPTS+'/kill_2GC_jobs_'+filename_targetname+'.sh'
@@ -271,7 +271,7 @@ def main():
             steps.append(step)
             step_i += 1
 
-            if UNIFORM_IMAGE:
+            if cfg.UNIFORM_IMAGE:
                 step = {}
                 step['step'] = step_i
                 step['comment'] = 'Run high angular resolution, wsclean, masked deconvolution of the CORRECTED_DATA (self-calibrated) for {}'.format(targetname)
@@ -288,7 +288,7 @@ def main():
                     chanout = cfg.WSC_IQUV_CHANNELSOUT,
                     nomodel=True,
                     field=targetindex,
-                    wieght='uniform',
+                    weight='uniform',
                     mfweight=True,
                     pol='I',
                     joinpolarizations=False,
