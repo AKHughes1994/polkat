@@ -46,7 +46,7 @@ def main():
     HEIGHT=1059.662443
 
     # Default Solution parmaters from ALBUS examples -- Advise against touching this
-    RED_TYPE = 'RI_G01'
+    RED_TYPE = cfg.RED_TYPE
     TIME_STEP = 300
     MAX_DIST = 750E3
     NUM_PROCESSORS = 8

@@ -104,28 +104,29 @@ def main():
         steps.append(step)
         step_i += 1      
 
-    step = {}
-    step['step'] = step_i
-    step['comment'] = 'Run RM Synthesis on all of the extracted IQUV curves'
-    step['dependency'] = step_i - 1
-    step['slurm_config'] = cfg.SLURM_RM
-    step['id'] = 'RMSYN'+code
-    syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
-    syscall += 'python3 '+cfg.OXKAT+'/RMSYNTH_02_run_rmsynth.py'
-    step['syscall'] = syscall
-    steps.append(step)
-    step_i += 1
+    if cfg.POLANG_NAME != '':
+        step = {}
+        step['step'] = step_i
+        step['comment'] = 'Run RM Synthesis on all of the extracted IQUV curves'
+        step['dependency'] = step_i - 1
+        step['slurm_config'] = cfg.SLURM_RM
+        step['id'] = 'RMSYN'+code
+        syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
+        syscall += 'python3 '+cfg.OXKAT+'/RMSYNTH_02_run_rmsynth.py'
+        step['syscall'] = syscall
+        steps.append(step)
+        step_i += 1
 
-    step = {}
-    step['step'] = step_i
-    step['comment'] = 'Run ALBUS on all of the Targets + Polarization Calibrators'
-    step['dependency'] = step_i - 1
-    step['slurm_config'] = cfg.SLURM_RM
-    step['id'] = 'ALBUS'+code
-    syscall = CONTAINER_RUNNER+ALBUS_CONTAINER+' ' if USE_SINGULARITY else ''
-    syscall += 'python3 '+cfg.OXKAT+'/RMSYNTH_03_run_ALBUS.py'
-    step['syscall'] = syscall
-    steps.append(step)
+        step = {}
+        step['step'] = step_i
+        step['comment'] = 'Run ALBUS on all of the Targets + Polarization Calibrators'
+        step['dependency'] = step_i - 1
+        step['slurm_config'] = cfg.SLURM_RM
+        step['id'] = 'ALBUS'+code
+        syscall = CONTAINER_RUNNER+ALBUS_CONTAINER+' ' if USE_SINGULARITY else ''
+        syscall += 'python3 '+cfg.OXKAT+'/RMSYNTH_03_run_ALBUS.py'
+        step['syscall'] = syscall
+        steps.append(step)
 
 
     # ------------------------------------------------------------------------------

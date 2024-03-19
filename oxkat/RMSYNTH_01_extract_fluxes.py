@@ -135,7 +135,7 @@ def make_estimate(fname, image, xpix, ypix, fix_var):
     
     return 0    
 
-def get_IQUVP_names(im_I):
+def get_IQUVP_names(im_I, pol_flag):
     '''
     Take in an image prefix and return the separated IQUVP images
     '''
@@ -143,7 +143,10 @@ def get_IQUVP_names(im_I):
     im_Q = im_I.replace('-I-', '-Q-')
     im_U = im_I.replace('-I-', '-U-')
     im_V = im_I.replace('-I-', '-V-')
-    im_P = im_I.replace('-I-', '-P-')
+    if pol_flag:
+        im_P = im_I.replace('-I-', '-Plin-') # This well measure linear polarization precisely (U^2 + Q^2) ** 0.5, with pol. ang.
+    else:
+        im_P = im_I.replace('-I-', '-Ptot-') # This will get polarization fraction from P = (V^2 +  no pol. ang.
 
     return [im_I, im_Q, im_U, im_V, im_P]
 
@@ -245,10 +248,17 @@ def initialize_MFS_dict(i_image, imf_I, imf_Q, imf_U, imf_V, imf_P):
         else:
             flux_P0 = flux_P
 
-        LP_frac     = flux_P0 / flux_I * 100.0
-        LP_frac_err = LP_frac * np.sqrt( (rms_I / flux_I) ** 2 + (rms_P / flux_P0) ** 2 )
-        LP_EVPA     = np.arctan2(flux_U, flux_Q) * 180.0 / np.pi * 0.5
-        LP_EVPA_err = 0.5 * np.sqrt(flux_U ** 2 * rms_Q **2  + flux_Q ** 2 * rms_U ** 2) / (flux_U ** 2  + flux_Q ** 2) * 180.0 / np.pi
+        if pol_flag:
+            LP_frac     = flux_P0 / flux_I * 100.0
+            LP_frac_err = LP_frac * np.sqrt( (rms_I / flux_I) ** 2 + (rms_P / flux_P0) ** 2 )
+            LP_EVPA     = np.arctan2(flux_U, flux_Q) * 180.0 / np.pi * 0.5
+            LP_EVPA_err = 0.5 * np.sqrt(flux_U ** 2 * rms_Q **2  + flux_Q ** 2 * rms_U ** 2) / (flux_U ** 2  + flux_Q ** 2) * 180.0 / np.pi
+   
+        else:
+            LP_frac     = None
+            LP_frac_err = None
+            LP_EVPA     = None
+            LP_EVPA_err = None
     
         # Append additional polarisation parameters
         MFS_dict[comp]['P0_flux_mJy'] = flux_P0
@@ -333,11 +343,18 @@ def fit_channel(i_image, xpix_I, ypix_I, xpix_Q, ypix_Q, xpix_U, ypix_U, xpix_P,
         else:
             flux_P0[k] = flux_P[k]
 
-    # Angle + Fraction calculations
-    LP_frac     = flux_P0 / flux_I * 100.0
-    LP_frac_err = LP_frac * np.sqrt( (rms_I / flux_I) ** 2 + (rms_P / flux_P0) ** 2 )
-    LP_EVPA     = np.arctan2(flux_U, flux_Q) * 180.0 / np.pi * 0.5
-    LP_EVPA_err = 0.5 * np.sqrt(flux_U ** 2 * rms_Q **2  + flux_Q ** 2 * rms_U ** 2) / (flux_U ** 2  + flux_Q ** 2) * 180.0 / np.pi
+    # Angle calculations
+    if pol_ang:
+        LP_frac     = flux_P0 / flux_I * 100.0
+        LP_frac_err = LP_frac * np.sqrt( (rms_I / flux_I) ** 2 + (rms_P / flux_P0) ** 2 )
+        LP_EVPA     = np.arctan2(flux_U, flux_Q) * 180.0 / np.pi * 0.5
+        LP_EVPA_err = 0.5 * np.sqrt(flux_U ** 2 * rms_Q **2  + flux_Q ** 2 * rms_U ** 2) / (flux_U ** 2  + flux_Q ** 2) * 180.0 / np.pi
+
+    else:
+        LP_frac     = [None] * len(comps)
+        LP_frac_err = [None] * len(comps)
+        LP_EVPA     = [None] * len(comps)
+        LP_EVPA_err = [None] * len(comps)
     
     return [freq, flux_I, flux_Q, flux_U, flux_V, flux_P, flux_P0, LP_frac, LP_EVPA, rms_I, rms_Q, rms_U, rms_V, rms_P, LP_frac_err, LP_EVPA_err]
 
@@ -361,7 +378,7 @@ def make_rmsynth_files(src_header, chan_dict):
         np.savetxt(cfg.RESULTS + f'/{src_header}_{comp}_rmsynth.txt', np.array([freq, I, Q, U, dI, dQ, dU]).T)    
 
 
-def extract_polarization_properties(src_name,  src_im_identifier, src_ra, src_dec):
+def extract_polarization_properties(src_name,  src_im_identifier, src_ra, src_dec, pol_flag):
 
     '''
     Fit the Stokes IQUV cube for all components in an image. This assumes
@@ -371,9 +388,10 @@ def extract_polarization_properties(src_name,  src_im_identifier, src_ra, src_de
 
     input parameters:
         src_name       = name of source 
-        src_im_prefix = identifier for IQUV images that will have there fluxes extracted
-        src_ra    = Estimated right acension of source(s) pixel units
-        src_dec = Estimated declination of  source(s) pixel units
+        src_im_prefix  = identifier for IQUV images that will have there fluxes extracted
+        src_ra   = Estimated right acension of source(s) pixel units
+        src_dec  = Estimated declination of  source(s) pixel units
+        pol_flag = 
 
     Output parametres:
         flux_dict = Compehensive Dictionary containing all MFS and per-channel information for the IQUV fluxes
@@ -389,7 +407,7 @@ def extract_polarization_properties(src_name,  src_im_identifier, src_ra, src_de
     msg(f'Fitting Image MFS images')
     
     # Begin by getting the properties of the MFS images
-    IQUVP_names = get_IQUVP_names(glob.glob(f'{src_im_prefix}-MFS-I-*image.fits')[0])
+    IQUVP_names = get_IQUVP_names(glob.glob(f'{src_im_prefix}-MFS-I-*image.fits')[0], pol_flag)
     freqMFS_GHz = imhead(IQUVP_names[0], mode='get', hdkey = 'CRVAL3')['value'] / 1.0e9
     date_obs  =  imhead(IQUVP_names[0], mode='get', hdkey = 'DATE-OBS').replace('/','-',2).replace('/','T')
 
@@ -438,7 +456,6 @@ def extract_polarization_properties(src_name,  src_im_identifier, src_ra, src_de
 
     # Append the MFS imge parameters
     MFS_dict['freqMFS_GHz'] = freqMFS_GHz
-    MFS_dict['date_isot']   = date_obs
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
     # Now iterate through channelized images to get the frequecny evolution  #
@@ -479,6 +496,8 @@ def extract_polarization_properties(src_name,  src_im_identifier, src_ra, src_de
             msg('Fitting Failed: Channel is likely flagged')
 
     # Attach the sub_directories to the large directory + save as JSON
+    flux_dict['date_isot']   = date_obs
+    flux_dict['full_pol_cal'] = polang_flag
     flux_dict['MFS']  = MFS_dict
     flux_dict['CHAN'] = chan_dict
 
@@ -486,7 +505,8 @@ def extract_polarization_properties(src_name,  src_im_identifier, src_ra, src_de
         jfile.write(json.dumps(flux_dict, indent=4, sort_keys=True))
 
     # Make RM synthesis text files
-    make_rmsynth_files(src_header, chan_dict)
+    if pol_flag:
+        make_rmsynth_files(src_header, chan_dict)
 
     return 0
 
@@ -494,6 +514,10 @@ def main():
     
     # Load in the rmsynthesis data
     rmsynth_info = np.genfromtxt(cfg.DATA + '/rmsynth/rmsynth_info.txt', skip_header = 2, dtype=str)
+
+    # Check to see if there is a Polarization angle calibrator
+    if cfg.POLANG_NAME != '':
+        pol_flag = True
 
     # If this is a 1-D array convert to two 2-D
     rmsynth_info = np.atleast_2d(rmsynth_info)
@@ -504,7 +528,7 @@ def main():
     for src_name, src_im_identifier, src_ra, src_dec in zip(src_names, src_im_identifiers, src_ras, src_decs):
         print('\n')
         msg(f'Starting Analysis of {src_name}')
-        extract_polarization_properties(src_name, src_im_identifier, src_ra, src_dec)
+        extract_polarization_properties(src_name, src_im_identifier, src_ra, src_dec, pol_flag)
 
 if __name__  == "__main__":
     main()

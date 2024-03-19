@@ -635,3 +635,12 @@ CLUSTERCAT_NCPU = 8
 
 BEAM_L = HOME+'/Beams/meerkat_pb_jones_cube_95channels_$(xy)_$(reim).fits'
 
+
+# ------------------------------------------------------------------------
+#
+# ALBUS GPS Data extraction method
+#
+
+
+RED_TYPE = 'RI_G01'
+#RED_TYPE = 'RI_G03'
