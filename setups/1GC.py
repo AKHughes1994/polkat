@@ -76,8 +76,6 @@ def main():
     step['comment'] = 'Swap H and V polarization labels'
     step['dependency'] = None
     step['id'] = 'SWPHV'+code
-    step['slurm_config'] = cfg.SLURM_EXTRALONG
-    step['pbs_config'] = cfg.PBS_EXTRALONG
     syscall = CONTAINER_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
     syscall += f"python3 {cfg.OXKAT}/1GC_01_correct_parang.py"
     step['syscall'] = syscall
