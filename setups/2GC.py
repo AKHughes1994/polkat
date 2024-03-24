@@ -276,7 +276,7 @@ def main():
                 step['step'] = step_i
                 step['comment'] = 'Run high angular resolution, wsclean, masked deconvolution of the CORRECTED_DATA (self-calibrated) for {}'.format(targetname)
                 step['dependency'] = step_i - 1
-                step['id'] = 'WSCMA'+code
+                step['id'] = 'WSUNI'+code
                 step['slurm_config'] = cfg.SLURM_WSCLEAN
                 step['pbs_config'] = cfg.PBS_WSCLEAN
                 absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
