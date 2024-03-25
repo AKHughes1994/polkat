@@ -253,7 +253,7 @@ def initialize_MFS_dict(i_image, imf_I, imf_Q, imf_U, imf_V, imf_P, pol_flag):
         rms_P = MFS_dict[comp]['P_rms_mJy']
         # Calculate the other Polarisation parameters -- Following George et al. 2012: arXiv:1106.5362
         if flux_P > 4.0 * rms_P:
-            flux_P0 = np.sqrt(flux_P ** 2  - 2.3 * rms_P ** 2)
+            flux_P0 = np.sqrt(flux_P ** 2  - rms_P ** 2)
         else:
             flux_P0 = flux_P
 
@@ -349,7 +349,7 @@ def fit_channel(i_image, xpix_I, ypix_I, xpix_Q, ypix_Q, xpix_U, ypix_U, xpix_P,
 
         # Bias corrected flux
         if flux_P[k] > 4.0 * rms_P[k]:
-            flux_P0[k] = np.sqrt(flux_P[k] ** 2  - 2.3 * rms_P[k] ** 2)
+            flux_P0[k] = np.sqrt(flux_P[k] ** 2  - rms_P[k] ** 2)
         else:
             flux_P0[k] = flux_P[k]
 
