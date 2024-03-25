@@ -165,7 +165,7 @@ def fit_channel(i_chan_image, pix_I, pix_Q, pix_U, pix_P, pos):
 
     # Calculate the additional Linear Polarization parameters
     if flux_P > 4.0 * rms_P:
-        flux_P0 = (flux_P ** 2 - 2.3 * rms_P ** 2) ** 0.5
+        flux_P0 = (flux_P ** 2 - rms_P ** 2) ** 0.5
     else:
         flux_P0 = flux_P 
 
@@ -323,7 +323,7 @@ def get_polcal_polarization(pacal_name, pacal_pos, bpcal_sys):
     sys_P = 0.5 * (sys_Q + sys_U)
 
     # Calculate other parameters
-    flux_P0 = np.sqrt(flux_P ** 2 - 2.3 * rms_P ** 2)
+    flux_P0 = np.sqrt(flux_P ** 2 - rms_P ** 2)
    
     LP_frac     = flux_P0 / flux_I * 100.0
     LP_frac_err = LP_frac * np.sqrt( (rms_I / flux_I) ** 2 + (rms_P / flux_P0) ** 2)
