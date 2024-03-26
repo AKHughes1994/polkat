@@ -8,7 +8,7 @@ This modified version of the semi-automated routine [oxkat](https://github.com/I
 ---
 ##### Change of workflow
 
-* 'INFO' -- 
+* `INFO` -- 
 
 * There are a lot of similarities between the two containers; however, `polkat-0.0.1.sif` now uses [`casa`](https://casa.nrao.edu/) version 6.x., and I have the intention of (eventually) converting all of the [`cubical`](https://github.com/ratt-ru/CubiCal) scripts to use the updates [`quartical`](https://github.com/ratt-ru/CubiCal) package. 
 
