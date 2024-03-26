@@ -26,102 +26,89 @@ This modified version of the semi-automated routine [oxkat](https://github.com/I
 
 
 ---
-##### The New Setups
+##### Standard Workflow
 
-There are two new setups:
+If you are working on IDIA/ILIFU, here would be a standard workflow from start to finish:
 
-###### SNAP
+###### INFO
 
-This routine added the Heywood snapshot imaging routine to the general workflow. After 2GC you can run:
+Get ms info, and average channels (to 1024 by default)
+
+   ```
+   $ python setups/INFO.py idia
+   $ ./submit_info_job.sh
+   ```
+
+###### 1GC
+
+After INFO is complete, you can perform reference 1GC calibration using calibrator fields.
+
+   ```
+   $ python setups/1GC.py idia
+   $ ./submit_1GC_job.sh
+   ```
+
+please inspect the visibility/gain solutions as polarization can be finicky
+
+###### 2GC
+
+After 1GC is complete, perform final flagging, imaging, and direction-independent phase self-calibration
+
+   ```
+   $ python setups/2GC.py idia
+   $ ./submit_2GC_job.sh
+   ```
+
+At this point, you should have all the imaging data products. Here, if you want to run snapshot imaging on a field and have set the `SNAP_FIELDS` parameter in `config.py` you can run, 
+
    ```
    $ python setups/SNAP.py idia
    $ ./submit_snap_job.sh
    ```
-By default, the routine will make snapshot images of all Targets in the MS file. However, you can modify the `SNAP_FIELDS` variable inside of `config.py` if you want to specify the sources for snapshot imaging (e.g., want to snapshot image a calibrator as a check source)
 
 ###### RMSYNTH
 
-This semi-automated routine should fit/extract the properties of an arbitrary number of Gaussian components for your IQUV imaging cube(s).
+This is a new setup that will fit the full Stokes I, Q, U, and V images, before running it open the images with the 'Plin' or 'Ptot' identifiers and see if there is a polarization detection.  If there is you can run:
+
    ```
    $ python setups/RMSYNTH.py idia
    $ ./submit_rmsynth_job.sh
    ```
-The only thing that needs to be modified is the file `data/rmsynth/rmsynth_info.txt` below is an example file:
+
+What this will do is: 
+
+   * Fit the source with an arbitrary number of Gaussians using the `casa` task `imfit`
+   * If `CAL_1GC_DIAGNOSTICS = True` (which it should be) it will quantify the systematic calibration effects through image plane analysis of the calibrators
+   * Run RM Synthesis on every source/component extracting polarisation angles/rotation measures
+   * Run ALBUS to get ionospheric RM for post-processing corrections. This randomly fails sometimes you can (i) run it again; (ii) Change `RED_TYPE = RI_G03` to `RED_TYPE = RI_G01`, the former will fail if only one GPS station is operational
+
+The only thing that needs to be modified is the file `data/rmsynth/rmsynth_info.txt`. Below is an example file:
 
 ```
 # Text file containing information to feed into the RMSYNTH_01_extract_fluxes.py routine columns are:
-# Field name, image identifier (for IQUV cube, e.g., "pcalmask"), ra, dec (pixels) seperated by spaces (can include multiple RA/DEC for one image)
+# Field name, image identifier (for IQUV cube, e.g., "pcalmask"), ra, dec (pixels) separated by spaces (can include multiple RA/DEC for one image)
 Field1 pcalmask 17:27:43.3346781657,17:27:43.3378907659 -16.12.19.5120108691,-16.12.26.3558690263
 Field2 datamask 18:00:00 -17:00:00
 ```
-
 Ignoring the preamble, the code will look for the four columns to get the necessary information for fitting:
   1. The first column is the field name (as seen in the ms file)
   2. The second column is the image identifier; if you want to fit the self-called images, use 'pcalmask'
-  3. The third/fourth column is the RA/Dec guess(es) in the standard CASA format (note the period separators for declination). These can be single-coordinates or comma-separated lists for multi-component fitting (e.g., if you have core + jet ejecta)
+  3. The third/fourth column is the RA/Dec guess(es) in the standard CASA format (note the period separators for declination). These can be single-coordinates or comma-separated lists for multi-component fitting (e.g. if you have core + jet ejecta)
 
 For this example, you will fit the Field1 self-calibrated image with a two-component fit, and the Field2 masked image (no self-cal) with a one-component fit.
 
-The RMSYNTH step will also measure the polarization systematics using the calibrators, measure RM/pol angle using RM Synthesis, and get estimates of the ionospheric RM contributions using ALBUS! I will go into detail about the fitting approaches soon!
-
 ---
-##### Example run
 
-## Quick start
+##### ThunderKAT (No Polarization Angle Calibration)
 
-1. Navigate to a working area / scratch space:
+polkat will work without a polarization angle calibrator. As long as the primary if unpolarized leakage calibration will be sufficient to measure the total polarization, you will not be able to distinguish between circular and linearly polarized emission. However, given that XRBs are synchrotron sources, the VAST majority will be circularly unpolarized, and thus, the total polarization is a good measure of linear polarization in the absence of a polarization calibrator. 
 
-   ```
-   $ cd /scratch/users/emperor-zerg/
-   ```
-
-2. Clone the root contents of this repo into it:
-
-   ```
-   $ git clone -b master https://github.com/AKHughes1994/polkat.git .
-   ```
-
-3. Make a symlink to your MeerKAT Measurement Set (or place it in the working folder, it will not be modified at all):
-
-   ```
-   $ ln -s /idia/raw/xkat/SCI-20230907-RF-01/1708829174/1708829174_sdp_l0.ms .
-   ```
-
-4. The first step is to run a script that gathers some required information about the observation:
-
-   ```
-   $ python setups/0_GET_INFO.py idia
-   $ ./submit_info_job.sh
-   ```
-
-5. Once this is complete, you can generate and submit the jobs required for the reference calibration (1GC):
-
-   ```
-   $ python setups/1GC.py idia
-   $ ./submit_1GC_jobs.sh
-   ```
-
-6. Once this is complete, you can generate and submit the jobs required for the target imaging and self-calibration (2GC):
-
-   ```
-   $ python setups/2GC.py idia
-   $ ./submit_2GC_jobs.sh
-   ```
-
-6. If something goes wrong, you can kill the running and queued jobs on a cluster with, e.g.,:
-
-   ```
-   $ source SCRIPTS/kill_1GC_jobs.sh
-   ```
-
-7. Once all the jobs have been completed, you can examine the products and move on to the setup for the next steps, namely RMSYNTH and SNAP for data analysis.
-
-Please see the [setups README](setups/README.md) for more details about the general workflow. Most settings can be tuned via the [`config.py`](oxkat/config.py) file.
+Leave `POLANG_NAME = ''`, RMSYNTH will skip the RM Synthesis steps, and only quantify the systematics using the leakage calibrator
 
 ---
 ##### To-Do List
 
-1. Figure out if there is a significant difference between the `-mf-weighting` and `-no-mf-weighting` channelized images
-1. Investigate full self-calibration polarisation routines.
+1. Investigate systematic offset of 3C286 properties vs. expectation
+2. Investigate full self-calibration polarisation routines
 3. Add peeling capabilities
 
