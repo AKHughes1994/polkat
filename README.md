@@ -6,9 +6,13 @@ This modified version of the semi-automated routine [oxkat](https://github.com/I
 
 
 ---
-##### Change of workflow
+##### Change of workflow when compared to Oxkat
 
-* `INFO` -- 
+* INFO - The ms file is averaged in this step; creates a `json` dictionary called "pre_fields" that contains index-to-name mapping
+* 1GC  - Calibration now included leakage and cross-hand phase calibration
+* 2GC  - FLAG and 2GC have been combined into a single setup; all imaging/masking/self-cal is now in 2GC
+
+    
 
 * There are a lot of similarities between the two containers; however, `polkat-0.0.1.sif` now uses [`casa`](https://casa.nrao.edu/) version 6.x., and I have the intention of (eventually) converting all of the [`cubical`](https://github.com/ratt-ru/CubiCal) scripts to use the updates [`quartical`](https://github.com/ratt-ru/CubiCal) package. 
 
