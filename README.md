@@ -2,13 +2,13 @@
 
 ### What is this?
 
-This is a modified version of the semi-automated routine [oxkat](https://github.com/IanHeywood/oxkat) designed to make polarization calibration as hands-off as possible. I direct the reader to the original oxkat documentation for a more detailed pipeline description. Here, I will highlight some key differences.
+This modified version of the semi-automated routine [oxkat](https://github.com/IanHeywood/oxkat) includes polarisation calibration and imaging. This assumes you are familiar with the oxkat workflow:
 
 
 ---
-##### Overarching Changes
+##### Change of workflow
 
-* This uses a mix of containers, namely `oxkat-0.41.sif`, `polkat-0.0.2.sif`, `polkat-albus.sif`. These are all contained on the idia cluster (`/idia/software/containers`), and, as a result, if you want to use polkat on other clusters (or locally) you have to download the container and put it in the appropriate directories.
+* 'INFO' -- 
 
 * There are a lot of similarities between the two containers; however, `polkat-0.0.1.sif` now uses [`casa`](https://casa.nrao.edu/) version 6.x., and I have the intention of (eventually) converting all of the [`cubical`](https://github.com/ratt-ru/CubiCal) scripts to use the updates [`quartical`](https://github.com/ratt-ru/CubiCal) package. 
 
