@@ -642,5 +642,5 @@ BEAM_L = HOME+'/Beams/meerkat_pb_jones_cube_95channels_$(xy)_$(reim).fits'
 #
 
 
-RED_TYPE = 'RI_G01'
-#RED_TYPE = 'RI_G03'
+#RED_TYPE = 'RI_G01'
+RED_TYPE = 'RI_G03'
