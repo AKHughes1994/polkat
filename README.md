@@ -13,11 +13,16 @@ This modified version of the semi-automated routine [oxkat](https://github.com/I
 * 2GC  — FLAG and 2GC have been combined into a single setup; all imaging/masking/self-cal is now in 2GC
 
 ---
-##### Changes to `config.py`, new parameters
+##### Changes to `config.py` — new parameters
 
-* POLANG_NAME = 'J1331+3030' — This is the source's name to be used as a polarization angle calibrator. The default is J1331+3030 (3C286). If blank, the routine will skip the polarization angle calibration. 
-* `POLANG_DIR  = '13:31:08.2881,+30.30.32.959'` — Coordinates of polarization angle calibrator
-
+* `POLANG_NAME = 'J1331+3030'` — This is the source's name to be used as a polarization angle calibrator. The default is J1331+3030 (3C286). If blank, the routine will skip the polarization angle calibration. 
+* `POLANG_DIR  = '13:31:08.2881,+30.30.32.959'` — Coordinates of polarization angle calibrator. The default is J1331+3030 (3C286) coorindates
+* `PRE_FIELDS = ''` — If this is not blank (''), must contain `POLANG_NAME`
+* `POLANG_MOD = [1.0, 0.0, 0.5, 0.0]` — an array to initialize a (quasi-)arbitrary polarization model. The default works for 3C286.
+* `UNIFORM_IMAGE = True` — Flag to make an additional uniform weighted image. Useful if you want high angular resolution for ejecta and high sensitivity for polarisation. Images are made by default.
+* `SNAP_FIELDS = ''` — Name of field(s) to perform Heywood snapshot imaging routine.
+* `RED_TYPE = RI_G03` — Type of GPS fitting when determining ionospheric RM using [ALBUS](https://github.com/twillis449/ALBUS_ionosphere/blob/master/python_scripts/MS_Iono_functions.py).
+*  `CAL_1GC_DIAGNOSTICS = True` — Flag to determine if you will image/fit leakage and polarisation angle calibrator to quantify systematics. Just leave this turned on. 
 
 
 ---
