@@ -477,7 +477,7 @@ def extract_polarization_properties(src_name,  src_im_identifier, src_ra, src_de
                                             'I_rms_mJy': [], 'Q_rms_mJy': [], 'U_rms_mJy': [],  'V_rms_mJy': [], 'P_rms_mJy': [], 'LP_frac_err': [], 'LP_EVPA_err':[]}
     
     # Iterate through the channelized images    
-    i_chan_images = sorted(glob.glob(f'{src_im_prefix}-00*-I-image.fits'))
+    i_chan_images = sorted(glob.glob(f'{src_im_prefix}-[!MFS]*-I-image.fits'))
     for i_chan_image in i_chan_images[:]:
         try: 
             msg(f'Fitting Image: {i_chan_image.split("IMAGES/")[-1]}')
