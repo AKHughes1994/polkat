@@ -389,7 +389,7 @@ def get_polcal_polarization(pacal_name, pacal_pos, bpcal_sys):
 
     # Iterate through channelized images extracting fluxes to make RM Synthesis files
     rmsynth_arr = []
-    for i_chan_image in sorted(glob.glob(cfg.IMAGES + f'/*{pacal_name}*postXf-00*-I-image.fits')):
+    for i_chan_image in sorted(glob.glob(cfg.IMAGES + f'/*{pacal_name}*postXf-[!MFS]*-I-image.fits')):
         try:                
             msg(f'Fitting Image: {i_chan_image.split("IMAGES/")[-1]}')
             # Measured Errors + values
