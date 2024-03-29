@@ -26,8 +26,8 @@ def calculate_P0(flux_P, rms_Q, rms_U, Aq = 0.8):
 
     rms_P = (A * rms_Q ** 2 + B * rms_U ** 2) ** 0.5 
 
-    # De-bias if SNR >= 4, following Vaillancourt 2006. https://arxiv.org/abs/astro-ph/0603110
-    if flux_P / rms_P >= 4:
+    # De-bias if SNR >= 3, following Vaillancourt 2006. https://arxiv.org/abs/astro-ph/0603110
+    if flux_P / rms_P >= 3:
         flux_P0 = (flux_P ** 2 - rms_P ** 2) ** (0.5)
 
     else:
