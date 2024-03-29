@@ -341,7 +341,7 @@ def get_polcal_polarization(pacal_name, pacal_pos, bpcal_sys):
     sys_Q = calculate_sys_err(flux, rms, systematics, stokes = 'Q')
     sys_U = calculate_sys_err(flux, rms, systematics, stokes = 'U')
     sys_V = calculate_sys_err(flux, rms, systematics, stokes = 'V')
-    sys_P = 0.5 * (sys_Q + sys_U)
+    _, sys_P = calculate_P0(flux_P, sys_Q, sys_U, Aq = 0.8)
 
     # Calculate other parameters
     LP_frac     = flux_P0 / flux_I * 100.0
@@ -507,7 +507,7 @@ def calc_sys_P(dQ, dU, Aq=0.8):
         B = Aq
         A = 1. - Aq 
 
-    dP = (A * rms_Q ** 2 + B * rms_U ** 2) ** 0.5     
+    dP = (A * dQ ** 2 + B * dU ** 2) ** 0.5     
 
     return dP
 

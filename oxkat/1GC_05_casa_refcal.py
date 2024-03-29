@@ -680,21 +680,22 @@ fluxscale(vis=myms,
 # ------------------------------------------------------------------------------ #
 # ------------------------------------------------------------------------------ #
 
+# ------- BPCAL
+
+applycal(vis = myms,
+    gaintable = [ktab,gptab,bptab,ftab,dftab],
+ #  sapplymode='calflagstrict',
+    field = bpcal_name,
+    #calwt = False,
+    parang = True,
+    gainfield = [bpcal_name,bpcal_name, bpcal_name, bpcal_name, bpcal_name],
+    interp = ['linear','linear','linear','linear','nearest'],
+    flagbackup=False)
+
+
 # ----- If no polarization angle calibrator apply subset of tables and kill script
 
 if pacal_name == '':   
-
-    # ------- BPCAL
-
-    applycal(vis = myms,
-        gaintable = [ktab,gptab,bptab,ftab,dftab],
- #       applymode='calflagstrict',
-        field = bpcal_name,
-        #calwt = False,
-        parang = True,
-        gainfield = [bpcal_name,bpcal_name, bpcal_name, bpcal_name, bpcal_name],
-        interp = ['linear','linear','linear','linear','nearest'],
-        flagbackup=False)
 
     # ------- Secondaries 
 
@@ -752,18 +753,6 @@ if pacal_name == '':
     sys.exit('Ending Early! No polarization angle calibrator')
 
 # -------- Full polarization 
-
-# ------- BPCAL
-
-applycal(vis = myms,
-        gaintable = [ktab,gptab,bptab,ftab,dftab, kcross, xftab],
- #       applymode='calflagstrict',
-        field = bpcal_name,
-        #calwt = False,
-        parang = True,
-        gainfield = [bpcal_name,bpcal_name, bpcal_name, bpcal_name, bpcal_name, pacal_name, pacal_name],
-        interp = ['linear','linear','linear','linear','nearest','nearest', 'nearest'],
-        flagbackup=False)
 
 # ------- PACAL
 

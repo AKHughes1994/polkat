@@ -20,14 +20,14 @@ input_model:
   beam_m_axis: Y
   invert_uvw: true
   source_chunks: 500
-  apply_p_jones: false
+  apply_p_jones: true
 output:
   log_to_terminal: true
   overwrite: true
   products: [corrected_data]
   columns: [CORRECTED_DATA]
   flags: true
-  apply_p_jones_inv: false
+  apply_p_jones_inv: true
   net_gains:
   compute_baseline_corrections: false
   apply_baseline_corrections: false
