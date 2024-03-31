@@ -64,14 +64,15 @@ flagmanager(vis=myms,
 # ------- Set calibrator models
 
 if primary_tag == '1934':
-    #setjy(vis=myms,
-    #   field=bpcal_name,
-    #  standard='Stevens-Reynolds 2016',
-    # scalebychan=True,
-    #usescratch=True)
-
-    syscall = f"crystalball {myms} -f {bpcal_name} -sm {DATA}/crystalball/fitted.PKS1934.LBand.wsclean.cat.txt"
-    subprocess.run([syscall],shell=True)
+    if band != 'L':
+        setjy(vis=myms,
+            field=bpcal_name,
+            standard='Stevens-Reynolds 2016',
+            scalebychan=True,
+            usescratch=True)
+    else:
+        syscall = f"crystalball {myms} -f {bpcal_name} -sm {DATA}/crystalball/fitted.PKS1934.LBand.wsclean.cat.txt"
+        subprocess.run([syscall],shell=True)
     
 elif primary_tag == '0408':
     bpcal_mod = CAL_1GC_0408_MODEL
