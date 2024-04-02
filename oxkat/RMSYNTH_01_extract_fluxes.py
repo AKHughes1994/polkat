@@ -15,14 +15,50 @@ def msg(txt):
     stamp = time.strftime(' %Y-%m-%d %H:%M:%S | ')
     print(stamp+txt)
 
+
+def calculate_P0(flux_P, rms_Q, rms_U, rms_V, pol_flag, Aq = 0.8):
+    '''
+    Calculate the de-biased linearly polarized flux
+    '''    
+
+    # If polarization angle calibrator incluided
+    if pol_flag:
+
+        # Get the noise ratio coeffs, and calculate noise, from Hales 2012. https://arxiv.org/abs/1205.5310
+        if rms_Q >= rms_U:
+            A = Aq
+            B = 1. - Aq 
+        else: 
+            B = Aq
+            A = 1. - Aq 
+
+        rms_P = (A * rms_Q ** 2 + B * rms_U ** 2) ** 0.5 
+
+        # De-bias if SNR >= 3, following Vaillancourt 2006. https://arxiv.org/abs/astro-ph/0603110
+        if flux_P / rms_P >= 3:
+            flux_P0 = (flux_P ** 2 - rms_P ** 2) ** (0.5)
+
+        else:
+            flux_P0 = flux_P
+
+    # If there is no polarization angle calibrator
+    else:
+        
+        # This doesn't have studies that I can find (Last Update: Mar 27, 2024) -- Going conservative until I do this properly
+        rms_P = np.amax([rms_Q, rms_U, rms_V]) # adopt maximum
+        
+        # Always de-bias - from Mote Carlo experimental it seems like the bias correction becomes a factor of 2 for P^2 = Q^2 + U^2 + V^2  
+        P0 =  (flux_P ** 2 - 2.0 * rms_P ** 2) ** (0.5)
+
+    return flux_P0, rms_P
+
+        
+
+
 def return_max(im, region):
     '''
     Return the value that has the higher absolute magnitude
     Necessary for fluxes that are non-positive definate
-    
-    input parameters:
-        fmax = Positive maximum
-        fmin = Negative maximum
     '''
 
     ims = imstat(im, region=region)
@@ -232,9 +268,7 @@ def initialize_MFS_dict(i_image, imf_I, imf_Q, imf_U, imf_V, imf_P, pol_flag):
         rms_Q = get_imstat_values(IQUVP_names[1], imf_Q['results'][comp]['pixelcoords'][0], imf_Q['results'][comp]['pixelcoords'][1])[3] * 1e3
         rms_U = get_imstat_values(IQUVP_names[2], imf_U['results'][comp]['pixelcoords'][0], imf_U['results'][comp]['pixelcoords'][1])[3] * 1e3
         rms_V = get_imstat_values(IQUVP_names[3], imf_V['results'][comp]['pixelcoords'][0], imf_V['results'][comp]['pixelcoords'][1])[3] * 1e3
-        rms_P = (rms_Q + rms_U) / 2
-        if pol_flag is False:
-            MFS_dict[comp]['P_rms_mJy'] = (rms_Q + rms_U + rms_V) / 3
+        flux_P0, rms_P = calculate_P0(flux_P, rms_Q, rms_U, rms_V, pol_flag, Aq = 0.8)
 
         # Append fluxes and RMS to dictionary
         MFS_dict[comp]['I_flux_mJy'] = flux_I
@@ -242,6 +276,7 @@ def initialize_MFS_dict(i_image, imf_I, imf_Q, imf_U, imf_V, imf_P, pol_flag):
         MFS_dict[comp]['U_flux_mJy'] = flux_U
         MFS_dict[comp]['V_flux_mJy'] = flux_V
         MFS_dict[comp]['P_flux_mJy'] = flux_P
+        MFS_dict[comp]['P0_flux_mJy'] = flux_P0
 
         MFS_dict[comp]['I_rms_mJy'] = rms_I
         MFS_dict[comp]['Q_rms_mJy'] = rms_Q
@@ -249,14 +284,7 @@ def initialize_MFS_dict(i_image, imf_I, imf_Q, imf_U, imf_V, imf_P, pol_flag):
         MFS_dict[comp]['V_rms_mJy'] = rms_V
         MFS_dict[comp]['P_rms_mJy'] = rms_P
 
-
-        rms_P = MFS_dict[comp]['P_rms_mJy']
-        # Calculate the other Polarisation parameters -- Following George et al. 2012: arXiv:1106.5362
-        if flux_P > 4.0 * rms_P:
-            flux_P0 = np.sqrt(flux_P ** 2  - rms_P ** 2)
-        else:
-            flux_P0 = flux_P
-
+        # Calculate the other Polarisation parameters
         LP_frac     = flux_P0 / flux_I * 100.0
         LP_frac_err = LP_frac * np.sqrt( (rms_I / flux_I) ** 2 + (rms_P / flux_P0) ** 2 )
 
@@ -269,7 +297,6 @@ def initialize_MFS_dict(i_image, imf_I, imf_Q, imf_U, imf_V, imf_P, pol_flag):
             LP_EVPA_err = None
     
         # Append additional polarisation parameters
-        MFS_dict[comp]['P0_flux_mJy'] = flux_P0
         MFS_dict[comp]['LP_frac']     = LP_frac
         MFS_dict[comp]['LP_frac_err'] = LP_frac_err
         MFS_dict[comp]['LP_EVPA']     = LP_EVPA
@@ -325,7 +352,7 @@ def fit_channel(i_image, xpix_I, ypix_I, xpix_Q, ypix_Q, xpix_U, ypix_U, xpix_P,
 
     # Get the fluxes
     flux_I, flux_Q, flux_U, flux_V, flux_P, flux_P0 = np.ones((6, n_comps))
-    rms_I,  rms_Q,  rms_U,  rms_V, rms_P, = np.ones((5, n_comps))
+    rms_I,  rms_Q,  rms_U,  rms_V, rms_P = np.ones((5, n_comps))
 
     # Get the component keys
     comps = [key for key in imf_I['results'].keys() if 'component' in key]
@@ -343,15 +370,7 @@ def fit_channel(i_image, xpix_I, ypix_I, xpix_Q, ypix_Q, xpix_U, ypix_U, xpix_P,
         rms_Q[k] = get_imstat_values(IQUVP_names[1], imf_Q['results'][comp]['pixelcoords'][0], imf_Q['results'][comp]['pixelcoords'][1])[3] * 1e3
         rms_U[k] = get_imstat_values(IQUVP_names[2], imf_U['results'][comp]['pixelcoords'][0], imf_U['results'][comp]['pixelcoords'][1])[3] * 1e3
         rms_V[k] = get_imstat_values(IQUVP_names[3], imf_V['results'][comp]['pixelcoords'][0], imf_V['results'][comp]['pixelcoords'][1])[3] * 1e3
-        rms_P[k] = (rms_Q[k] + rms_U[k]) / 2
-        if pol_flag is False:
-            rms_P[k] = (rms_Q[k] + rms_U[k] + rms_V[k]) / 3
-
-        # Bias corrected flux
-        if flux_P[k] > 4.0 * rms_P[k]:
-            flux_P0[k] = np.sqrt(flux_P[k] ** 2  - rms_P[k] ** 2)
-        else:
-            flux_P0[k] = flux_P[k]
+        flux_P0[k], rms_P[k] = calculate_P0(flux_P[k], rms_Q[k], rms_U[k], rms_V[k], pol_flag, Aq = 0.8)
 
     LP_frac     = flux_P0 / flux_I * 100.0
     LP_frac_err = LP_frac * np.sqrt( (rms_I / flux_I) ** 2 + (rms_P / flux_P0) ** 2 )
@@ -523,7 +542,7 @@ def main():
     # Load in the rmsynthesis data
     rmsynth_info = np.genfromtxt(cfg.DATA + '/rmsynth/rmsynth_info.txt', skip_header = 2, dtype=str)
 
-    # Check to see if there is a Polarization angle calibrator
+    # Check to see if there is a Polarization angle calibrator -- pol_flag = Trye means that you do have
     pol_flag=False
     if cfg.POLANG_NAME != '':
         pol_flag = True

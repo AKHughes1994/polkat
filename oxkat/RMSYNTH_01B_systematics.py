@@ -10,6 +10,32 @@ def msg(txt):
     stamp = time.strftime(' %Y-%m-%d %H:%M:%S | ')
     print(stamp+txt)
 
+def calculate_P0(flux_P, rms_Q, rms_U, Aq = 0.8):
+    '''
+    Calculate the de-biased linearly polarized flux
+    '''    
+
+
+    # Get the noise ratio coeffs, and calculate noise, from Hales 2012. https://arxiv.org/abs/1205.5310
+    if rms_Q >= rms_U:
+        A = Aq
+        B = 1. - Aq 
+    else: 
+        B = Aq
+        A = 1. - Aq 
+
+    rms_P = (A * rms_Q ** 2 + B * rms_U ** 2) ** 0.5 
+
+    # De-bias if SNR >= 3, following Vaillancourt 2006. https://arxiv.org/abs/astro-ph/0603110
+    if flux_P / rms_P >= 3:
+        flux_P0 = (flux_P ** 2 - rms_P ** 2) ** (0.5)
+
+    else:
+        flux_P0 = flux_P
+
+    return flux_P0, rms_P
+
+
 def return_max(im, region):
     '''
     Return the value that has the higher absolute magnitude
@@ -161,14 +187,9 @@ def fit_channel(i_chan_image, pix_I, pix_Q, pix_U, pix_P, pos):
     rms_I =  get_imstat_values(IQUVP_names[0], pos)[3] 
     rms_Q =  get_imstat_values(IQUVP_names[1], pos)[3]
     rms_U =  get_imstat_values(IQUVP_names[2], pos)[3]
-    rms_P =  0.5 * (rms_Q + rms_U)
+    flux_P0, rms_P = calculate_P0(flux_P, rms_Q, rms_U, Aq = 0.8)
 
     # Calculate the additional Linear Polarization parameters
-    if flux_P > 4.0 * rms_P:
-        flux_P0 = (flux_P ** 2 - rms_P ** 2) ** 0.5
-    else:
-        flux_P0 = flux_P 
-
     LP_frac     = flux_P0 / flux_I * 100.0
     LP_frac_err = LP_frac * ((rms_P / flux_P0) ** 2 + (rms_I / flux_I) ** 2) ** 0.5 
 
@@ -304,7 +325,7 @@ def get_polcal_polarization(pacal_name, pacal_pos, bpcal_sys):
     rms_U = ims_U[3] * 1e3
 
     flux_P = imf_P['results']['component0']['peak']['value'] * 1e3
-    rms_P = (rms_Q + rms_U) * 0.5
+    flux_P0, rms_P = calculate_P0(flux_P, rms_Q, rms_U, Aq = 0.8)
 
     flux_V = ims_V[0] * 1e3
     rms_V = ims_V[3] * 1e3
@@ -320,11 +341,9 @@ def get_polcal_polarization(pacal_name, pacal_pos, bpcal_sys):
     sys_Q = calculate_sys_err(flux, rms, systematics, stokes = 'Q')
     sys_U = calculate_sys_err(flux, rms, systematics, stokes = 'U')
     sys_V = calculate_sys_err(flux, rms, systematics, stokes = 'V')
-    sys_P = 0.5 * (sys_Q + sys_U)
+    _, sys_P = calculate_P0(flux_P, sys_Q, sys_U, Aq = 0.8)
 
     # Calculate other parameters
-    flux_P0 = np.sqrt(flux_P ** 2 - rms_P ** 2)
-   
     LP_frac     = flux_P0 / flux_I * 100.0
     LP_frac_err = LP_frac * np.sqrt( (rms_I / flux_I) ** 2 + (rms_P / flux_P0) ** 2)
     LP_frac_sys = LP_frac * np.sqrt( (sys_I / flux_I) ** 2 + (sys_P / flux_P0) ** 2)
@@ -480,7 +499,20 @@ def update_rmsynth_file(fname, systematics):
 
     return 0
 
-def update_src_pol_dict(fname, systematics):
+def calc_sys_P(dQ, dU, Aq=0.8):
+    if dQ >= dU:
+        A = Aq
+        B = 1. - Aq 
+    else: 
+        B = Aq
+        A = 1. - Aq 
+
+    dP = (A * dQ ** 2 + B * dU ** 2) ** 0.5     
+
+    return dP
+
+
+def update_src_pol_dict(fname, systematics, Aq = 0.8):
 
     with open(fname, 'r') as jfile:
         src_dict = json.load(jfile)
@@ -522,20 +554,20 @@ def update_src_pol_dict(fname, systematics):
             
             # For CHAN apply list comprehension
             if type(sys_Q) is list:
-                sys_P = [(dQ + dU + dV) / 2 for dQ,dU,dV in zip(sys_Q, sys_U, sys_V)]
+                sys_P = [np.amax([dQ,dU,dV]) for dQ,dU,dV in zip(sys_Q, sys_U, sys_V)]
                 LP_EVPA_err = [None] * len(sys_P)
                 if pacal_sys != 0: # case with pol. cal.
-                    sys_P       = [(dQ + dU) / 2 for dQ,dU in zip(sys_Q, sys_U)]
+                    sys_P       = [calc_sys_P(dQ, dU) for dQ,dU in zip(sys_Q, sys_U)]
                     LP_EVPA_err = [0.5 * np.sqrt(U ** 2 * dQ **2  + Q ** 2 * dU ** 2) / (U ** 2  + Q ** 2) * 180.0 / np.pi for U,dU,Q,dQ in zip(flux_U, sys_U, flux_Q, sys_Q)]
                 LP_frac_sys = [LP * (dI ** 2 / I ** 2 + dP ** 2 / P ** 2) ** 0.5 for LP,I,dI,P,dP in zip(LP_frac, flux_I, sys_I, flux_P, sys_P)]
                 
 
             # For MFS its just single numbers
             else:
-                sys_P = (sys_Q + sys_U + sys_V) / 3
+                sys_P = np.amax([sys_Q, sys_U, sys_V])
                 LP_EVPA_err = None
                 if pacal_sys != 0:
-                    sys_P = (sys_Q + sys_U) / 2
+                    sys_P = calc_sys_P(sys_Q, sys_U)
                     LP_EVPA_err = 0.5 * np.sqrt(flux_U ** 2 * sys_Q **2  + flux_Q ** 2 * sys_U ** 2) / (flux_U ** 2  + flux_Q ** 2) * 180.0 / np.pi
                 LP_frac_sys = LP_frac * np.sqrt( (sys_I / flux_I) ** 2 + (sys_P / flux_P) ** 2 )
 
@@ -625,7 +657,7 @@ def main():
         pacal_sys = 0 # No polarization calibrator
         systematics.append(pacal_sys)
 
-    # Update the source dictionary with the sysematic corrections
+    # Update the source dictionary with the systematic corrections
     rmsynth_info = np.genfromtxt(cfg.DATA + '/rmsynth/rmsynth_info.txt', skip_header = 2, dtype=str)
 
     # If this is a 1-D array convert to two 2-D
