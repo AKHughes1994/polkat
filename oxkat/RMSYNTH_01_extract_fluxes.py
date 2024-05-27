@@ -48,7 +48,7 @@ def calculate_P0(flux_P, rms_Q, rms_U, rms_V, pol_flag, Aq = 0.8):
         rms_P = np.amax([rms_Q, rms_U, rms_V]) # adopt maximum
         
         # Always de-bias - from Mote Carlo experimental it seems like the bias correction becomes a factor of 2 for P^2 = Q^2 + U^2 + V^2  
-        P0 =  (flux_P ** 2 - 2.0 * rms_P ** 2) ** (0.5)
+        flux_P0 =  (flux_P ** 2 - 2.0 * rms_P ** 2) ** (0.5)
 
     return flux_P0, rms_P
 
