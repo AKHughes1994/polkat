@@ -22,16 +22,16 @@ clearstat()
 
 if CAL_1GC_BAD_FREQS != []:
 
-	myspw = ','.join(CAL_1GC_BAD_FREQS)
+    myspw = ','.join(CAL_1GC_BAD_FREQS)
 
-	# myspw = ''
-	# for badfreq in CAL_1GC_BAD_FREQS:
-	# 	myspw += '*:'+badfreq+','
-	# myspw = myspw.rstrip(',')
+    # myspw = ''
+    # for badfreq in CAL_1GC_BAD_FREQS:
+    #     myspw += '*:'+badfreq+','
+    # myspw = myspw.rstrip(',')
 
-	flagdata(vis = myms, 
-		mode = 'manual', 
-		spw = myspw, flagbackup=False)
+    flagdata(vis = myms, 
+        mode = 'manual', 
+        spw = myspw, flagbackup=False)
 
 
 # ------------------------------------------------------------------------
@@ -39,39 +39,46 @@ if CAL_1GC_BAD_FREQS != []:
 
 if CAL_1GC_BL_FREQS != []:
 
-	myspw = ','.join(CAL_1GC_BL_FREQS)
+    myspw = ','.join(CAL_1GC_BL_FREQS)
 
-	# myspw = ''
-	# for badfreq in CAL_1GC_BL_FREQS:
-	# 	myspw += '*:'+badfreq+','
-	# myspw = myspw.rstrip(',')
+    # myspw = ''
+    # for badfreq in CAL_1GC_BL_FREQS:
+    #     myspw += '*:'+badfreq+','
+    # myspw = myspw.rstrip(',')
 
-	flagdata(vis = myms,
-		mode = 'manual',
-		spw = myspw,
-		uvrange = CAL_1GC_BL_FLAG_UVRANGE, flagbackup=False)
-
+    if CAL_1GC_AGGRESSIVE_FLAG:
+        flagdata(vis = myms,
+            mode = 'manual',
+            spw = myspw,
+            #uvrange = CAL_1GC_BL_FLAG_UVRANGE,
+            flagbackup=False)
+    else:
+        flagdata(vis = myms,
+            mode = 'manual',
+            spw = myspw,
+            uvrange = CAL_1GC_BL_FLAG_UVRANGE,
+            flagbackup=False)
 
 # ------------------------------------------------------------------------
 # Clipping, quacking, zeros, autos
 # Note that clip will always flag NaN/Inf values even with a range 
 
 #flagdata(vis = myms,
-#	mode = 'quack',
-#	quackinterval = 8.0,
-#	quackmode = 'beg')
+#    mode = 'quack',
+#    quackinterval = 8.0,
+#    quackmode = 'beg')
 
 flagdata(vis = myms,
-	mode = 'manual',
-	autocorr = True, flagbackup=False)
+    mode = 'manual',
+    autocorr = True, flagbackup=False)
 
 flagdata(vis = myms,
-	mode = 'clip',
-	clipzeros = True, flagbackup=False)
+    mode = 'clip',
+    clipzeros = True, flagbackup=False)
 
 flagdata(vis = myms,
-	mode = 'clip',
-	clipminmax = [0.0,100.0], flagbackup=False)
+    mode = 'clip',
+    clipminmax = [0.0,100.0], flagbackup=False)
 
 
 # ------------------------------------------------------------------------
@@ -81,8 +88,8 @@ flagdata(vis = myms,
 # ------------------------------------------------------------------------
 # Save the flags
 flagmanager(vis = myms,
-		mode = 'save',
-		versionname = 'basic')
+        mode = 'save',
+        versionname = 'basic')
 
 clearstat()
 clearstat()

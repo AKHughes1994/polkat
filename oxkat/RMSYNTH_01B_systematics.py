@@ -642,12 +642,24 @@ def main():
     bpcal_sys = get_primary_systematic(bpcal_name, bpcal_pos)
     systematics.append(bpcal_sys)
 
+
+    # Polarization angle calibrator systematics
     if pol_flag:
         
         # Polarization Calibrator Systematic
-        msg(f'Fitting Polcal MFS image')
-        pacal_sys = get_polcal_polarization(pacal_name, pacal_pos, bpcal_sys)
-        systematics.append(pacal_sys)
+        msg(f'Fitting Polcal Systematics')
+
+        fname = glob.glob(f'{cfg.RESULTS}/*{pacal_name}*_polarization.json')
+
+        if fname == []:
+            pacal_sys = get_polcal_polarization(pacal_name, pacal_pos, bpcal_sys)
+            systematics.append(pacal_sys)
+
+        else:
+            msg('PACAL dict already exists')
+            with open(fname[0], 'r') as j:
+                pacal_sys = json.load(j)
+            systematics.append(pacal_sys['CrossHand_Fractional_Systematic'])
 
 
         # Update all rmsynth.txt files to include systematic errors
@@ -656,6 +668,8 @@ def main():
     else:
         pacal_sys = 0 # No polarization calibrator
         systematics.append(pacal_sys)
+
+    print(systematics)
 
     # Update the source dictionary with the systematic corrections
     rmsynth_info = np.genfromtxt(cfg.DATA + '/rmsynth/rmsynth_info.txt', skip_header = 2, dtype=str)
