@@ -191,7 +191,6 @@ CAL_1GC_TARGET_INTENT = 'TARGET'     # (partial) string to match for target inte
 CAL_1GC_PRIMARY_INTENT = 'BANDPASS'  # (partial) string to match for primary intents
 CAL_1GC_SECONDARY_INTENT = 'PHASE'   # (partial) string to match for secondary intents
 CAL_1GC_DIAGNOSTICS = True          #  Choose if you want to make diagnostic plots of the Leakage + Phase cal
-CAL_1GC_AGGRESSIVE_FLAGS = False     #  Choose if you want to aggresively flag the visibilities -- seems required for high-precision (accurate) polarimetry (i.e., <1%)
 
 # Pre-processing, operations applied when master MS is split to working MS
 PRE_FIELDS = ''  # Comma-separated list of fields to select from raw MS
@@ -200,9 +199,19 @@ PRE_FIELDS = ''  # Comma-separated list of fields to select from raw MS
 POLANG_NAME = 'J1331+3030'         # Specify the name of the field you want to use as a Polarization angle calibrator
 POLANG_DIR  = '13:31:08.2881,+30.30.32.959' # CASA Format
 POLANG_MOD  = [1.0, 0.0, 0.5, 0.0]
+UNIFORM_IMAGE = True
 
                          # Must be in PRE_FIELDS if specified, if left blank will assume no polarization angle calibration
 SNAP_FIELDS = '' # Comma-separated list of field to run snapshot imaging on
+SNAP_CHANS = 16 #Integer number of channels to perform snap-shot imaging 
+SNAP_AVERAGE = 1 #Integer number of intervals to image together during snapshot imaging
+SNAP_POL = True #Bool for whether or not to do full polarisation snapshot images
+SNAP_SIZE = 2560 #Image size of snapshot imges (not the model image), reduce this from usual 10240 if imaging many channels to reduce memory usage
+SNAP_FREQ_SPLITS = 1 #number of frequency splits to use for the model building, to prevent using too much memory at once
+SNAP_MODEL_MASK_PATH = '' #mask to use when building model for snapshot imaging
+SNAP_DECONV = True #Deconvolve during the snapshot imaging process?
+SNAP_MASK_PATH = '' #mask to use when doing snapshot imaging and deconvolving
+
 PRE_SCANS = ''                       # Comma-separated list of scans to select from raw MS
 PRE_NCHANS = 1024                    # Integer number of channels for working MS
 PRE_TIMEBIN = '8s'                   # Integration time for working MS
@@ -402,13 +411,10 @@ WSC_IDGMODE = 'CPU'
 WSC_PREDICTCHANNELS = 64
 WSC_PARALLELGRIDDING = 8
 # Weighting
-WSC_WEIGHT = 'briggs 0.0'
+WSC_WEIGHT = 'briggs -0.3'
 WSC_WEIGHT_CAL = 'uniform'
 WSC_TAPERGAUSSIAN = ''
 WSC_MFWEIGHT = False
-# HIGH RES IMAGING
-WSC_UNIFORM_IMAGE = True # if false will not do it
-WSC_WEIGHT_HIGHRES = 'uniform' # pick a more uniform weighting then WSC_WEIGHT
 # Deconvolution
 WSC_PARALLELDECONVOLUTION = 2560
 WSC_MULTISCALE = False
@@ -417,8 +423,8 @@ WSC_NITER = 800000
 WSC_GAIN = 0.15
 WSC_MGAIN = 0.9
 WSC_CHANNELSOUT = 8
-WSC_IQUV_CHANNELSOUT = 8
-WSC_CAL_CHANNELSOUT = 8
+WSC_IQUV_CHANNELSOUT = 16
+WSC_CAL_CHANNELSOUT = 16
 WSC_FITSPECTRALPOL = 4
 WSC_JOINCHANNELS = True
 WSC_JOINPOLARIZATIONS = False

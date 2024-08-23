@@ -52,17 +52,11 @@ def main():
         # Run calculations and return P images
         flux_Q = get_image(image_Q)
         flux_U = get_image(image_U)
+        flux_V = get_image(image_V)
         flux_Plin = (flux_Q ** 2 + flux_U ** 2 ) ** (0.5)
+        flux_Ptot = (flux_Q ** 2 + flux_U ** 2 + flux_V ** 2) ** (0.5)
         flush_fits(flux_Plin, image_Plin)
-
-        # Incase Stokes V has been deleted 
-        try:
-            flux_V = get_image(image_V)
-            flux_Ptot = (flux_Q ** 2 + flux_U ** 2 + flux_V ** 2) ** (0.5)
-            flush_fits(flux_Ptot, image_Ptot)
+        flush_fits(flux_Ptot, image_Ptot)
   
-        except:
-            pass
-
 if __name__ == "__main__":
     main()

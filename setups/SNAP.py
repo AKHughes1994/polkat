@@ -146,62 +146,157 @@ def main():
             print(gen.col('Target')+targetname)
             print(gen.col('Measurement Set')+myms)
             print(gen.col('Code')+code)
-
+            
+            chans_out = cfg.SNAP_CHANS
+            num_frequency_splits = cfg.SNAP_FREQ_SPLITS
+            best_mask_path = cfg.SNAP_MODEL_MASK_PATH
+            
+            
+            if chans_out == 1:
+                fitspectralpol = 0
+                join_chans = False
+            elif chans_out == 2:
+                join_chans = True
+                fitspectralpol = 1
+            elif chans_out <= 4:
+                join_chans = True
+                fitspectralpol = 2
+            elif chans_out <= 6:
+                join_chans = True
+                fitspectralpol = 3
+            else:
+                join_chans = True
+                fitspectralpol = 4
+            
+            if best_mask_path == '':
+                print('BEST MASK NOT SPECIFIED, NO MASK USED')
+                best_mask_path = 'fits'
+            
             # Image prefix
-            blind_img_prefix = IMAGES+'/img_'+target_ms+'_snapblind'
-            mask_img_prefix = IMAGES+'/img_'+target_ms+'_snapmask'
+            #blind_img_prefix = IMAGES+'/img_'+target_ms+'_snapblind'+str(chans_out)+'chan'
+            mask_img_prefix = IMAGES+'/img_'+target_ms+'_snapmask'+str(chans_out)+'chan'
+            
+            
+            
+            if cfg.SNAP_POL == True:
+                pols = 'IQUV'
+                join_pols = True
+            else:
+                pols = 'I'
+                join_pols = False
+                
+            
+            
+            #NEED TO EDIT THESE TWO IMAGING STEPS, TO USE FULL POL AND TO USE MULTIPLE CHANNELS
+            #ALSO SURELY WANT TO BE USING OUR BEST MASK HERE TO MAKE OUR BEST MODEL, INSTEAD OF DOING A BLIND CLEAN
+            #WITH SNAP IMAGING WE PROBABLY DO WANT TO JOIN POLARISATIONS TO GET THE CORRECT UV MODEL
+            
+            
+            ######################
+            
+            # step_i = 0
+            # step = {}
+            # step['step'] = step_i
+            # step['comment'] = 'Blind wsclean on DATA column of '+target_ms
+            # step['dependency'] = last_split_code
+            # step['id'] = 'SNPBL'+code
+            # step['slurm_config'] = cfg.SLURM_WSCLEAN
+            # step['pbs_config'] = cfg.PBS_WSCLEAN
+            # absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
+            # syscall = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
+            # syscall += gen.generate_syscall_wsclean(mslist = [target_ms],
+            #             imgname = blind_img_prefix,
+            #             datacol = 'DATA',
+            #             localrms = True,
+            #             nomodel = True,
+            #             field='0',
+            #             absmem = absmem)#,
+            #             # chanout = chans_out,
+            #             # joinchannels = True,
+            #             # pol = pols,
+            #             # joinpolarizations = join_pols)
+            # step['syscall'] = syscall
+            # steps.append(step)
+            # step_i += 1
 
+            # step = {}
+            # step['step'] = step_i
+            # step['comment'] = 'Make cleaning mask for '+targetname
+            # step['dependency'] = step_i - 1
+            # step['id'] = 'SNPMM'+code
+            # syscall  = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
+            # syscall += gen.generate_syscall_breizorro(restoredimage = f"{blind_img_prefix}-MFS-image.fits", outfile = f"{blind_img_prefix}-MFS-image.mask.fits")[0]
+            # step['syscall'] = syscall
+            # steps.append(step)
+            # step_i += 1
+            
+            ################
+            
             step_i = 0
-            step = {}
-            step['step'] = step_i
-            step['comment'] = 'Blind wsclean on DATA column of '+target_ms
-            step['dependency'] = last_split_code
-            step['id'] = 'SNPBL'+code
-            step['slurm_config'] = cfg.SLURM_WSCLEAN
-            step['pbs_config'] = cfg.PBS_WSCLEAN
-            absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
-            syscall = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
-            syscall += gen.generate_syscall_wsclean(mslist = [target_ms],
-                        imgname = blind_img_prefix,
-                        datacol = 'DATA',
-                        localrms = True,
-                        nomodel = True,
-                        field='0',
-                        absmem = absmem)
-            step['syscall'] = syscall
-            steps.append(step)
-            step_i += 1
-
-            step = {}
-            step['step'] = step_i
-            step['comment'] = 'Make cleaning mask for '+targetname
-            step['dependency'] = step_i - 1
-            step['id'] = 'SNPMM'+code
-            syscall  = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
-            syscall += gen.generate_syscall_breizorro(restoredimage = f"{blind_img_prefix}-MFS-image.fits", outfile = f"{blind_img_prefix}-MFS-image.mask.fits")[0]
-            step['syscall'] = syscall
-            steps.append(step)
-            step_i += 1
-
-            step = {}
-            step['step'] = step_i
-            step['comment'] = 'Masked wsclean on DATA column of '+target_ms
-            step['dependency'] = step_i - 1
-            step['id'] = 'SNPMA'+code
-            step['slurm_config'] = cfg.SLURM_WSCLEAN
-            step['pbs_config'] = cfg.PBS_WSCLEAN
-            absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
-            syscall = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
-            syscall += gen.generate_syscall_wsclean(mslist = [target_ms],
-                        imgname = mask_img_prefix,
-                        mask = blind_img_prefix+'-MFS-image.mask.fits',
-                        datacol = 'DATA',
-                        localrms = False,
-                        field='0',
-                        absmem = absmem)
-            step['syscall'] = syscall
-            steps.append(step)
-            step_i += 1
+            
+            if num_frequency_splits == 1:
+                
+                step = {}
+                step['step'] = step_i
+                step['comment'] = 'Masked wsclean on DATA column of '+target_ms
+                step['dependency'] = last_split_code
+                step['id'] = 'SNPMA'+code
+                step['slurm_config'] = cfg.SLURM_WSCLEAN
+                step['pbs_config'] = cfg.PBS_WSCLEAN
+                absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
+                syscall = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
+                syscall += gen.generate_syscall_wsclean(mslist = [target_ms],
+                            imgname = mask_img_prefix,
+                            mask = best_mask_path,
+                            datacol = 'DATA',
+                            localrms = False,
+                            field='0',
+                            absmem = absmem,
+                            chanout = chans_out,
+                            joinchannels = join_chans,
+                            fitspectralpol=fitspectralpol,
+                            pol = pols,
+                            joinpolarizations = join_pols)
+                step['syscall'] = syscall
+                steps.append(step)
+                step_i += 1
+            
+            else:
+            
+                #at the moment everything must be divisible!!!! ALso assuming averaged to 1024 channels
+                chans_per_part = int(1024/num_frequency_splits)
+                
+                for ei in range(num_frequency_splits):
+                    step = {}
+                    step['step'] = step_i
+                    step['comment'] = 'Masked wsclean on DATA column of '+target_ms
+                    
+                    if ei == 0:
+                        step['dependency'] = last_split_code
+                    else:
+                        step['dependency'] = step_i - 1
+                    
+                    step['id'] = 'SNPMA'+code+'part'+str(ei)
+                    step['slurm_config'] = cfg.SLURM_WSCLEAN
+                    step['pbs_config'] = cfg.PBS_WSCLEAN
+                    absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
+                    syscall = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
+                    syscall += gen.generate_syscall_wsclean(mslist = [target_ms],
+                                imgname = mask_img_prefix+'part'+str(ei),
+                                mask = best_mask_path,
+                                datacol = 'DATA',
+                                startchan = 0 + (ei*chans_per_part),
+                                endchan = chans_per_part + (ei*chans_per_part), #not minus 1 here because the endchan parameter is exclusionary of last channel
+                                localrms = False,
+                                field='0',
+                                absmem = absmem,
+                                chanout = int(chans_out/num_frequency_splits),
+                                joinchannels = True,
+                                pol = pols,
+                                joinpolarizations = join_pols)
+                    step['syscall'] = syscall
+                    steps.append(step)
+                    step_i += 1
 
             step = {}
             step['step'] = step_i

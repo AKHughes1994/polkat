@@ -30,7 +30,14 @@ def get_scan_times(scanpickle):
     return scan_times
 
 def main():
-
+    
+    intervals_averaging = cfg.SNAP_AVERAGE
+    intervals_channels = cfg.SNAP_CHANS
+    pol = cfg.SNAP_POL
+    deconv = cfg.SNAP_DECONV
+    img_size = cfg.SNAP_SIZE
+    snap_mask = cfg.SNAP_MASK_PATH
+    
     if len(sys.argv) == 1:
         print('Please specify a field for interval imaging')
         sys.exit()
@@ -43,23 +50,37 @@ def main():
     scan_times = get_scan_times(scan_pickle)
     for ss in scan_times:
         scans = ss[1]
-        intervals = ss[2]
-
+        intervals = ss[2] #this I think is a list of the number of intervals for each scan
+        
         # Only execut on target of interest
         if ss[0] == targetname:
-
+            
             # Iterate through scans
             for i in range(0,len(scans)):
+                
+                number_intervals = int(intervals[i]/intervals_averaging)
+                real_averaging_factor = intervals[i]/number_intervals 
+                print('The real averaging factor for '+ '*'+targetname+'*scan'+str(scans[i])+'.ms' + ' is '+str(real_averaging_factor))
+                
                 print('*'+targetname+'*scan'+str(scans[i])+'.ms')
                 myms = glob.glob('*'+targetname+'*scan'+str(scans[i])+'.ms')[0]
-                img_prefix = cfg.INTERVALS+'/img_'+myms+'_modelsub'
+                img_prefix = cfg.INTERVALS+'/img_'+myms+'_modelsub'+str(intervals_channels)+'chan'
                 
+                #TO ADD OR NOT TO ADD JOIN CHANNELS?
                 # Build command line syscall
-                syscall = 'wsclean -intervals-out '+str(intervals[i])+' -interval 0 '+str(intervals[i])+' '
-                syscall += f'-log-time -field 0 -no-dirty -make-psf -size {cfg.WSC_IMSIZE} {cfg.WSC_IMSIZE} -scale {cfg.WSC_CELLSIZE} '
+                syscall = 'wsclean -intervals-out '+str(number_intervals)+' -interval 0 '+str(intervals[i])+' '
+                syscall += f'-log-time -field 0 -no-dirty -make-psf -size {img_size} {img_size} -scale {cfg.WSC_CELLSIZE} '
                 syscall += '-baseline-averaging 10 -no-update-model-required '
-                syscall += '-gridder wgridder -niter 0 -name '+img_prefix+' '
-                syscall += f'-weight {cfg.WSC_WEIGHT} -data-column DATA -padding 1.2 ' + myms
+                
+                if deconv:
+                    syscall += '-gridder wgridder -niter 100 -name '+img_prefix+' '
+                else:
+                    syscall += '-gridder wgridder -niter 0 -name '+img_prefix+' '
+                if pol:
+                    syscall += '-pol IQUV -join-polarizations '
+                if snap_mask != '':
+                    syscall += '-fits-mask '+snap_mask+' '
+                syscall += f'-weight {cfg.WSC_WEIGHT} -data-column DATA -padding 1.2 -no-mf-weighting -channels-out ' + str(intervals_channels) + ' ' + myms
 
                 # Run syscall
                 subprocess.run([syscall], shell=True)

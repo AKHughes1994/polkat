@@ -158,7 +158,6 @@ def main():
                         localrms = False,
                         automask = 10.0,
                         autothreshold = 3.0,
-                        tukeytaper=False,
                         field=targetindex,
                         absmem = absmem)
             step['syscall'] = syscall
@@ -204,7 +203,6 @@ def main():
                     field=targetindex,
                     pol='IQUV',
                     joinpolarizations=True,
-                    tukeytaper=False,
                     nomodel = False,
                     sourcelist = False,
                     absmem = absmem)
@@ -273,7 +271,7 @@ def main():
             steps.append(step)
             step_i += 1
 
-            if cfg.WSC_UNIFORM_IMAGE:
+            if cfg.UNIFORM_IMAGE:
                 step = {}
                 step['step'] = step_i
                 step['comment'] = 'Run high angular resolution, wsclean, masked deconvolution of the CORRECTED_DATA (self-calibrated) for {}'.format(targetname)
@@ -290,7 +288,7 @@ def main():
                     chanout = cfg.WSC_IQUV_CHANNELSOUT,
                     nomodel=True,
                     field=targetindex,
-                    weight=cfg.WSC_WEIGHT_HIGHRES,
+                    weight='uniform',
                     mfweight=True,
                     pol='I',
                     joinpolarizations=False,
