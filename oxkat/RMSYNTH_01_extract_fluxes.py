@@ -54,7 +54,6 @@ def calculate_P0(flux_P, rms_Q, rms_U, rms_V, pol_flag, Aq = 0.8):
 
         
 
-
 def return_max(im, region):
     '''
     Return the value that has the higher absolute magnitude
@@ -112,11 +111,10 @@ def get_imfit_values(fname, image, xpix, ypix):
         y = ypix[0]
         r = np.amax((3 * bmaj, 2.0 * max_dist))
         src_region = f'circle[[{x}pix,{y}pix],{r}arcsec]'
-
+    
     return imfit(image, estimates = fname, region = src_region)
-        
 
-def get_imstat_values(image, xpix, ypix):
+def get_imstat_values(image, xpix, ypix, manual_rms_region = False):
     '''
     Take in an image and a position, 
     return the max, max pixel location(s), and rms
@@ -127,11 +125,15 @@ def get_imstat_values(image, xpix, ypix):
     bmin = imhead(image, mode='get', hdkey = 'BMIN')['value']
     bpa  = imhead(image, mode='get', hdkey = 'BPA')['value']    
 
-    # Define the regions of interest (rms is ~500 beam area)
+    # Define the regions of interest (rms is ~100 beam area)
     r_in  = 3.0 * bmaj
-    r_out = np.sqrt(500 * 0.25 * bmaj * bmin + r_in ** 2)
+    r_out = np.sqrt(100 * 0.25 * bmaj * bmin + r_in ** 2)
     src_region = f'circle[[{xpix}pix,{ypix}pix],3.0pix]'
     rms_region = f'annulus[[{xpix}pix,{ypix}pix],[{r_in}arcsec,{r_out}arcsec]]'
+    if manual_rms_region:
+        rms_region = manual_rms_region
+   # else:
+   #     msg('Using default annular RMS region')
 
     # Values of interest -- Source
     ims = imstat(image, region = src_region)
@@ -191,7 +193,7 @@ def get_IQUVP_names(im_I, pol_flag, print_type=False):
 
     return [im_I, im_Q, im_U, im_V, im_P]
 
-def check_position(fname, image, xpix, ypix, snr_thresh=5.0, P_image = False, fix_additional_comps = False):
+def check_position(fname, image, xpix, ypix, snr_thresh=5.0, P_image = False, fix_additional_comps = False, manual_rms_region = False):
     '''
     Code to check whether there is sufficient flux at a position to allow 
     imfit to fit for position, or if said position should be frozen
@@ -210,34 +212,51 @@ def check_position(fname, image, xpix, ypix, snr_thresh=5.0, P_image = False, fi
 
     # If a component is weak (i.e., < snr-thresh * sigma fix the position to the the reference otherwise fit for the position)
     k = 0
+    
+    # Get beam parameters
+    bmaj = imhead(image, mode='get', hdkey='bmaj')['value']
+    bmin = imhead(image, mode='get', hdkey='bmin')['value']
+    bpa  = imhead(image, mode='get', hdkey='bpa')['value']
+
+
     for x, y in zip(xpix, ypix):
-        ims   = get_imstat_values(image, x, y)
+        region = f'circle[[{x}pix,{y}pix],{2 * bmaj}arcsec]'
+
+        f = open('check_pos.txt', 'w')
+        f.write(f'0.0,{x},{y},{bmaj}arcsec,{bmin}arcsec,{bpa}deg, xyabp')
+        f.close()
+
+        # Get flux at test position
+        test_flux = abs(imfit(image, region = region, estimates='check_pos.txt')['results']['component0']['peak']['value'])
 
         # If its a P-image don't use the image plane noise as the check criteria as it is (very) non-gaussian
-        if P_image is False:
+        rms = get_imstat_values(image, x, y, manual_rms_region = manual_rms_region)[3]
+        if P_image is True:
+            print('Check image:', image)
             image_Q = image.replace('-P-', '-Q-')
             image_U = image.replace('-P-', '-U-')
-            ims_Q = get_imstat_values(image_Q, x, y)
-            ims_U = get_imstat_values(image_U, x, y)
-            ims[3] = (ims_Q[3] + ims_U[3]) * 0.5
+            ims_Q = get_imstat_values(image_Q, x, y, manual_rms_region = manual_rms_region)
+            ims_U = get_imstat_values(image_U, x, y, manual_rms_region = manual_rms_region)
+            rms = np.amax((ims_Q[3],ims_U[3]))
 
         if fix_additional_comps and k > 0:
             fix_var.append('xyabp')
 
-        elif fix_additional_comps is True and k == 0 and abs(ims[0])/ims[3] > snr_thresh:
+        elif fix_additional_comps is True and k == 0 and test_flux > snr_thresh * rms:
             fix_var.append('abp')
 
-        elif fix_additional_comps is False and abs(ims[0])/ims[3] > snr_thresh:
+        elif fix_additional_comps is False and test_flux > snr_thresh * rms:
             fix_var.append('abp')
 
         else:
+            print('Fixing')
             fix_var.append('xyabp')
         k+=1
 
     # Make the estimate file
     make_estimate(fname, image, xpix, ypix, fix_var)
 
-def initialize_MFS_dict(i_image, imf_I, imf_Q, imf_U, imf_V, imf_P, pol_flag):
+def initialize_MFS_dict(i_image, imf_I, imf_Q, imf_U, imf_V, imf_P, pol_flag, manual_rms_region = False):
     '''
     Function that will take in the imfit dictionaries for all 4 (+ Lin. Pol.) Stokes Parameters, while
     returning a trimmed dictionary containing all of the parameters of interest
@@ -264,10 +283,10 @@ def initialize_MFS_dict(i_image, imf_I, imf_Q, imf_U, imf_V, imf_P, pol_flag):
         flux_V = imf_V['results'][comp]['peak']['value'] * 1e3
         flux_P = imf_P['results'][comp]['peak']['value'] * 1e3
 
-        rms_I = get_imstat_values(IQUVP_names[0], imf_I['results'][comp]['pixelcoords'][0], imf_I['results'][comp]['pixelcoords'][1])[3] * 1e3
-        rms_Q = get_imstat_values(IQUVP_names[1], imf_Q['results'][comp]['pixelcoords'][0], imf_Q['results'][comp]['pixelcoords'][1])[3] * 1e3
-        rms_U = get_imstat_values(IQUVP_names[2], imf_U['results'][comp]['pixelcoords'][0], imf_U['results'][comp]['pixelcoords'][1])[3] * 1e3
-        rms_V = get_imstat_values(IQUVP_names[3], imf_V['results'][comp]['pixelcoords'][0], imf_V['results'][comp]['pixelcoords'][1])[3] * 1e3
+        rms_I = get_imstat_values(IQUVP_names[0], imf_I['results'][comp]['pixelcoords'][0], imf_I['results'][comp]['pixelcoords'][1], manual_rms_region)[3] * 1e3
+        rms_Q = get_imstat_values(IQUVP_names[1], imf_Q['results'][comp]['pixelcoords'][0], imf_Q['results'][comp]['pixelcoords'][1], manual_rms_region)[3] * 1e3
+        rms_U = get_imstat_values(IQUVP_names[2], imf_U['results'][comp]['pixelcoords'][0], imf_U['results'][comp]['pixelcoords'][1], manual_rms_region)[3] * 1e3
+        rms_V = get_imstat_values(IQUVP_names[3], imf_V['results'][comp]['pixelcoords'][0], imf_V['results'][comp]['pixelcoords'][1], manual_rms_region)[3] * 1e3
         flux_P0, rms_P = calculate_P0(flux_P, rms_Q, rms_U, rms_V, pol_flag, Aq = 0.8)
 
         # Append fluxes and RMS to dictionary
@@ -310,7 +329,7 @@ def initialize_MFS_dict(i_image, imf_I, imf_Q, imf_U, imf_V, imf_P, pol_flag):
 
     return MFS_dict
 
-def fit_channel(i_image, xpix_I, ypix_I, xpix_Q, ypix_Q, xpix_U, ypix_U, xpix_P, ypix_P, xpix_V, ypix_V, pol_flag):
+def fit_channel(i_image, xpix_I, ypix_I, xpix_Q, ypix_Q, xpix_U, ypix_U, xpix_P, ypix_P, xpix_V, ypix_V, pol_flag, manual_rms_region = False):
     '''
     Extract the IQUP parameters from the working channelized image
     Inputs:
@@ -324,23 +343,23 @@ def fit_channel(i_image, xpix_I, ypix_I, xpix_Q, ypix_Q, xpix_U, ypix_U, xpix_P,
     IQUVP_names = get_IQUVP_names(i_image, pol_flag)
 
     # Fit Stokes I
-    check_position('estimate_I.txt', IQUVP_names[0], xpix_I, ypix_I)
+    check_position('estimate_I.txt', IQUVP_names[0], xpix_I, ypix_I, manual_rms_region = manual_rms_region)
     imf_I  = get_imfit_values('estimate_I.txt', IQUVP_names[0], xpix_I, ypix_I)
 
     # Fit Stokes Q
-    check_position('estimate_Q.txt', IQUVP_names[1], xpix_Q, ypix_Q, fix_additional_comps = True)
+    check_position('estimate_Q.txt', IQUVP_names[1], xpix_Q, ypix_Q, fix_additional_comps = True, manual_rms_region = manual_rms_region)
     imf_Q  = get_imfit_values('estimate_Q.txt', IQUVP_names[1], xpix_Q, ypix_Q)
 
     # Fit Stokes U
-    check_position('estimate_U.txt', IQUVP_names[2], xpix_U, ypix_U, fix_additional_comps = True)
+    check_position('estimate_U.txt', IQUVP_names[2], xpix_U, ypix_U, fix_additional_comps = True, manual_rms_region = manual_rms_region)
     imf_U  = get_imfit_values('estimate_U.txt', IQUVP_names[2], xpix_U, ypix_U)
 
     # Fit Stokes V
-    check_position('estimate_V.txt', IQUVP_names[3], xpix_V, ypix_V, fix_additional_comps = True)
+    check_position('estimate_V.txt', IQUVP_names[3], xpix_V, ypix_V, fix_additional_comps = True, manual_rms_region = manual_rms_region)
     imf_V  = get_imfit_values('estimate_V.txt', IQUVP_names[3], xpix_V, ypix_V)
 
     # Fit Stokes P
-    check_position('estimate_P.txt', IQUVP_names[4], xpix_P, ypix_P, P_image=True, fix_additional_comps = True)
+    check_position('estimate_P.txt', IQUVP_names[4], xpix_P, ypix_P, P_image=True, fix_additional_comps = True, manual_rms_region = manual_rms_region)
     imf_P  = get_imfit_values('estimate_P.txt', IQUVP_names[4], xpix_P, ypix_P)
        
     # Get the number of components
@@ -366,12 +385,11 @@ def fit_channel(i_image, xpix_I, ypix_I, xpix_Q, ypix_Q, xpix_U, ypix_U, xpix_P,
         flux_P[k] = imf_P['results'][comp]['peak']['value'] * 1e3
 
         # RMS
-        rms_I[k] = get_imstat_values(IQUVP_names[0], imf_I['results'][comp]['pixelcoords'][0], imf_I['results'][comp]['pixelcoords'][1])[3] * 1e3
-        rms_Q[k] = get_imstat_values(IQUVP_names[1], imf_Q['results'][comp]['pixelcoords'][0], imf_Q['results'][comp]['pixelcoords'][1])[3] * 1e3
-        rms_U[k] = get_imstat_values(IQUVP_names[2], imf_U['results'][comp]['pixelcoords'][0], imf_U['results'][comp]['pixelcoords'][1])[3] * 1e3
-        rms_V[k] = get_imstat_values(IQUVP_names[3], imf_V['results'][comp]['pixelcoords'][0], imf_V['results'][comp]['pixelcoords'][1])[3] * 1e3
+        rms_I[k] = get_imstat_values(IQUVP_names[0], imf_I['results'][comp]['pixelcoords'][0], imf_I['results'][comp]['pixelcoords'][1], manual_rms_region)[3] * 1e3
+        rms_Q[k] = get_imstat_values(IQUVP_names[1], imf_Q['results'][comp]['pixelcoords'][0], imf_Q['results'][comp]['pixelcoords'][1], manual_rms_region)[3] * 1e3
+        rms_U[k] = get_imstat_values(IQUVP_names[2], imf_U['results'][comp]['pixelcoords'][0], imf_U['results'][comp]['pixelcoords'][1], manual_rms_region)[3] * 1e3
+        rms_V[k] = get_imstat_values(IQUVP_names[3], imf_V['results'][comp]['pixelcoords'][0], imf_V['results'][comp]['pixelcoords'][1], manual_rms_region)[3] * 1e3
         flux_P0[k], rms_P[k] = calculate_P0(flux_P[k], rms_Q[k], rms_U[k], rms_V[k], pol_flag, Aq = 0.8)
-
     LP_frac     = flux_P0 / flux_I * 100.0
     LP_frac_err = LP_frac * np.sqrt( (rms_I / flux_I) ** 2 + (rms_P / flux_P0) ** 2 )
 
@@ -405,7 +423,7 @@ def make_rmsynth_files(src_header, chan_dict):
         np.savetxt(cfg.RESULTS + f'/{src_header}_{comp}_rmsynth.txt', np.array([freq, I, Q, U, dI, dQ, dU]).T)    
 
 
-def extract_polarization_properties(src_name,  src_im_identifier, src_ra, src_dec, pol_flag):
+def extract_polarization_properties(src_name,  src_im_identifier, src_ra, src_dec, pol_flag, manual_rms_region):
 
     '''
     Fit the Stokes IQUV cube for all components in an image. This assumes
@@ -456,30 +474,30 @@ def extract_polarization_properties(src_name,  src_im_identifier, src_ra, src_de
     ypix_I = [imf_I['results'][key]['pixelcoords'][1] for key in imf_I['results'].keys() if 'component' in key]
 
     # Make estimate and fit for Lin. Pol. Intensity -- checking against position of stokes I components
-    check_position('estimate_P.txt', IQUVP_names[4], xpix_I, ypix_I, P_image = True, fix_additional_comps = True)
+    check_position('estimate_P.txt', IQUVP_names[4], xpix_I, ypix_I, P_image = True, fix_additional_comps = True, manual_rms_region = manual_rms_region)
     imf_P  = get_imfit_values('estimate_P.txt', IQUVP_names[4], xpix_I, ypix_I)
     xpix_P = [imf_P['results'][key]['pixelcoords'][0] for key in imf_P['results'].keys() if 'component' in key]
     ypix_P = [imf_P['results'][key]['pixelcoords'][1] for key in imf_P['results'].keys() if 'component' in key]
 
     # Make estimate and fit for Q/U -- checking against position of Lin. Pol. components
-    check_position('estimate_Q.txt', IQUVP_names[1], xpix_P, ypix_P, fix_additional_comps = True)
+    check_position('estimate_Q.txt', IQUVP_names[1], xpix_P, ypix_P, fix_additional_comps = True, manual_rms_region = manual_rms_region)
     imf_Q  = get_imfit_values('estimate_Q.txt', IQUVP_names[1], xpix_P, ypix_P)
     xpix_Q = [imf_Q['results'][key]['pixelcoords'][0] for key in imf_Q['results'].keys() if 'component' in key]
     ypix_Q = [imf_Q['results'][key]['pixelcoords'][1] for key in imf_Q['results'].keys() if 'component' in key]
    
-    check_position('estimate_U.txt', IQUVP_names[2], xpix_P, ypix_P, fix_additional_comps = True)
+    check_position('estimate_U.txt', IQUVP_names[2], xpix_P, ypix_P, fix_additional_comps = True, manual_rms_region = manual_rms_region)
     imf_U  = get_imfit_values('estimate_U.txt', IQUVP_names[2], xpix_P, ypix_P)
     xpix_U = [imf_U['results'][key]['pixelcoords'][0] for key in imf_U['results'].keys() if 'component' in key]
     ypix_U = [imf_U['results'][key]['pixelcoords'][1] for key in imf_U['results'].keys() if 'component' in key]
 
     # Make estimate and fit Stokes V  -- checking against position of stokes I components
-    check_position('estimate_V.txt', IQUVP_names[3], xpix_I, ypix_I, fix_additional_comps = True)
+    check_position('estimate_V.txt', IQUVP_names[3], xpix_I, ypix_I, fix_additional_comps = True, manual_rms_region = manual_rms_region)
     imf_V  = get_imfit_values('estimate_V.txt', IQUVP_names[3], xpix_I, ypix_I)
     xpix_V = [imf_V['results'][key]['pixelcoords'][0] for key in imf_V['results'].keys() if 'component' in key]
     ypix_V = [imf_V['results'][key]['pixelcoords'][1] for key in imf_V['results'].keys() if 'component' in key]
 
     # Initialize the MFS parameters
-    MFS_dict = initialize_MFS_dict(IQUVP_names[0], imf_I, imf_Q, imf_U, imf_V, imf_P, pol_flag)
+    MFS_dict = initialize_MFS_dict(IQUVP_names[0], imf_I, imf_Q, imf_U, imf_V, imf_P, pol_flag, manual_rms_region)
 
     # Append the MFS imge parameters
     MFS_dict['freqMFS_GHz'] = freqMFS_GHz
@@ -500,7 +518,7 @@ def extract_polarization_properties(src_name,  src_im_identifier, src_ra, src_de
     for i_chan_image in i_chan_images[:]:
         try: 
             msg(f'Fitting Image: {i_chan_image.split("IMAGES/")[-1]}')
-            chan_data = fit_channel(i_chan_image, xpix_I, ypix_I, xpix_Q, ypix_Q, xpix_U, ypix_U, xpix_P, ypix_P, xpix_V, ypix_V, pol_flag)
+            chan_data = fit_channel(i_chan_image, xpix_I, ypix_I, xpix_Q, ypix_Q, xpix_U, ypix_U, xpix_P, ypix_P, xpix_V, ypix_V, pol_flag, manual_rms_region)
 
             for k, comp in enumerate(comps):
                 chan_dict[comp]['freq_GHz'].append(chan_data[0][k])
@@ -547,6 +565,9 @@ def main():
     if cfg.POLANG_NAME != '':
         pol_flag = True
 
+    # Tweak this if you want to specify the RMS region
+    manual_rms_region = 'circle[[17:27:36.9147415550,-16.14.05.2861563048], 2arcmin]'
+
     # If this is a 1-D array convert to two 2-D
     rmsynth_info = np.atleast_2d(rmsynth_info)
 
@@ -554,9 +575,8 @@ def main():
     src_names, src_im_identifiers, src_ras, src_decs= rmsynth_info[:,0], rmsynth_info[:,1], rmsynth_info[:,2], rmsynth_info[:,3]
 
     for src_name, src_im_identifier, src_ra, src_dec in zip(src_names, src_im_identifiers, src_ras, src_decs):
-        print('\n')
-        msg(f'Starting Analysis of {src_name}')
-        extract_polarization_properties(src_name, src_im_identifier, src_ra, src_dec, pol_flag)
+        msg(f'\nStarting Analysis of {src_name}')
+        extract_polarization_properties(src_name, src_im_identifier, src_ra, src_dec, pol_flag, manual_rms_region)
 
 if __name__  == "__main__":
     main()
