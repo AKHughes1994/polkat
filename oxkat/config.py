@@ -194,7 +194,7 @@ CAL_1GC_DIAGNOSTICS = True          #  Choose if you want to make diagnostic plo
 CAL_1GC_AGGRESSIVE_FLAGS = False     #  Choose if you want to aggresively flag the visibilities -- required for high-precision polarimetry (i.e., <1%)
 
 # Pre-processing, operations applied when master MS is split to working MS
-PRE_FIELDS = 'SwiftJ1727,J1733-1304,J1939-6342,J1331+3030'  # Comma-separated list of fields to select from raw MS
+PRE_FIELDS = ''  # Comma-separated list of fields to select from raw MS
                                      # Names or IDs, do not mix, do not use spaces
 
 POLANG_NAME = 'J1331+3030'         # Specify the name of the field you want to use as a Polarization angle calibrator -- 3C286
