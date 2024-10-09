@@ -151,6 +151,15 @@ def main():
             num_frequency_splits = cfg.SNAP_FREQ_SPLITS
             best_mask_path = cfg.SNAP_MODEL_MASK_PATH
             
+            snap_imaging_mask = cfg.SNAP_MASK_PATH
+            snap_deconv = cfg.SNAP_DECONV
+            
+            if snap_deconv and (snap_imaging_mask == ''):
+                print('WARNING WILL DECONVOLVE SNAPSHOT IMAGES WITH NO MASK')
+            
+            #always make an 8 channel model, no matter what the desired channels out of snapshot actually is
+            if chans_out < 8:
+                chans_out = 8
             
             if chans_out == 1:
                 fitspectralpol = 0
@@ -169,7 +178,7 @@ def main():
                 fitspectralpol = 4
             
             if best_mask_path == '':
-                print('BEST MASK NOT SPECIFIED, NO MASK USED')
+                print('BEST MASK NOT SPECIFIED, DEFAULT MASK USED')
                 best_mask_path = 'fits'
             
             # Image prefix
@@ -186,51 +195,6 @@ def main():
                 join_pols = False
                 
             
-            
-            #NEED TO EDIT THESE TWO IMAGING STEPS, TO USE FULL POL AND TO USE MULTIPLE CHANNELS
-            #ALSO SURELY WANT TO BE USING OUR BEST MASK HERE TO MAKE OUR BEST MODEL, INSTEAD OF DOING A BLIND CLEAN
-            #WITH SNAP IMAGING WE PROBABLY DO WANT TO JOIN POLARISATIONS TO GET THE CORRECT UV MODEL
-            
-            
-            ######################
-            
-            # step_i = 0
-            # step = {}
-            # step['step'] = step_i
-            # step['comment'] = 'Blind wsclean on DATA column of '+target_ms
-            # step['dependency'] = last_split_code
-            # step['id'] = 'SNPBL'+code
-            # step['slurm_config'] = cfg.SLURM_WSCLEAN
-            # step['pbs_config'] = cfg.PBS_WSCLEAN
-            # absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
-            # syscall = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
-            # syscall += gen.generate_syscall_wsclean(mslist = [target_ms],
-            #             imgname = blind_img_prefix,
-            #             datacol = 'DATA',
-            #             localrms = True,
-            #             nomodel = True,
-            #             field='0',
-            #             absmem = absmem)#,
-            #             # chanout = chans_out,
-            #             # joinchannels = True,
-            #             # pol = pols,
-            #             # joinpolarizations = join_pols)
-            # step['syscall'] = syscall
-            # steps.append(step)
-            # step_i += 1
-
-            # step = {}
-            # step['step'] = step_i
-            # step['comment'] = 'Make cleaning mask for '+targetname
-            # step['dependency'] = step_i - 1
-            # step['id'] = 'SNPMM'+code
-            # syscall  = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
-            # syscall += gen.generate_syscall_breizorro(restoredimage = f"{blind_img_prefix}-MFS-image.fits", outfile = f"{blind_img_prefix}-MFS-image.mask.fits")[0]
-            # step['syscall'] = syscall
-            # steps.append(step)
-            # step_i += 1
-            
-            ################
             
             step_i = 0
             
@@ -264,6 +228,7 @@ def main():
             else:
             
                 #at the moment everything must be divisible!!!! ALso assuming averaged to 1024 channels
+                
                 chans_per_part = int(1024/num_frequency_splits)
                 
                 for ei in range(num_frequency_splits):
