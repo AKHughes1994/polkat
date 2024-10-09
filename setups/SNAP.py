@@ -228,8 +228,12 @@ def main():
             else:
             
                 #at the moment everything must be divisible!!!! ALso assuming averaged to 1024 channels
+                pre_nchans = cfg.PRE_NCHANS #number of channels the MS has been averaged to
+                chans_per_part = (pre_nchans/num_frequency_splits)
                 
-                chans_per_part = int(1024/num_frequency_splits)
+                if not chans_per_part.is_integer():
+                    sys.exit('Channels in MS not divisble by the number of frequency splits')
+                  
                 
                 for ei in range(num_frequency_splits):
                     step = {}
