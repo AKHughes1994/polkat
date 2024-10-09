@@ -17,10 +17,22 @@ def main():
     else:
         targetname = sys.argv[1]
     
+    num_channels = cfg.SNAP_CHANS
+    pol = cfg.SNAP_POL
+    model_freq_splits = cfg.SNAP_FREQ_SPLITS
+    
     # Get the full path for the restoring model
-    model_fits = glob.glob(cfg.IMAGES + f'/*{targetname}*snapmask-MFS-model.fits')[0]
-
-    syscall = 'python3 '+ cfg.TOOLS+f'/restore_model.py {model_fits} {targetname}'
+    try:
+        model_fits = glob.glob(cfg.IMAGES + f'/*{targetname}*snapmask-MFS-model.fits')[0]
+    except:
+        model_fits = 'default'
+    
+    if pol:
+        print('doing pol')
+        syscall = 'python3 '+ cfg.TOOLS+f'/restore_model.py {model_fits} {targetname} {num_channels} {model_freq_splits} IQUV'
+    else:
+        syscall = 'python3 '+ cfg.TOOLS+f'/restore_model.py {model_fits} {targetname} {num_channels} {model_freq_splits} I'
+        
     subprocess.run([syscall], shell=True)
 
 
