@@ -206,7 +206,6 @@ POLANG_MOD  = [1.0, 0.0, 0.5, 0.0]
 #POLANG_MOD  = [1.0, 0.3, -0.05, 0.0]
 
                          # Must be in PRE_FIELDS if specified, if left blank will assume no polarization angle calibration
-SNAP_FIELDS = 'SwiftJ1727' # Comma-separated list of field to run snapshot imaging on
 PRE_SCANS = ''                       # Comma-separated list of scans to select from raw MS
 PRE_NCHANS = 1024                    # Integer number of channels for working MS
 PRE_TIMEBIN = '8s'                   # Integration time for working MS
@@ -609,6 +608,20 @@ KMS_NCHANSOLS = 8
 KMS_NITERKF = 9
 KMS_COVQ = 0.05
 
+# ------------------------------------------------------------------------
+#
+# Snapshot imaging defaults
+#
+
+SNAP_FIELDS = '' # Comma-separated list of field to run snapshot imaging on
+SNAP_CHANS = 16 # Integer number of channels to perform snap-shot imaging 
+SNAP_AVERAGE = 1 # Integer number of intervals to image together during snapshot imaging
+SNAP_POL = True # Bool for whether or not to do full polarisation snapshot images
+SNAP_SIZE = 2560 # Image size of snapshot imges (not the model image), reduce this from usual 10240 if imaging many channels to reduce memory usage
+SNAP_FREQ_SPLITS = 1 # number of frequency splits to use for the model building, to prevent using too much memory at once
+SNAP_MODEL_MASK_PATH = '' # mask to use when building model for snapshot imaging
+SNAP_DECONV = True # Deconvolve during the snapshot imaging process?
+SNAP_MASK_PATH = '' # mask to use when doing snapshot imaging and deconvolving
 
 # ------------------------------------------------------------------------
 #
