@@ -23,10 +23,7 @@ def main():
     with open('project_info.json') as f:
         project_info = json.load(f)
 
-    with open('prefields_info.json') as f:
-        prefield_info = json.load(f)
-
-    field_ids = prefield_info['field_ids']
+    field_ids = project_info['working_ids']
     myms = project_info['working_ms']
     
     for field_id in field_ids:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# ian.heywood@physics.ox.ac.uk
+# andrew.hughes@physics.ox.ac.uk
 
 
 import glob
@@ -20,7 +20,7 @@ def preamble():
     print('                     | v0.1')  
     print('   p o l  k  a  t    | The poorly coded, younger brother of oxkat:')
     print('                     | Feel free to email questions/concerns to:')
-    print('                     | hughes1@ualberta.ca/hughesakh@gmail.com')
+    print('                     | hughesakh@gmail.com')
     print('                     |')
     print('---------------------+----------------------------------------------------------')
     print(now()+'Observing band is '+cfg.BAND)
@@ -106,6 +106,7 @@ def get_container(pathlist,pattern,use_singularity):
         for ii in ll:
             if 'casa47' in ii or 'casarest' in ii:
                 ll.remove(ii)
+
 
     if len(ll) == 0:
         print(col(pattern)+'not found!')
@@ -446,6 +447,39 @@ def generate_syscall_tricolour(myms = '',
     return syscall
 
 
+def generate_syscall_predict(msname,
+                            imgname,
+                            field = cfg.WSC_FIELD,
+                            pol = cfg.WSC_POL,
+                            intervalsout = cfg.WSC_INTERVALSOUT,
+                            nwlayersfactor = cfg.WSC_NWLAYERSFACTOR,
+                            chanout = cfg.WSC_IMAGE_CHANNELSOUT,
+                            usewgridder = cfg.WSC_USEWGRIDDER,
+#                            imsize = cfg.WSC_IMSIZE,
+#                            cellsize = cfg.WSC_CELLSIZE,
+#                            predictchannels = cfg.WSC_PREDICTCHANNELS,
+                            mem = cfg.WSC_MEM,
+                            absmem = cfg.WSC_ABSMEM):
+
+    # Generate system call to run wsclean in predict mode
+    syscall = 'wsclean '
+    syscall += '-predict '
+    syscall += '-field '+str(field)+' '
+    syscall += '-pol ' + str(pol) + ' '
+    if intervalsout:
+        syscall += '-intervals-out ' + str(intervalsout) + ' '
+
+    syscall += '-channels-out '+str(chanout)+' '
+    syscall += '-name '+imgname+' '
+    if absmem < 0:
+        syscall += '-mem '+str(mem)+' '
+    else:
+        syscall += '-abs-mem '+str(absmem)+' '
+#    syscall += '-predict-channels '+str(predictchannels)+' '
+    syscall += msname + ' '
+
+    return syscall 
+
 def generate_syscall_wsclean(mslist,
                           imgname,
                           datacol,
@@ -459,8 +493,9 @@ def generate_syscall_wsclean(mslist,
                           maxuvl = cfg.WSC_MAXUVL,
                           even = cfg.WSC_EVEN,
                           odd = cfg.WSC_ODD,
-                          chanout = cfg.WSC_CHANNELSOUT,
-                          chandeconvolution = False,
+                          chanout = cfg.WSC_IMAGE_CHANNELSOUT,
+                          maxchan = cfg.WSC_MAX_CHANNELS,
+                          chandeconvolution = cfg.WSC_CHANDECONV,
                           interval0 = cfg.WSC_INTERVAL0,
                           interval1 = cfg.WSC_INTERVAL1,
                           intervalsout = cfg.WSC_INTERVALSOUT,
@@ -472,6 +507,7 @@ def generate_syscall_wsclean(mslist,
                           gain = cfg.WSC_GAIN,
                           mgain = cfg.WSC_MGAIN,
                           multiscale = cfg.WSC_MULTISCALE,
+                          multiscale_bias = cfg.WSC_MULTISCALE_BIAS,
                           scales = cfg.WSC_SCALES,
                           nonegative = cfg.WSC_NONEGATIVE,
                           sourcelist = cfg.WSC_SOURCELIST,
@@ -480,7 +516,9 @@ def generate_syscall_wsclean(mslist,
                           nwlayersfactor = cfg.WSC_NWLAYERSFACTOR,
                           joinchannels = cfg.WSC_JOINCHANNELS,
                           joinpolarizations = cfg.WSC_JOINPOLARIZATIONS,
+                          squarepolarizations = cfg.WSC_SQUAREPOLARIZATIONS,
                           pol = cfg.WSC_POL,
+                          splitpol = cfg.WSC_POL,
                           padding = cfg.WSC_PADDING,
                           nomodel = cfg.WSC_NOMODEL,
                           mask = cfg.WSC_MASK,
@@ -503,10 +541,8 @@ def generate_syscall_wsclean(mslist,
                           parallelreordering = cfg.WSC_PARALLELREORDERING,
                           parallelgridding = cfg.WSC_PARALLELGRIDDING):
 
-    # Generate system call to run wsclean
-
-
-    if is_odd(imsize):
+    # Generate system call to run wsclean based imaging for 2GC (and beyond)
+    if  imsize % 2 != 0:
         print(col('wsclean')+'Do not use odd image sizes')
         sys.exit()
 
@@ -532,7 +568,6 @@ def generate_syscall_wsclean(mslist,
         syscall += '-parallel-reordering '+str(parallelreordering)+' '
 
     # Outputs  
-    syscall += '-name '+imgname+' '
     if makepsf:
         syscall += '-make-psf '
     if nodirty:
@@ -549,16 +584,14 @@ def generate_syscall_wsclean(mslist,
         syscall += '-minuv-l '+str(minuvl)+' '
     if maxuvl != '':
         syscall += '-maxuv-l '+str(maxuvl)+' '
-    if tukeytaper:
-        syscall += f'-minuv-l 0.0 -taper-inner-tukey {tukeytaper} '
     if even:
         syscall += '-even-timesteps '
     if odd:
         syscall += '-odd-timesteps '
-    if interval0 and interval1:
-        syscall += '-intervals '+str(interval0)+' '+str(interval1)+' '
+    if interval0 or interval1:
+        syscall += '-interval '+str(interval0)+' '+str(interval1)+' '
     if intervalsout:
-        syscall += '-intervalsout '+str(intervalsout)+' '
+        syscall += '-intervals-out '+str(intervalsout)+' '
 
     # Image dimensions
     syscall += '-size '+str(imsize)+' '+str(imsize)+' '
@@ -590,6 +623,8 @@ def generate_syscall_wsclean(mslist,
         syscall  += '-mf-weighting '
     else:
         syscall += '-no-mf-weighting '
+    if tukeytaper:
+        syscall += f'-minuv-l 0.0 -taper-inner-tukey {tukeytaper} '
 
 
     # Deconvolution
@@ -597,21 +632,16 @@ def generate_syscall_wsclean(mslist,
         syscall += '-parallel-deconvolution '+str(paralleldeconvolution)+' '    
     if multiscale:
         syscall += '-multiscale '
-        syscall += '-multiscale-scales '+scales+' '
+        syscall += f'-multiscale-scale-bias {multiscale_bias} '
+        # syscall += '-multiscale-scales '+scales+' ' # WSCLEAN docs seem to not favour this option for multiscale cleaning anymore
     syscall += '-niter '+str(niter)+' '
     syscall += '-gain '+str(gain)+' '
     syscall += '-mgain '+str(mgain)+' '
-    syscall += '-pol '+str(pol)+' '
-    if chanout:
-        syscall += '-channels-out '+str(chanout)+' '
     if chandeconvolution:
         syscall += '--deconvolution-channels '+str(chandeconvolution)+' '
-    if fitspectralpol != 0:
-        syscall += '-fit-spectral-pol '+str(fitspectralpol)+' '
     if joinchannels:
         syscall += '-join-channels '
-    if joinpolarizations:
-        syscall += '-join-polarizations '
+
     if nonegative:
         syscall += '-no-negative '
     if stopnegative:
@@ -622,61 +652,102 @@ def generate_syscall_wsclean(mslist,
     # Masking
     if mask:
         if mask.lower() == 'fits':
-            mymask = glob.glob('*mask.fits')[0]
+            mymask = glob.glob(cfg.IMAGES + '/*mask.fits')[0]
             syscall += '-fits-mask '+mymask+' '
         else:
             syscall += '-fits-mask '+mask+' '
     if automask:
         syscall += '-auto-mask '+str(automask)+' '
-#    if autothreshold:
+    if autothreshold:
         syscall += '-auto-threshold '+str(autothreshold)+' '
         if localrms:
             syscall += '-local-rms '
     if threshold:
         syscall += '-threshold '+str(threshold)+' '
 
-    for myms in mslist:
-        syscall += myms+' '
 
-    return syscall
+    # Andrew additions for more complex imaging strategies 
+    wsclean_syscall_base = syscall # Copy syscall options to apply more advanced techniques
+    syscall_arr = []
 
+    # Add intervals out option to wsclean call
 
-def generate_syscall_predict(msname,
-                            imgbase,
-                            field = cfg.WSC_FIELD,
-                            nwlayersfactor = cfg.WSC_NWLAYERSFACTOR,
-                            chanout = cfg.WSC_CHANNELSOUT,
-                            usewgridder = cfg.WSC_USEWGRIDDER,
-#                            imsize = cfg.WSC_IMSIZE,
-#                            cellsize = cfg.WSC_CELLSIZE,
-#                            predictchannels = cfg.WSC_PREDICTCHANNELS,
-                            mem = cfg.WSC_MEM,
-                            absmem = cfg.WSC_ABSMEM):
+    # Fraser suggestions to break up chanels for high-mem costly imaging
+    if maxchan < chanout:
+        nchans = cfg.PRE_NCHANS
+        intchans = int(nchans / chanout * maxchan) # Each image will be composed of this many channels
+        nint = int(chanout / maxchan)
 
-    # Generate system call to run wsclean in predict mode
+        if len(mslist) > 1: 
+            print(col('WARNING') + f'You are using multiple MS files; make sure they all have {nchans} channels')
 
-    syscall = 'wsclean '
-    syscall += '-log-time '
-    syscall += '-predict '
-    syscall += '-field '+str(field)+' '
-    if usewgridder:
-        syscall += '-use-wgridder '
-    if not usewgridder:
-        syscall += '-nwlayers-factor '+str(nwlayersfactor)+' '
-    syscall += '-channels-out '+str(chanout)+' '
-#    syscall += '-size '+str(imsize)+' '+str(imsize)+' '
-#    syscall += '-scale '+cellsize+' '
-    syscall += '-name '+imgbase+' '
-    if absmem < 0:
-        syscall += '-mem '+str(mem)+' '
+        # Make sure all the integers are dividable
+        if nchans % maxchan != 0 or nchans % chanout:
+            print(col('ERROR') + f'MS file has {nchans} channels, which is not divisble by {maxchan} or {chanout}; please choose better numbers!')
+            sys.exit()
+
+        if chanout % maxchan != 0: 
+            print(col('ERROR') + 'Maxchan is not an integer multiple of the total output channels; please choose better numbers!')
+            sys.exit()
+
+        for k in range(nint):
+            syscall_arr.append(wsclean_syscall_base + f'-channels-out {maxchan} -channel-range {k * intchans} {(k + 1) * intchans - 1} -name {imgname}_part{k:04d} ') 
+
     else:
-        syscall += '-abs-mem '+str(absmem)+' '
-#    syscall += '-predict-channels '+str(predictchannels)+' '
-    syscall += msname
+        syscall_arr.append(wsclean_syscall_base + f'-channels-out {chanout} -name {imgname} ')
 
-    return syscall 
+    # Add option to split the deconvolution into IV and QU steps
+    # Sources with large rotation measures may not want polynomial fitting to the QU channels
+    if splitpol and pol != 'I':
+        spectralpol = ''
+
+        pol_QU = pol.replace('I', '').replace('V','')
+        pol_IV  = pol.replace('Q', '').replace('U','')
+
+        if fitspectralpol != 0:
+            spectralpol = '-fit-spectral-pol '+str(fitspectralpol) + ' '
+
+        joinpol_QU = ''
+        squarepol = ''
+
+        if joinpolarizations and len(pol.replace('I', '').replace('V','')) >= 2:
+            joinpol_QU     = '-join-polarizations '
+            if squarepolarizations:
+                squarepol = '-squared-channel-joining '    
+
+        joinpol_IV = ''
+        if joinpolarizations and len(pol.replace('Q', '').replace('U','')) >= 2:
+            joinpol_IV     = '-join-polarizations '
+
+        k = len(syscall_arr)
+        syscall_arr += syscall_arr
+
+        for _k in range(k):
+            syscall_arr[_k] += f'-pol {pol_IV} {spectralpol} {joinpol_IV} '
+            syscall_arr[_k + k] += f'-pol {pol_QU} {joinpol_QU} {squarepol} '
+
+    else:
+        joinpol = ''
+        squarepol = ''
+        spectralpol = ''
+
+        if joinpolarizations and len(pol) > 1:
+            joinpol     = '-join-polarizations '
+
+        if fitspectralpol != 0:
+            spectralpol = '-fit-spectral-pol '+str(fitspectralpol) + ' '   
+
+        k = len(syscall_arr)
+        for _k in range(k):     
+            syscall_arr[_k] += f'-pol {pol} {spectralpol} {joinpol}'   
+
+    # End by appending ms files to the wsclean calls
+    for k in range(len(syscall_arr)):
+        for myms in mslist:
+            syscall_arr[k] += myms + ' '
 
 
+    return syscall_arr
 
 def generate_syscall_makemask(restoredimage,
                             outfile = '',

@@ -61,15 +61,16 @@ def main():
 
     with open('project_info.json') as f:
         project_info = json.load(f)
-
-    with open('prefields_info.json') as f:
-        prefields_info = json.load(f)
     
-    target_names = project_info['target_names']
+    target_names = project_info['working_names']
     myms = project_info['working_ms']
 
     if cfg.SNAP_FIELDS != '':
         target_names = cfg.SNAP_FIELDS.split(',')
+
+    pol = 'I'
+    if cfg.SNAP_POL == True:
+        pol = 'IQUV'
     
     # ------------------------------------------------------------------------------
     #
@@ -79,32 +80,32 @@ def main():
 
 
     target_steps = []
-    ii = 1
 
     # Initialize workflow by sequentially spliting
     steps = []
-    kill_file = SCRIPTS+'/kill_snap_split_jobs_.sh'    
-    step_i = 0    
+    kill_file = SCRIPTS+'/kill_snap_split_jobs.sh'    
+    n = 0    
+
     for tt in range(0,len(target_names)):
         
-        targetname   = target_names[tt]
+        targetname  = target_names[tt]
 
-        if targetname not in prefields_info['field_names']:
+        if targetname not in project_info['working_names']:
 
             gen.print_spacer()
-            print(gen.col('Target')+targetname)
+            print(gen.col('Snap Target')+targetname)
             print(gen.col('MS')+'not found, skipping')
 
         else:
 
             # Logistics
             code = gen.get_target_code(targetname)
-            dependency = step_i - 1
-            if step_i == 0:
+            dependency = n - 1
+            if n == 0:
                 dependency = None
 
             step = {}
-            step['step'] = step_i
+            step['step'] = n
             step['comment'] = 'Splitting out field '+targetname
             step['dependency'] = dependency
             step['id'] = 'SNPTS'+code
@@ -112,18 +113,18 @@ def main():
             syscall += gen.generate_syscall_casa(casascript=cfg.OXKAT+f'/SNAP_split_sources.py {targetname}')
             step['syscall'] = syscall
             steps.append(step)
-            step_i += 1
-            last_split_code = 'SNPTS'+code # Save this as a variable to set dependencies for imaging
+            n += 1
+            last_split_code = 'SNPTS' + code # Save this as a variable to set dependencies for imaging
         
     target_steps.append((steps,kill_file,'Split MS Files'))
 
-
+    
     # Loop over targets for imaging -- run imaging concurrently 
     for tt in range(0,len(target_names)):
 
         targetname   = target_names[tt]
 
-        if targetname not in prefields_info['field_names']:
+        if targetname not in project_info['working_names']:
 
             gen.print_spacer()
             print(gen.col('Target')+targetname)
@@ -139,120 +140,204 @@ def main():
             # Target-specific kill file
             kill_file = SCRIPTS+'/kill_snap_jobs_'+filename_targetname+'.sh'
 
-            # Define target ms 
-            target_ms = myms.replace('.ms', f'_{targetname}.ms')
+            # Specify target ms name
+            target_ms = myms.replace('.ms', f'_{targetname}_snapshot.ms')
 
             gen.print_spacer()
             print(gen.col('Target')+targetname)
             print(gen.col('Measurement Set')+myms)
             print(gen.col('Code')+code)
 
-            # Image prefix
-            blind_img_prefix = IMAGES+'/img_'+target_ms+'_snapblind'
-            mask_img_prefix = IMAGES+'/img_'+target_ms+'_snapmask'
+            n = 0 # Start counting
 
-            step_i = 0
-            step = {}
-            step['step'] = step_i
-            step['comment'] = 'Blind wsclean on DATA column of '+target_ms
-            step['dependency'] = last_split_code
-            step['id'] = 'SNPBL'+code
-            step['slurm_config'] = cfg.SLURM_WSCLEAN
-            step['pbs_config'] = cfg.PBS_WSCLEAN
-            absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
-            syscall = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
-            syscall += gen.generate_syscall_wsclean(mslist = [target_ms],
-                        imgname = blind_img_prefix,
+            # If model image(s) have been specified use it to predict [DEFAULT assumes 2GC pcalmask]
+            model_image_prefix = IMAGES + '/img_' + target_ms.replace('_snapshot','') + '_' + cfg.SNAP_MODELIDENTIFIER
+            if cfg.SNAP_MODELIDENTIFIER != '' and glob.glob(model_image_prefix + '*' ) != [] and cfg.WSC_IMAGE_CHANNELSOUT == cfg.SNAP_CHANNELSOUT:
+                pass
+
+            # Say (for example) you *accidentally* removed pcalmask model, then this is necessary
+            else:
+
+                model_mask = cfg.SNAP_MODELMASK
+                model_image_prefix = IMAGES+'/img_'+target_ms+'_snapmask'
+                
+
+                # If you don't have a mask you need a blind clean as well to make a mask
+                if  cfg.SNAP_MODELMASK == '':
+                    
+                    blind_image_prefix = IMAGES+'/img_'+target_ms+'_snapbind'
+
+                    step = {}
+                    step['step'] = n
+                    step['comment'] = 'Shallow blind wsclean on DATA column of ' + target_ms
+                    step['dependency'] = n - 1 
+                    step['id'] = 'WBSNA'+code
+                    step['slurm_config'] = cfg.SLURM_WSCLEAN
+                    step['pbs_config'] = cfg.PBS_WSCLEAN
+                    absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
+                    syscall = ''
+                    prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
+                    imcall = gen.generate_syscall_wsclean(mslist = [target_ms],
+                        imgname = blind_image_prefix,
                         datacol = 'DATA',
-                        localrms = True,
+                        chanout = cfg.WSC_MASK_CHANNELSOUT,
                         nomodel = True,
+                        pol = 'I',
+                        intervalsout = False,
+                        mfweight = True,
+                        localrms = False,
+                        automask = 10.0,
+                        autothreshold = 3.0,
+                        tukeytaper=False,
                         field='0',
                         absmem = absmem)
-            step['syscall'] = syscall
-            steps.append(step)
-            step_i += 1
+                    for call in imcall: 
+                        syscall += prefix + call + '\n\n'
+                    step['syscall'] = syscall
+                    steps.append(step)
+                    n += 1
+
+                    step = {}
+                    step['step'] = n
+                    step['comment'] = 'Make cleaning mask for ' + targetname
+                    step['dependency'] = n - 1
+                    step['id'] = 'MKSNA'+code
+                    syscall  = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
+                    syscall += gen.generate_syscall_breizorro(restoredimage = f"{blind_image_prefix}-MFS-image.fits", outfile = f"{blind_image_prefix}-MFS-image.mask.fits")[0]
+                    step['syscall'] = syscall
+                    steps.append(step)
+                    n += 1
+                
+                    model_mask = f"{blind_image_prefix}-MFS-image.mask.fits"
+
+                step = {}
+                step['step'] = n
+                step['comment'] = 'Run wsclean, masked deconvolution of the DATA column of' + target_ms
+                step['dependency'] = n - 1 
+                step['id'] = 'WMSNA'+code
+                step['slurm_config'] = cfg.SLURM_WSCLEAN
+                step['pbs_config'] = cfg.PBS_WSCLEAN
+                absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
+                syscall = ''
+                prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
+                imcall = gen.generate_syscall_wsclean(mslist = [target_ms],
+                    imgname = model_image_prefix,
+                    datacol = 'DATA',
+                    mask = model_mask,
+                    chanout = cfg.SNAP_CHANNELSOUT,
+                    field= '0',
+                    pol = pol,
+                    nomodel = True,
+                    sourcelist = False,
+                    absmem = absmem)
+                for call in imcall: 
+                    syscall += prefix + call + '\n\n'
+                step['syscall'] = syscall
+                steps.append(step)
+                n += 1
+
+                if cfg.WSC_MAX_CHANNELS < cfg.SNAP_CHANNELSOUT:
+                    step = {}
+                    step['step'] = n
+                    step['comment'] = f'Fix Naming of the snap (MASK) images'
+                    step['dependency'] = n - 1
+                    step['id'] = 'HOSNA'+code
+                    prefix = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
+                    syscall =  f'python3 {cfg.TOOLS}/fix_image_naming.py {cfg.SNAP_CHANNELSOUT} {model_image_prefix}'
+                    step['syscall'] += prefix + syscall 
+                    steps.append(step)
+                    n += 1
 
             step = {}
-            step['step'] = step_i
-            step['comment'] = 'Make cleaning mask for '+targetname
-            step['dependency'] = step_i - 1
-            step['id'] = 'SNPMM'+code
-            syscall  = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
-            syscall += gen.generate_syscall_breizorro(restoredimage = f"{blind_img_prefix}-MFS-image.fits", outfile = f"{blind_img_prefix}-MFS-image.mask.fits")[0]
-            step['syscall'] = syscall
-            steps.append(step)
-            step_i += 1
-
-            step = {}
-            step['step'] = step_i
-            step['comment'] = 'Masked wsclean on DATA column of '+target_ms
-            step['dependency'] = step_i - 1
-            step['id'] = 'SNPMA'+code
+            step['step'] = n
+            step['comment'] = 'Run wsclean-predict to populate snapshot MS DATA column of ' + target_ms
+            step['dependency'] = n - 1 
+            step['id'] = 'PRSNA'+code
             step['slurm_config'] = cfg.SLURM_WSCLEAN
             step['pbs_config'] = cfg.PBS_WSCLEAN
             absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
-            syscall = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
-            syscall += gen.generate_syscall_wsclean(mslist = [target_ms],
-                        imgname = mask_img_prefix,
-                        mask = blind_img_prefix+'-MFS-image.mask.fits',
-                        datacol = 'DATA',
-                        localrms = False,
-                        field='0',
-                        absmem = absmem)
+            prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
+            syscall = prefix + 'python3 '+TOOLS+'/fix_nan_models.py ' + model_image_prefix + '\n\n'
+            syscall += prefix + gen.generate_syscall_predict(msname = target_ms,
+                imgname = model_image_prefix,
+                field = '0',
+                chanout = cfg.SNAP_CHANNELSOUT,
+                absmem = absmem)
             step['syscall'] = syscall
             steps.append(step)
-            step_i += 1
-
+            n += 1
+       
+       
+            # Now that models have been made we can perform the snapshot imaging routine     
             step = {}
-            step['step'] = step_i
-            step['comment'] = 'Making individual ms files for the scans of '+targetname
-            step['dependency'] = step_i - 1
-            step['id'] = 'SNPSS'+code
-            syscall = CONTAINER_RUNNER + CASA_CONTAINER+' ' if USE_SINGULARITY else ''
-            syscall += gen.generate_syscall_casa(casascript=cfg.OXKAT+f'/SNAP_split_scans.py {target_ms}')
-            step['syscall'] = syscall
-            steps.append(step)
-            step_i += 1
-
-            step = {}
-            step['step'] = step_i
-            step['comment'] = 'Performing UV-subtraction of the static sky model for '+targetname
-            step['dependency'] = step_i - 1
-            step['id'] = 'SNPUV'+code
+            step['step'] = n
+            step['comment'] = 'Perform UV-subtraction of the static sky model for ' + target_ms
+            step['dependency'] = n - 1
+            step['id'] = 'UVSNA'+code
             syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
-            syscall += 'python3 '+cfg.OXKAT+f'/SNAP_uvsub.py {targetname}'
+            syscall += 'python3 '+cfg.OXKAT+f'/SNAP_uvsub.py {target_ms}'
             step['syscall'] = syscall
             steps.append(step)
-            step_i += 1
-
+            n += 1
+            
             step = {}
-            step['step'] = step_i
-            step['comment'] = 'Performing per-interval dirty imaging of the uvsubtracted visbilities for '+targetname
-            step['dependency'] = step_i - 1
-            step['id'] = 'SNPIT'+code
+            step['step'] = n
+            step['comment'] = 'Performing per-interval snapshot imaging of the uvsubtracted visbilities for '+targetname
+            step['dependency'] = n - 1
+            step['id'] = 'IISNA'+code
             step['slurm_config'] = cfg.SLURM_WSCLEAN
             step['pbs_config'] = cfg.PBS_WSCLEAN
             syscall = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
-            syscall += 'python3 '+cfg.OXKAT+f'/SNAP_intervals.py {targetname}'
+            syscall += 'python3 '+cfg.OXKAT+f'/SNAP_intervals.py {target_ms}'
             step['syscall'] = syscall
             steps.append(step)
-            step_i += 1
+            n += 1
+        
 
             step = {}
-            step['step'] = step_i
+            step['step'] = n
             step['comment'] = 'Performing static model restoration for '+targetname
-            step['dependency'] = step_i - 1
-            step['id'] = 'SNPRM'+code
+            step['dependency'] = n - 1
+            step['id'] = 'RESNA'+code
             step['slurm_config'] = cfg.SLURM_WSCLEAN
             step['pbs_config'] = cfg.PBS_WSCLEAN
             syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
-            syscall += 'python3 '+cfg.OXKAT+f'/SNAP_restore.py {targetname}'
+            syscall += 'python3 '+cfg.OXKAT+f'/SNAP_restore.py {model_image_prefix} {target_ms}'
             step['syscall'] = syscall
             steps.append(step)
-            step_i += 1
+            n += 1
+
+
+            # More thought needs to go into the usefulness of Homogenizing + SNAPSHOT imaging
+            #if cfg.WSC_MAX_CHANNELS < cfg.SNAP_CHANNELSOUT or cfg.WSC_HOMOGENIZEBEAM:
+            #
+            #   snap_img_prefix = cfg.INTERVALS + f'/img_{target_ms}_restored'
+
+            #    step = {}
+            #    step['step'] = n
+            #    step['comment'] = f'Homogenize the SNAPSHOT imaging beams'
+            #    step['dependency'] = n - 1
+            #    step['id'] = 'HOSNA' +code
+            #    syscall =  f'python3 {cfg.TOOLS}/homogenize_beams.py {snap_img_prefix}'
+            #    prefix = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
+            #    step['syscall'] = prefix + syscall
+            #    steps.append(step)
+            #    n += 1
+
+            if cfg.SNAP_POL:
+                step = {}
+                step['step'] = n
+                step['comment'] = 'Make Polarization Intensity Images'
+                step['dependency'] = n - 1
+                step['id'] = 'PISNA'+code
+                syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
+                syscall += f"python3 {cfg.TOOLS}/make_pol_images.py {cfg.INTERVALS}"
+                step['syscall'] = syscall
+                steps.append(step)
+                n += 1
 
             target_steps.append((steps,kill_file,targetname))
-
+            
 
     # ------------------------------------------------------------------------------
     #
@@ -279,8 +364,8 @@ def main():
 
         for step in steps:
 
-            step_id = step['id']
-            id_list.append(step_id)
+            nd = step['id']
+            id_list.append(nd)
             if type(step['dependency']) == int:
                 dependency = steps[step['dependency']]['id']
             elif type(step['dependency']) == str:
@@ -299,7 +384,7 @@ def main():
             comment = step['comment']
 
             run_command = gen.job_handler(syscall = syscall,
-                            jobname = step_id,
+                            jobname = nd,
                             infrastructure = INFRASTRUCTURE,
                             dependency = dependency,
                             slurm_config = slurm_config,

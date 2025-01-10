@@ -46,7 +46,7 @@ if CAL_1GC_BL_FREQS != []:
     #     myspw += '*:'+badfreq+','
     # myspw = myspw.rstrip(',')
 
-    if CAL_1GC_AGGRESSIVE_FLAG:
+    if CAL_1GC_AGGRESSIVE_FLAGS:
         flagdata(vis = myms,
             mode = 'manual',
             spw = myspw,

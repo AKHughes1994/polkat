@@ -54,7 +54,6 @@ def calculate_P0(flux_P, rms_Q, rms_U, rms_V, pol_flag, Aq = 0.8):
 
         
 
-
 def return_max(im, region):
     '''
     Return the value that has the higher absolute magnitude
@@ -194,7 +193,7 @@ def get_IQUVP_names(im_I, pol_flag, print_type=False):
 
     return [im_I, im_Q, im_U, im_V, im_P]
 
-def check_position(fname, image, xpix, ypix, snr_thresh=5.0, P_image = False, fix_additional_comps = False):
+def check_position(fname, image, xpix, ypix, snr_thresh=5.0, P_image = False, fix_additional_comps = False, manual_rms_region = False):
     '''
     Code to check whether there is sufficient flux at a position to allow 
     imfit to fit for position, or if said position should be frozen
@@ -213,27 +212,44 @@ def check_position(fname, image, xpix, ypix, snr_thresh=5.0, P_image = False, fi
 
     # If a component is weak (i.e., < snr-thresh * sigma fix the position to the the reference otherwise fit for the position)
     k = 0
+    
+    # Get beam parameters
+    bmaj = imhead(image, mode='get', hdkey='bmaj')['value']
+    bmin = imhead(image, mode='get', hdkey='bmin')['value']
+    bpa  = imhead(image, mode='get', hdkey='bpa')['value']
+
+
     for x, y in zip(xpix, ypix):
-        ims   = get_imstat_values(image, x, y)
+        region = f'circle[[{x}pix,{y}pix],{2 * bmaj}arcsec]'
+
+        f = open('check_pos.txt', 'w')
+        f.write(f'0.0,{x},{y},{bmaj}arcsec,{bmin}arcsec,{bpa}deg, xyabp')
+        f.close()
+
+        # Get flux at test position
+        test_flux = abs(imfit(image, region = region, estimates='check_pos.txt')['results']['component0']['peak']['value'])
 
         # If its a P-image don't use the image plane noise as the check criteria as it is (very) non-gaussian
-        if P_image is False:
+        rms = get_imstat_values(image, x, y, manual_rms_region = manual_rms_region)[3]
+        if P_image is True:
+            msg(f'Check image: {image})
             image_Q = image.replace('-P-', '-Q-')
             image_U = image.replace('-P-', '-U-')
-            ims_Q = get_imstat_values(image_Q, x, y)
-            ims_U = get_imstat_values(image_U, x, y)
-            ims[3] = (ims_Q[3] + ims_U[3]) * 0.5
+            ims_Q = get_imstat_values(image_Q, x, y, manual_rms_region = manual_rms_region)
+            ims_U = get_imstat_values(image_U, x, y, manual_rms_region = manual_rms_region)
+            rms = np.amax((ims_Q[3],ims_U[3]))
 
         if fix_additional_comps and k > 0:
             fix_var.append('xyabp')
 
-        elif fix_additional_comps is True and k == 0 and abs(ims[0])/ims[3] > snr_thresh:
+        elif fix_additional_comps is True and k == 0 and test_flux > snr_thresh * rms:
             fix_var.append('abp')
 
-        elif fix_additional_comps is False and abs(ims[0])/ims[3] > snr_thresh:
+        elif fix_additional_comps is False and test_flux > snr_thresh * rms:
             fix_var.append('abp')
 
         else:
+            msg('Fixing position')
             fix_var.append('xyabp')
         k+=1
 
@@ -327,23 +343,23 @@ def fit_channel(i_image, xpix_I, ypix_I, xpix_Q, ypix_Q, xpix_U, ypix_U, xpix_P,
     IQUVP_names = get_IQUVP_names(i_image, pol_flag)
 
     # Fit Stokes I
-    check_position('estimate_I.txt', IQUVP_names[0], xpix_I, ypix_I)
+    check_position('estimate_I.txt', IQUVP_names[0], xpix_I, ypix_I, manual_rms_region = manual_rms_region)
     imf_I  = get_imfit_values('estimate_I.txt', IQUVP_names[0], xpix_I, ypix_I)
 
     # Fit Stokes Q
-    check_position('estimate_Q.txt', IQUVP_names[1], xpix_Q, ypix_Q, fix_additional_comps = True)
+    check_position('estimate_Q.txt', IQUVP_names[1], xpix_Q, ypix_Q, fix_additional_comps = True, manual_rms_region = manual_rms_region)
     imf_Q  = get_imfit_values('estimate_Q.txt', IQUVP_names[1], xpix_Q, ypix_Q)
 
     # Fit Stokes U
-    check_position('estimate_U.txt', IQUVP_names[2], xpix_U, ypix_U, fix_additional_comps = True)
+    check_position('estimate_U.txt', IQUVP_names[2], xpix_U, ypix_U, fix_additional_comps = True, manual_rms_region = manual_rms_region)
     imf_U  = get_imfit_values('estimate_U.txt', IQUVP_names[2], xpix_U, ypix_U)
 
     # Fit Stokes V
-    check_position('estimate_V.txt', IQUVP_names[3], xpix_V, ypix_V, fix_additional_comps = True)
+    check_position('estimate_V.txt', IQUVP_names[3], xpix_V, ypix_V, fix_additional_comps = True, manual_rms_region = manual_rms_region)
     imf_V  = get_imfit_values('estimate_V.txt', IQUVP_names[3], xpix_V, ypix_V)
 
     # Fit Stokes P
-    check_position('estimate_P.txt', IQUVP_names[4], xpix_P, ypix_P, P_image=True, fix_additional_comps = True)
+    check_position('estimate_P.txt', IQUVP_names[4], xpix_P, ypix_P, P_image=True, fix_additional_comps = True, manual_rms_region = manual_rms_region)
     imf_P  = get_imfit_values('estimate_P.txt', IQUVP_names[4], xpix_P, ypix_P)
        
     # Get the number of components
@@ -458,24 +474,24 @@ def extract_polarization_properties(src_name,  src_im_identifier, src_ra, src_de
     ypix_I = [imf_I['results'][key]['pixelcoords'][1] for key in imf_I['results'].keys() if 'component' in key]
 
     # Make estimate and fit for Lin. Pol. Intensity -- checking against position of stokes I components
-    check_position('estimate_P.txt', IQUVP_names[4], xpix_I, ypix_I, P_image = True, fix_additional_comps = True)
+    check_position('estimate_P.txt', IQUVP_names[4], xpix_I, ypix_I, P_image = True, fix_additional_comps = True, manual_rms_region = manual_rms_region)
     imf_P  = get_imfit_values('estimate_P.txt', IQUVP_names[4], xpix_I, ypix_I)
     xpix_P = [imf_P['results'][key]['pixelcoords'][0] for key in imf_P['results'].keys() if 'component' in key]
     ypix_P = [imf_P['results'][key]['pixelcoords'][1] for key in imf_P['results'].keys() if 'component' in key]
 
     # Make estimate and fit for Q/U -- checking against position of Lin. Pol. components
-    check_position('estimate_Q.txt', IQUVP_names[1], xpix_P, ypix_P, fix_additional_comps = True)
+    check_position('estimate_Q.txt', IQUVP_names[1], xpix_P, ypix_P, fix_additional_comps = True, manual_rms_region = manual_rms_region)
     imf_Q  = get_imfit_values('estimate_Q.txt', IQUVP_names[1], xpix_P, ypix_P)
     xpix_Q = [imf_Q['results'][key]['pixelcoords'][0] for key in imf_Q['results'].keys() if 'component' in key]
     ypix_Q = [imf_Q['results'][key]['pixelcoords'][1] for key in imf_Q['results'].keys() if 'component' in key]
    
-    check_position('estimate_U.txt', IQUVP_names[2], xpix_P, ypix_P, fix_additional_comps = True)
+    check_position('estimate_U.txt', IQUVP_names[2], xpix_P, ypix_P, fix_additional_comps = True, manual_rms_region = manual_rms_region)
     imf_U  = get_imfit_values('estimate_U.txt', IQUVP_names[2], xpix_P, ypix_P)
     xpix_U = [imf_U['results'][key]['pixelcoords'][0] for key in imf_U['results'].keys() if 'component' in key]
     ypix_U = [imf_U['results'][key]['pixelcoords'][1] for key in imf_U['results'].keys() if 'component' in key]
 
     # Make estimate and fit Stokes V  -- checking against position of stokes I components
-    check_position('estimate_V.txt', IQUVP_names[3], xpix_I, ypix_I, fix_additional_comps = True)
+    check_position('estimate_V.txt', IQUVP_names[3], xpix_I, ypix_I, fix_additional_comps = True, manual_rms_region = manual_rms_region)
     imf_V  = get_imfit_values('estimate_V.txt', IQUVP_names[3], xpix_I, ypix_I)
     xpix_V = [imf_V['results'][key]['pixelcoords'][0] for key in imf_V['results'].keys() if 'component' in key]
     ypix_V = [imf_V['results'][key]['pixelcoords'][1] for key in imf_V['results'].keys() if 'component' in key]

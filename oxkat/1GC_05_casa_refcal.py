@@ -61,7 +61,7 @@ flagmanager(vis=myms,
         versionname='autoflag_cals_data')
 
 
-# ------- Set calibrator models
+# ------- Set BP calibrator models
 
 if primary_tag == '1934':
     if band != 'L':
@@ -100,14 +100,6 @@ for i in range(0,len(pcals)):
         fluxdensity = [1.0,0,0,0],
         reffreq = '1000MHz',
         usescratch = True)
-
-if pacal_name != '':
-    # Initialize the Polarization Calibrator model to have 0.0 Stokes V and Non-zero Stokes U
-    setjy(vis=myms,
-        field=pacal_name,
-        standard='manual',
-        fluxdensity = POLANG_MOD,
-        usescratch=True)
 
 # --------------------------------------------------------------- #
 # --------------------------------------------------------------- #
@@ -579,6 +571,14 @@ if pacal_name != '':
         gainfield=[pacal_name,pacal_name, bpcal_name, bpcal_name],
         interp=['nearest', 'nearest', 'linear', 'nearest'],
         append=True)
+
+    # ------- Set PA calibrator models
+
+    setjy(vis=myms,
+        field=pacal_name,
+        standard='manual',
+        fluxdensity = POLANG_MOD,
+        usescratch=True)
 
 
     # ------- KCROSS (polcal; apply Bp, Df (primary), Ga, K, Gp (polcal))

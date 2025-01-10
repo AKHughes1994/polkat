@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# ian.heywood@physics.ox.ac.uk
+# andrew.hughes@physics.ox.ac.uk
 
 
 import glob
@@ -10,6 +10,7 @@ sys.path.append(o.abspath(o.join(o.dirname(sys.modules[__name__].__file__), ".."
 
 
 from oxkat import generate_jobs as gen
+from oxkat import generate_imaging as gi
 from oxkat import config as cfg
 
 
@@ -18,9 +19,13 @@ def main():
     USE_SINGULARITY = cfg.USE_SINGULARITY
 
     gen.preamble()
-    print(gen.col()+'RM Synthesis analysis of the polarization properties')
-    if cfg.CAL_1GC_DIAGNOSTICS:
-        print(gen.col() + 'Including systematic calculations using Primary and Polarization Angle Calibrator')
+    print(gen.col()+'1GC (referenced calibration) setup')
+    gen.print_spacer()
+
+    if cfg.PRE_FIELDS != '':
+        print(gen.col('Field selection')+cfg.PRE_FIELDS)
+    if cfg.PRE_SCANS != '':
+        print(gen.col('Scan selection')+cfg.PRE_SCANS)
     gen.print_spacer()
 
     # ------------------------------------------------------------------------------
@@ -34,19 +39,20 @@ def main():
     gen.setup_dir(cfg.SCRIPTS)
     gen.setup_dir(cfg.GAINTABLES)
     gen.setup_dir(cfg.IMAGES)
-    gen.setup_dir(cfg.RESULTS)
     gen.setup_dir(cfg.GAINPLOTS)
     gen.setup_dir(cfg.VISPLOTS)
 
-    f = open('data/rmsynth/rmsynth_info.txt', 'r')
-    k = 0
-    for line in f:
-        line = line.strip()
-        if k > 2:
-            print(gen.col(f'Field {k - 2}: ') + f'{line.split(" ")[0]}')
-        k+=1
-    f.close()
-    gen.print_spacer()
+
+    with open('project_info.json') as f:
+        project_info = json.load(f)
+
+    band = project_info['band']
+
+    OXKAT = cfg.OXKAT
+    DATA = cfg.DATA
+    IMAGES = cfg.IMAGES
+    SCRIPTS = cfg.SCRIPTS
+    TOOLS = cfg.TOOLS
 
     INFRASTRUCTURE, CONTAINER_PATH = gen.set_infrastructure(sys.argv)
     if CONTAINER_PATH is not None:
@@ -54,15 +60,16 @@ def main():
     else:
         CONTAINER_RUNNER=''
 
+
+    CASA_CONTAINER       = gen.get_container(CONTAINER_PATH,cfg.CASA_PATTERN,USE_SINGULARITY)
+    WSCLEAN_CONTAINER = gen.get_container(CONTAINER_PATH,cfg.WSCLEAN_PATTERN,USE_SINGULARITY)
+    SHADEMS_CONTAINER = gen.get_container(CONTAINER_PATH,cfg.SHADEMS_PATTERN,USE_SINGULARITY)
     PYTHON3_CONTAINER = gen.get_container(CONTAINER_PATH,cfg.PYTHON3_PATTERN,USE_SINGULARITY)
-    ALBUS_CONTAINER = gen.get_container(CONTAINER_PATH,cfg.ALBUS_PATTERN,USE_SINGULARITY)
-    CASA_CONTAINER = gen.get_container(CONTAINER_PATH,cfg.CASA_PATTERN,USE_SINGULARITY)
-    TRICOLOUR_CONTAINER = gen.get_container(CONTAINER_PATH,cfg.TRICOLOUR_PATTERN,USE_SINGULARITY)
 
 
     # ------------------------------------------------------------------------------
     #
-    # RMSynth recipe definition
+    # 1GC recipe definition
     #
     # ------------------------------------------------------------------------------
 
@@ -72,59 +79,67 @@ def main():
 
     myms  = project_info['working_ms']
     code = gen.get_code(myms)
+
+    img_prefix = f"{cfg.IMAGES}/img_test_diagnostic"
+
     steps = []
-
-
-    step_i = 0
     step = {}
-    step['step'] = step_i
-    step['comment'] = 'Extract polarization properties using rmsynth_info.txt (found in data/rmsynth directory)'
-    step['dependency'] = None
-    step['slurm_config'] = cfg.SLURM_RM
-    step['id'] = 'POEXT'+code
-    syscall = CONTAINER_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
-    syscall += gen.generate_syscall_casa(casascript=cfg.OXKAT+f'/RMSYNTH_01_extract_fluxes.py')
+    step_n = 0
+    step['step'] = step_n
+    step['comment'] = f'Image calibrator as a diagnostic for calibration systematics'
+    step['dependency'] = None if step_n == 0 else step_n - 1
+    step['id'] = 'DIAGN'
+    syscall = gi.generate_syscall_wsclean(mslist = [myms],
+                imgname = img_prefix,
+                datacol = 'CORRECTED_DATA',
+                field = '1',
+                weight=cfg.WSC_WEIGHT_CAL,
+                imsize = cfg.WSC_CAL_IMSIZE,
+                chanout = cfg.WSC_IMAGE_CHANNELSOUT,
+                pol='IQUV',
+                mask = False,
+                automask = 5.0,
+                autothreshold = 1.0,
+                splitpol = True,
+                localrms= True,
+                threshold = False,
+                nomodel  = True,
+                sourcelist = False)
+    prefix = '\n\n' + CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
+    step['syscall'] = prefix + prefix.join(syscall)
+    steps.append(step)
+    step_n += 1
+
+
+    if cfg.WSC_MAX_CHANNELS < cfg.WSC_IMAGE_CHANNELSOUT or cfg.WSC_HOMOGENIZEBEAM:
+        step = {}
+        step['step'] = step_n
+        step['comment'] = f'Homogenize the resolution across frequency channels'
+        step['dependency'] = None if step_n == 0 else step_n - 1
+        step['id'] = 'HOMOG'
+        syscall =  f'python3 {cfg.TOOLS}/homogenize_beams.py {img_prefix}'
+        prefix = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
+        step['syscall'] = prefix + syscall
+        steps.append(step)
+        step_n += 1
+
+    step = {}
+    step['step'] = step_n
+    step['comment'] = 'Apply primary beam correction to test (BLIND) image'
+    step['dependency'] = None if step_n == 0 else step_n - 1
+    step['id'] = 'PBBLD'+code
+    syscall = ''
+    images = glob.glob(f'{img_prefix}*-MFS*-image.fits')
+    if glob.glob(f'{img_prefix}*-MFS*-image.homogenized.fits') != []:
+        images.extend(glob.glob(f'{img_prefix}*-MFS*-image.homogenized.fits'))
+    for image in images:
+        syscall += CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
+        syscall += 'python3 '+TOOLS+'/pbcor_katbeam.py --band '+band[0]+f' {image}\n'
     step['syscall'] = syscall
     steps.append(step)
-    step_i += 1
+    step_n += 1
 
-    if cfg.CAL_1GC_DIAGNOSTICS:
-        step = {}
-        step['step'] = step_i
-        step['comment'] = 'Calculate systematic effects by performing image plane analysis on polarization/primary calibrator'
-        step['dependency'] = step_i - 1
-        step['slurm_config'] = cfg.SLURM_RM
-        step['id'] = 'POSYS'+code
-        syscall = CONTAINER_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
-        syscall += gen.generate_syscall_casa(casascript=cfg.OXKAT+f'/RMSYNTH_01B_systematics.py')
-        step['syscall'] = syscall
-        steps.append(step)
-        step_i += 1      
-
-    if cfg.POLANG_NAME != '':
-        step = {}
-        step['step'] = step_i
-        step['comment'] = 'Run RM Synthesis on all of the extracted IQUV curves'
-        step['dependency'] = step_i - 1
-        step['slurm_config'] = cfg.SLURM_RM
-        step['id'] = 'RMSYN'+code
-        syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
-        syscall += 'python3 '+cfg.OXKAT+'/RMSYNTH_02_run_rmsynth.py'
-        step['syscall'] = syscall
-        steps.append(step)
-        step_i += 1
-
-        step = {}
-        step['step'] = step_i
-        step['comment'] = 'Run ALBUS on all of the Targets + Polarization Calibrators'
-        step['dependency'] = step_i - 1
-        step['slurm_config'] = cfg.SLURM_RM
-        step['id'] = 'ALBUS'+code
-        syscall = CONTAINER_RUNNER+ALBUS_CONTAINER+' ' if USE_SINGULARITY else ''
-        syscall += 'python3 '+cfg.OXKAT+'/RMSYNTH_03_run_ALBUS.py'
-        step['syscall'] = syscall
-        steps.append(step)
-
+    
 
     # ------------------------------------------------------------------------------
     #
@@ -133,8 +148,8 @@ def main():
     # ------------------------------------------------------------------------------
 
 
-    submit_file = 'submit_rmsynth_jobs.sh'
-    kill_file = cfg.SCRIPTS+'/kill_rmsynth_jobs.sh'
+    submit_file = 'submit_1GC_jobs.sh'
+    kill_file = cfg.    SCRIPTS+'/kill_1GC_jobs.sh'
 
     f = open(submit_file,'w')
     f.write('#!/usr/bin/env bash\n')
@@ -189,7 +204,6 @@ def main():
     gen.print_spacer()
 
     # ------------------------------------------------------------------------------
-
 
 
 if __name__ == "__main__":

@@ -2,6 +2,8 @@ import glob, os, subprocess,sys, time
 from astropy.io import fits
 import numpy as np
 import os.path as o
+import sys
+
 sys.path.append(o.abspath(o.join(o.dirname(sys.modules[__name__].__file__), "..")))
 
 from oxkat import generate_jobs as gen
@@ -35,8 +37,14 @@ def flush_fits(newimage,fitsfile):
     f.flush()
 
 def main():
+
+    # Read in directory
+    if len(sys.argv) != 2:
+        sys.exit('ERROR: Please include directory to parse for images (e.g., IMAGES or INTERVALS)')
     
-    for image_Q in sorted(glob.glob(cfg.IMAGES + '/*-Q-*image.fits')):
+    directory = sys.argv[-1]
+    
+    for image_Q in sorted(glob.glob(directory + '/*-Q-*image.fits') + glob.glob(directory + '/*-Q-*image.homogenized.fits')):
 
         # Get the other image names
         image_U = image_Q.replace('-Q-', '-U-')
@@ -47,7 +55,7 @@ def main():
         # Initialize the P image by duplicating the Q image
         subprocess.run([f'cp {image_Q} {image_Plin}'], shell = True)
         subprocess.run([f'cp {image_Q} {image_Ptot}'], shell = True)
-        msg(f'Making image: {image_Plin.split(cfg.IMAGES)[-1]}')
+        msg(f'Making image: {image_Plin.split(directory + "/")[-1]}')
 
         # Run calculations and return P images
         flux_Q = get_image(image_Q)

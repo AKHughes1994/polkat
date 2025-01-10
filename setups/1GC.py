@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# ian.heywood@physics.ox.ac.uk
+# andrew.hughes@physics.ox.ac.uk
 
 
 import glob
@@ -10,6 +10,7 @@ sys.path.append(o.abspath(o.join(o.dirname(sys.modules[__name__].__file__), ".."
 
 
 from oxkat import generate_jobs as gen
+from oxkat import generate_imaging as gi
 from oxkat import config as cfg
 
 
@@ -63,9 +64,6 @@ def main():
 
     with open('project_info.json') as f:
         project_info = json.load(f)
-
-    with open('prefields_info.json') as f:
-        prefields_info = json.load(f)
 
     myms  = project_info['working_ms']
     code = gen.get_code(myms)
@@ -140,136 +138,76 @@ def main():
     syscall += 'python3 '+cfg.OXKAT+'/1GC_07_plot_visibilities.py'
     step['syscall'] = syscall
     steps.append(step)
-    step_i  = 7
     
     if cfg.CAL_1GC_DIAGNOSTICS:
 
-        bpcal_name  = project_info['primary_name']
-        bpcal_index = prefields_info['field_names'].index(bpcal_name)
-        name_ms = myms.replace('.ms', f'_{bpcal_name}.ms') # This makes the naming convention the same as oxkat
-        img_prefix  = f"{cfg.IMAGES}/img_{name_ms}_postXf"
+        cal_names = [project_info['primary_name']]
+        if  cfg.POLANG_NAME != '':
+            cal_names += [project_info['polang_name']]
 
-        step = {}
-        step['step'] = step_i
-        step['comment'] = f'Image {bpcal_name} calibrator post-Xf to investigate systematic effects'
-        step['dependency'] = step_i - 1 
-        step['id'] = 'DIAGN' + (bpcal_name[-3:])
-        step['slurm_config'] = cfg.SLURM_WSCLEAN
-        step['pbs_config'] = cfg.PBS_WSCLEAN
-        absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
-        syscall = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
-        syscall += gen.generate_syscall_wsclean(mslist = [myms],
-            imgname = img_prefix,
-            datacol = 'CORRECTED_DATA',
-            field = bpcal_index,
-            weight=cfg.WSC_WEIGHT_CAL,
-            imsize = cfg.WSC_CAL_IMSIZE,
-            chanout = cfg.WSC_CAL_CHANNELSOUT,
-            pol='I',
-            joinpolarizations=False,
-            mask = False,
-            automask = 5.0,
-            autothreshold = 1.0,
-            localrms=True,
-            threshold = False,
-            nomodel  = True,
-            sourcelist = False,
-            absmem = absmem) + '\n\n'
-        syscall += CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
-        syscall += gen.generate_syscall_breizorro(restoredimage = f"{img_prefix}-MFS-image.fits", 
-                                                      outfile = f"{img_prefix}-MFS-image.mask.fits", thresh = 6.0)[0] + '\n\n'
-        syscall += CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
-        syscall += gen.generate_syscall_wsclean(mslist = [myms],
-            imgname = img_prefix,
-            datacol = 'CORRECTED_DATA',
-            field = bpcal_index,
-            weight=cfg.WSC_WEIGHT_CAL,
-            chanout = cfg.WSC_CAL_CHANNELSOUT,
-            imsize = cfg.WSC_CAL_IMSIZE,
-            pol='IQUV',
-            joinpolarizations=True,
-            mask = img_prefix +'-MFS-image.mask.fits',
-            automask = 5.0,
-            autothreshold = 1.0,
-            localrms=False,
-            threshold = False,
-            nomodel  = True,
-            sourcelist = False,
-            absmem = absmem) + '\n\n'
-        step['syscall'] = syscall
-        steps.append(step)
-        step_i += 1
+        k = 0
+        for cal_name in cal_names:
 
-        if cfg.POLANG_NAME != '':
-            pacal_name  = project_info['polang_name']
-            pacal_index = prefields_info['field_names'].index(pacal_name)
-            name_ms = myms.replace('.ms', f'_{pacal_name}.ms') # This makes the naming convention the same as oxkat
-            img_prefix  = f"{cfg.IMAGES}/img_{name_ms}_postXf"
+            k += 1
+            cal_index   = project_info['working_ids'][project_info['working_names'].index(cal_name)]
+            name_ms   = myms.replace('.ms', f'_{cal_name}.ms')
+            img_prefix = f"{cfg.IMAGES}/img_{name_ms}_diagnostic"
 
             step = {}
-            step['step'] = step_i
-            step['comment'] = f'Image {pacal_name} calibrator post-Xf to investigate systematic effects'
-            step['dependency'] = step_i - 1 
-            step['id'] = 'DIAGN' + (pacal_name[-3:])
+            step['step'] = 6 + k
+            step['comment'] = f'Image {cal_name} for diagnostic of calibration systematics'
+            step['dependency'] = 4 
+            step['id'] = 'DIAGN' + (cal_name[-3:])
             step['slurm_config'] = cfg.SLURM_WSCLEAN
             step['pbs_config'] = cfg.PBS_WSCLEAN
             absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
-            syscall = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
-            syscall += gen.generate_syscall_wsclean(mslist = [myms],
+            syscall = ''
+            prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
+            imcall  = gen.generate_syscall_wsclean(mslist = [myms],
                 imgname = img_prefix,
                 datacol = 'CORRECTED_DATA',
-                field = pacal_index,
+                field = cal_index,
                 weight=cfg.WSC_WEIGHT_CAL,
-                chanout = cfg.WSC_CAL_CHANNELSOUT,
                 imsize = cfg.WSC_CAL_IMSIZE,
+                chanout = cfg.WSC_CAL_CHANNELSOUT,
                 pol='I',
                 joinpolarizations=False,
                 mask = False,
                 automask = 5.0,
+                intervalsout = False,
                 autothreshold = 1.0,
-                localrms=True,
+                localrms= True,
                 threshold = False,
                 nomodel  = True,
                 sourcelist = False,
-                absmem = absmem) + '\n\n'
-            syscall += CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
-            syscall += gen.generate_syscall_breizorro(restoredimage = f"{img_prefix}-MFS-image.fits", 
+                absmem = absmem)
+            for call in imcall: 
+                syscall += prefix + call + '\n\n'
+            syscall += prefix + gen.generate_syscall_breizorro(restoredimage = f"{img_prefix}-MFS-image.fits", 
                                                       outfile = f"{img_prefix}-MFS-image.mask.fits", thresh = 6.0)[0] + '\n\n'
-            syscall += CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
-            syscall += gen.generate_syscall_wsclean(mslist = [myms],
+            imcall = gen.generate_syscall_wsclean(mslist = [myms],
                 imgname = img_prefix,
                 datacol = 'CORRECTED_DATA',
-                field = pacal_index,
+                field = cal_index,
                 weight=cfg.WSC_WEIGHT_CAL,
                 chanout = cfg.WSC_CAL_CHANNELSOUT,
                 imsize = cfg.WSC_CAL_IMSIZE,
-                pol='IQUV',
                 joinpolarizations=True,
+                splitpol = False,
                 mask = img_prefix +'-MFS-image.mask.fits',
                 automask = 5.0,
+                intervalsout = False,
                 autothreshold = 1.0,
                 localrms=False,
                 threshold = False,
                 nomodel  = True,
                 sourcelist = False,
-                absmem = absmem) + '\n\n'
+                absmem = absmem)
+            for call in imcall: 
+                syscall += prefix + call
             step['syscall'] = syscall
             steps.append(step)
-            step_i += 1
-
-
-
-        step = {}
-        step['step'] = step_i
-        step['comment'] = 'Make Polarization Intensity Images'
-        step['dependency'] = step_i - 1
-        step['id'] = 'MKLPI'+code
-        syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
-        syscall += f"python3 {cfg.TOOLS}/make_pol_images.py"
-        step['syscall'] = syscall
-        steps.append(step)
-        step_i += 1
-
+   
     # ------------------------------------------------------------------------------
     #
     # Write the run file and kill file based on the recipe

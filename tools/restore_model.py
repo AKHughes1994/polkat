@@ -1,14 +1,15 @@
 #!/usr/bin/env python
-# ian.heywood@physics.ox.ac.uk
-
+#andrew.hughes@physics.ox.ac.uk
 
 import glob
 import logging
 import numpy
 import os
+import subprocess
 import random 
 import scipy.signal
 import shutil
+import time
 import string
 import sys
 
@@ -20,6 +21,10 @@ from multiprocessing import Pool
 import os.path as o
 sys.path.append(o.abspath(o.join(o.dirname(sys.modules[__name__].__file__), "..")))
 from oxkat import config as cfg
+
+def msg(txt):
+    stamp = time.strftime(' %Y-%m-%d %H:%M:%S | ')
+    print(stamp+txt)
 
 def get_image(fitsfile):
         input_hdu = fits.open(fitsfile)[0]
@@ -59,7 +64,7 @@ def get_header(fitsfile):
     bmin = hdr.get('BMIN')
     bpa = hdr.get('BPA')
     pixscale = hdr.get('CDELT2')
-    return bmaj,bmin,bpa,pixscale
+    return bmaj, bmin, bpa, pixscale
 
 
 def beam_header(fitsfile,bmaj,bmin,bpa):
@@ -72,81 +77,105 @@ def beam_header(fitsfile,bmaj,bmin,bpa):
         outhdu.flush()  
 
 
-def convolve_fits(residual_fits,model_image,proc_id):
-
-        proc_id = str(proc_id)
-
-        # Set up FITS files
-        psf_fits = residual_fits.replace('image','psf')
-        restored_fits = residual_fits.replace('image','image-restored')
-        shutil.copyfile(residual_fits,restored_fits)
-
+def restore_fits(modelsub_image, model_data, psf):
+                
+        restored_image = modelsub_image.replace('modelsub', 'restored')
+        shutil.copyfile(modelsub_image, restored_image)
 
         # Get the fitted beam
-        bmaj,bmin,bpa,pixscale = get_header(psf_fits)
-
-        logging.info('(File '+proc_id+') Residual    : '+residual_fits)
-        logging.info('(File '+proc_id+') PSF         : '+psf_fits)
-        logging.info('(File '+proc_id+') Restored    : '+restored_fits)
-        logging.info('(File '+proc_id+') Fitted bmaj : '+str(bmaj*3600))
-        logging.info('(File '+proc_id+') Fitted bmin : '+str(bmin*3600))
-        logging.info('(File '+proc_id+') Fitted bpa  : '+str(bpa))
+        bmaj, bmin, bpa, pixscale = psf
 
         # Create restoring beam image
-        xstd = bmin/(2.3548*pixscale)
-        ystd = bmaj/(2.3548*pixscale)
-        theta = deg2rad(bpa)
-        restoring = Gaussian2DKernel(x_stddev=xstd,y_stddev=ystd,theta=theta,x_size=cropsize,y_size=cropsize,mode='center')
+        xstd = bmaj / (2.3548 * pixscale)
+        ystd = bmin / (2.3548 * pixscale)
+        theta = deg2rad(bpa - 90.0)
+        restoring = Gaussian2DKernel(x_stddev = xstd, y_stddev = ystd, theta=theta, x_size=cropsize, y_size=cropsize, mode='center')
         restoring_beam_image = restoring.array
         restoring_beam_image = restoring_beam_image / numpy.max(restoring_beam_image)
 
         # Convolve model with restoring beam
-        model_conv_image = scipy.signal.fftconvolve(model_image, restoring_beam_image, mode='same')
+        modelconv_image = scipy.signal.fftconvolve(model_data, restoring_beam_image, mode='same')
 
-        # Open residual image and add convolved model
-        residual_image = get_image(residual_fits)
-        restored_image = residual_image + model_conv_image
+        # Open model subtracted image and add convolved model
+        modelsub_data = get_image(modelsub_image)
+        restored_data = modelsub_data + modelconv_image
 
         # Flush restored FITS file and fix the header
-        flush_fits(restored_image,restored_fits)
-        beam_header(restored_fits,bmaj,bmin,bpa)
+        flush_fits(restored_data, restored_image)
+        msg('Restoring complete: ' + restored_image.split(cfg.INTERVALS + '/')[-1] + '\n')
 
-
-if __name__ == '__main__':
-
-        if len(sys.argv) < 3:
-                print('Please specify model FITS image and a target field name')
+if __name__ == '__main__':  
+    
+        if len(sys.argv) != 4:
+                print('Incorrect number of inputs should just be (in order) model prefix, target image prefix, stokes parameters (I or IQUV)')
                 sys.exit()
 
-        logfile = 'restore_model.log'
-        logging.basicConfig(filename=logfile, level=logging.DEBUG, format='%(asctime)s |  %(message)s', datefmt='%d/%m/%Y %H:%M:%S ')
+        # Inputs
+        model_prefix = sys.argv[-3]
+        target_prefix = sys.argv[-2]
+        pol = sys.argv[-1]
+       
+        # Convolution parameters 
+        cropsize = 51 # Size of convolving kernel in pixels 
 
-        # Values of interest
-        model_fits = sys.argv[1]
-        targetname = sys.argv[2]
+        # Get the array of modelsub images and restoring model iamges
+        modelsub_images = sorted(glob.glob(f'{target_prefix}*image.fits'))
+        model_images = sorted(glob.glob(f'{model_prefix}*-model.fits'))
 
-        j = 1 # Number of parallel convolutions
-        cropsize = 51 # Size of kernel thumbnail
-        fits_list = sorted(glob.glob(cfg.INTERVALS + f'/*{targetname}*-image.fits')) # List of residuals
-        ids = numpy.arange(0,len(fits_list))
+        # Check to see if the model has different dimension than the snapshot imaging
+        truncate_model = False
+        model_shape = get_image(model_images[0]).shape
+        modelsub_shape = get_image(modelsub_images[0]).shape
+    
+        # Check that images are square
+        if model_shape[0] != model_shape[1] or modelsub_shape[0] != modelsub_shape[1]: 
+            sys.exit('ERROR: Both model and snapshot images must be square')
 
-        # Get the image size from first image in list and create matched model image
-        img0 = get_image(fits_list[0])
-        nx,ny = numpy.shape(img0)
-        if nx != ny:
-                print('Only square images are supported at present')
-                sys.exit()
-        tmpmodel_fits = 'temp_model_'+''.join(random.choices(string.ascii_uppercase + string.digits, k=16))+'.fits'
-        os.system('fitstool.py -z '+str(nx)+' -o '+tmpmodel_fits+' '+model_fits)
-        model_image = get_image(tmpmodel_fits)
+        if model_shape != modelsub_shape:
+            truncate_model = True
 
-        for i in range(0,len(fits_list)):
-            try: 
-                print('Convolving: ' + fits_list[i].split(cfg.INTERVALS + '/')[-1])
-                convolve_fits(fits_list[i],model_image,ids[i])
-            except:
-                print('Convolving Failed Skipping:' + fits_list[i].split(cfg.INTERVALS + '/')[-1])
+        # Match the modelsub image with its static counterpart 
+        for modelsub_image in modelsub_images[:]:
 
-        # pool = Pool(processes=j)
-        # pool.starmap(convolve_fits,zip(fits_list,repeat(model_image),ids))
+            # A bunch of string manipulation to get the relevant images
+            suffix = '-'.join(modelsub_image.split(target_prefix + '-t')[-1].split('-')[1:]).replace('image.fits', 'model.fits') # this will extract frequency/stokes suffix for model matching
+            psf_image = modelsub_image[:]
+            for substring in ['-I-image.fits','-Q-image.fits','-U-image.fits','-V-image.fits']:
+                psf_image = psf_image.replace(substring, '-image.fits')
+            psf_image = psf_image.replace('-image.fits','-psf.fits')
+            psf = get_header(psf_image)
 
+            # Get the model image
+            model_image = [im for im in model_images if im.endswith(suffix)]
+            if model_image != []:
+                model_image = model_image[0]
+            else:
+                # This is necessary if you did IQUV imaging for pcalmask, but only I imaging for snapshots
+                model_image = [im for im in model_images if im.endswith(suffix.replace('-model.fits', '-I-model.fits'))][0]
+
+            # Finally -- Restore images
+
+            # Check channel is flagged (i.e., BEAM information is 0.0)
+            if psf[0] > 1.0e-14:
+
+                # Copy psf naming for restored image -- necessary for beam homogenizing routine
+                subprocess.run([f'cp {psf_image} {psf_image.replace("modelsub", "restored")}'], shell = True)
+
+                msg('Restoring image: ' + modelsub_image.split(cfg.INTERVALS + '/')[-1])
+                msg('Restoring model: ' + model_image)
+            
+                # Get model data and truncate as necessary
+                if truncate_model:
+                    temp_model = model_image.replace('.fits', '.tmp.fits')
+                    subprocess.run([f'fitstool.py -f -z {modelsub_shape[0]} -o {temp_model} {model_image}'], shell = True)
+                    model_data = get_image(temp_model)
+                    subprocess.run([f'rm -rf {temp_model}'], shell = True)
+                else:
+                    model_data = get_image(model_image)
+
+                # Restore static model
+                restore_fits(modelsub_image, model_data, psf)
+
+            else:
+                msg('Cannot Restore Image: ' + modelsub_image.split(cfg.INTERVALS + '/')[-1] + '; Channel Likely Flagged\n')            
+                

@@ -11,17 +11,14 @@ from oxkat import config as cfg
 def main():
 
     if len(sys.argv) == 1:
-        print('Please specify the name of the field to perform uvsubtraction')
+        print('Please specify the MS file to perform uvsubtraction')
         sys.exit()
     else:
-        targetname = sys.argv[-1]
+        myms = sys.argv[-1]
 
     # Look for all scan ms files associated with the target of interest
-    mslist = glob.glob(f'*{targetname}*scan*.ms')
-
-    for myms in mslist:
-        syscall = f'python3 {cfg.TOOLS}/sum_MS_columns.py --src=MODEL_DATA --dest=DATA --subtract '+myms
-        subprocess.run([syscall], shell=True)
+    syscall = f'python3 {cfg.TOOLS}/sum_MS_columns.py --src=MODEL_DATA --dest=DATA --subtract '+myms
+    subprocess.run([syscall], shell=True)
 
 if __name__ == "__main__":
     main()

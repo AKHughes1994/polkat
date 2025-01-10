@@ -15,7 +15,7 @@ if len(sys.argv) == 1:
 else:
     targetname = sys.argv[-1]
 
-target_ms = myms.replace('.ms', f'_{targetname}.ms')
+target_ms = myms.replace('.ms', f'_{targetname}_snapshot.ms')
 
 # Split out corrected_data column of the target of interest
 mstransform(vis = myms, 

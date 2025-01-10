@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# ian.heywood@physics.ox.ac.uk
+# andrew.hughes@physics.ox.ac.uk
 
 
 import json
@@ -62,13 +62,13 @@ HIPPO_CONTAINER_PATH = None
 NODE_CONTAINER_PATH = [HOME+'/containers/', '/mnt/ephem/containers']
 
 
-PYTHON3_PATTERN = 'polkat-0.0.2'
-CASA_PATTERN = 'polkat-0.0.2'
-QUARTICAL_PATTERN = 'polkat-0.0.2'
-WSCLEAN_PATTERN = 'polkat-0.0.2'
-SHADEMS_PATTERN = 'polkat-0.0.2'
+PYTHON3_PATTERN = 'polkat-0.1.1'
+CASA_PATTERN = 'polkat-0.1.1'
+QUARTICAL_PATTERN = 'polkat-0.1.1'
+WSCLEAN_PATTERN = 'polkat-0.1.1'
+SHADEMS_PATTERN = 'polkat-0.1.1'
 ALBUS_PATTERN = 'polkat-albus'
-TRICOLOUR_PATTERN = 'oxkat-0.41'
+TRICOLOUR_PATTERN = 'polkat-0.1.1'
 
 
 
@@ -191,18 +191,21 @@ CAL_1GC_TARGET_INTENT = 'TARGET'     # (partial) string to match for target inte
 CAL_1GC_PRIMARY_INTENT = 'BANDPASS'  # (partial) string to match for primary intents
 CAL_1GC_SECONDARY_INTENT = 'PHASE'   # (partial) string to match for secondary intents
 CAL_1GC_DIAGNOSTICS = True          #  Choose if you want to make diagnostic plots of the Leakage + Phase cal
-CAL_1GC_AGGRESSIVE_FLAGS = False     #  Choose if you want to aggresively flag the visibilities -- seems required for high-precision (accurate) polarimetry (i.e., <1%)
+CAL_1GC_AGGRESSIVE_FLAGS = False     #  Choose if you want to aggresively flag the visibilities -- required for high-precision polarimetry (i.e., <1%)
 
 # Pre-processing, operations applied when master MS is split to working MS
 PRE_FIELDS = ''  # Comma-separated list of fields to select from raw MS
                                      # Names or IDs, do not mix, do not use spaces
 
-POLANG_NAME = 'J1331+3030'         # Specify the name of the field you want to use as a Polarization angle calibrator
+# Polarization calibrator info --- Must be in PRE_FIELDS, if left blank will assume no polarization angle calibration
+POLANG_NAME = 'J1331+3030'         # Specify the name of the field you want to use as a Polarization angle calibrator -- 3C286
 POLANG_DIR  = '13:31:08.2881,+30.30.32.959' # CASA Format
 POLANG_MOD  = [1.0, 0.0, 0.5, 0.0]
 
-                         # Must be in PRE_FIELDS if specified, if left blank will assume no polarization angle calibration
-SNAP_FIELDS = '' # Comma-separated list of field to run snapshot imaging on
+#POLANG_NAME = 'J0521+1638'         # Specify the name of the field you want to use as a Polarization angle calibrator -- 3C138
+#POLANG_DIR  = '05:21:09.890000,+16.38.22.10000' # CASA Format
+#POLANG_MOD  = [1.0, 0.3, -0.05, 0.0]
+
 PRE_SCANS = ''                       # Comma-separated list of scans to select from raw MS
 PRE_NCHANS = 1024                    # Integer number of channels for working MS
 PRE_TIMEBIN = '8s'                   # Integration time for working MS
@@ -270,7 +273,7 @@ elif BAND == 'L':
                         '*:1453MHz~1490MHz',  # Afristar
                         '*:1616MHz~1626MHz',  # Iridium
                         '*:1526MHz~1554MHz',  # Inmarsat
-                        '*:1600MHz']                      # Alkantpan
+                        '*:1600MHz']                 # Alkantpan
                                             # https://github.com/ska-sa/MeerKAT-Cookbook/blob/master/casa/L-band%20RFI%20frequency%20flagging.ipynb
 
 elif BAND == 'S0':
@@ -362,13 +365,12 @@ CAL_3GC_FACET_REGION = '' # Specify DS9 region to define tessel centres
 
 # ------------------------------------------------------------------------
 #
-# wsclean defaults
+# wsclean and 2GC defaults
 #
 # General
 WSC_MEM = 90
 WSC_ABSMEM = -1 # in GB; mem is used if absmem is negative, calculated automatically for HPC, see absmem_helper
 WSC_CONTINUE = False
-WSC_PARALLELREORDERING = 8
 # Outputs
 WSC_MAKEPSF = False
 WSC_NODIRTY = False
@@ -384,10 +386,11 @@ WSC_ODD = False
 WSC_TUKEYTAPER = False
 WSC_INTERVAL0 = None
 WSC_INTERVAL1 = None
-WSC_INTERVALSOUT = None
+WSC_INTERVALSOUT = False
+WSC_PARALLELREORDERING = 8
 # Image dimensions
-WSC_CAL_IMSIZE = 10240
 WSC_IMSIZE = 10240
+WSC_CAL_IMSIZE = 10240
 WSC_CELLSIZE = '1.1asec'
 # Gridding / degridding
 WSC_USEWGRIDDER = True
@@ -407,32 +410,39 @@ WSC_WEIGHT_CAL = 'uniform'
 WSC_TAPERGAUSSIAN = ''
 WSC_MFWEIGHT = False
 # HIGH RES IMAGING
-WSC_UNIFORM_IMAGE = True # if false will not do it
-WSC_WEIGHT_HIGHRES = 'uniform' # pick a more uniform weighting then WSC_WEIGHT
+WSC_UNIFORM_IMAGE = True
+WSC_WEIGHT_HIGHRES = 'uniform' # pick a more uniform weighting then WSC_WEIGHT -- uniform weight by default
 # Deconvolution
 WSC_PARALLELDECONVOLUTION = 2560
 WSC_MULTISCALE = False
 WSC_SCALES = '0,3,9'
+WSC_MULTISCALE_BIAS = 0.7
+WSC_CHANDECONV = False
 WSC_NITER = 800000
 WSC_GAIN = 0.15
 WSC_MGAIN = 0.9
-WSC_CHANNELSOUT = 8
-WSC_IQUV_CHANNELSOUT = 8
+WSC_MASK_CHANNELSOUT = 8
+WSC_IMAGE_CHANNELSOUT = 8
 WSC_CAL_CHANNELSOUT = 8
+WSC_MAX_CHANNELS = 16
 WSC_FITSPECTRALPOL = 4
 WSC_JOINCHANNELS = True
-WSC_JOINPOLARIZATIONS = False
 WSC_NONEGATIVE = False
 WSC_STOPNEGATIVE = False
 WSC_CIRCULARBEAM = False
-WSC_POL = 'I'
+WSC_POL = 'IQUV'
+WSC_SPITPOL = True
+WSC_JOINPOLARIZATIONS = True
+WSC_SQUAREPOLARIZATIONS = True
 # Masking
 WSC_MASK = False
 WSC_THRESHOLD = False
 WSC_AUTOMASK = 3.0
 WSC_AUTOTHRESHOLD = 1.0
 WSC_LOCALRMS = False
-
+# Determines if you want to Homogenize the resolution
+WSC_HOMOGENIZEBEAM = False
+WSC_HOMOGENIZETIME = True
 
 # Band modifiers
 if BAND == 'UHF':
@@ -605,6 +615,22 @@ KMS_NCHANSOLS = 8
 KMS_NITERKF = 9
 KMS_COVQ = 0.05
 
+# ------------------------------------------------------------------------
+#
+# Snapshot imaging defaults
+#
+
+SNAP_FIELDS = '' # Comma-separated list of field to run snapshot imaging on
+SNAP_CHANNELSOUT = WSC_IMAGE_CHANNELSOUT # Integer number of channels to perform snap-shot imaging -- by default the same as the WSC channels out
+SNAP_INTBIN = 1 # Integer number of intervals to image together during snapshot imaging (default = 1 is per intergration imaging)
+SNAP_INTEND = True # This will throw away the last interval if 'incomplete' compared to bin
+    # E.G., total ints = 17, int bin = 4, will only image integrations 1 to 16 (4 total images) discarding 17
+SNAP_POL = True # Bool for whether or not to do full polarisation snapshot images
+SNAP_IMSIZE = 2560 # Image size of snapshot images (not the model image)
+SNAP_MODELIDENTIFIER = 'pcalmask' # identifier for image name following oxkat/polkat conventions
+SNAP_MODELMASK = '' # Point to mask for initial model creation (or just don't delete the pcalmask model)
+SNAP_DECONV = False # Deconvolve during the snapshot imaging process? -- rarely necessary
+SNAP_DECONVMASK = '' # mask to use when doing snapshot imaging and deconvolving
 
 # ------------------------------------------------------------------------
 #

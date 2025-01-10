@@ -11,16 +11,23 @@ from oxkat import config as cfg
 
 def main():
 
-    if len(sys.argv) == 1:
-        print('Please specify the name of the target field for model restoration')
+    if len(sys.argv) != 3:
+        print('Please specify the path to static model for restoration and target MS name')
         sys.exit()
     else:
-        targetname = sys.argv[1]
-    
-    # Get the full path for the restoring model
-    model_fits = glob.glob(cfg.IMAGES + f'/*{targetname}*snapmask-MFS-model.fits')[0]
+        model_prefix = sys.argv[-2]
+        myms = sys.argv[-1]
 
-    syscall = 'python3 '+ cfg.TOOLS+f'/restore_model.py {model_fits} {targetname}'
+    # Define target_prefix
+    target_prefix = cfg.INTERVALS + f'/img_{myms}_modelsub'
+
+    # Configuration options    
+    chanout = cfg.SNAP_CHANNELSOUT
+    pol = 'I'
+    if cfg.SNAP_POL:
+        pol = 'IQUV'
+    
+    syscall='python3 '+ cfg.TOOLS+f'/restore_model.py {model_prefix} {target_prefix} {pol}'        
     subprocess.run([syscall], shell=True)
 
 

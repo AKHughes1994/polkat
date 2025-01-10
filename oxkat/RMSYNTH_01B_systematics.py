@@ -274,7 +274,7 @@ def get_polcal_polarization(pacal_name, pacal_pos, bpcal_sys):
     '''
 
     # Stokes I image
-    image_I = glob.glob(cfg.IMAGES + f'/*{pacal_name}*postXf-MFS-I-image.fits')[0]
+    image_I = glob.glob(cfg.IMAGES + f'/*{pacal_name}*diagnostic-MFS-I-image.fits')[0]
 
     # Now get the Full IQUV polarization properties for the polarization calibrator
     image_I, image_Q, image_U, image_V, image_P = get_IQUVP_names(image_I)
@@ -408,7 +408,7 @@ def get_polcal_polarization(pacal_name, pacal_pos, bpcal_sys):
 
     # Iterate through channelized images extracting fluxes to make RM Synthesis files
     rmsynth_arr = []
-    for i_chan_image in sorted(glob.glob(cfg.IMAGES + f'/*{pacal_name}*postXf-[!MFS]*-I-image.fits')):
+    for i_chan_image in sorted(glob.glob(cfg.IMAGES + f'/*{pacal_name}*diagnostic-[!MFS]*-I-image.fits')):
         try:                
             msg(f'Fitting Image: {i_chan_image.split("IMAGES/")[-1]}')
             # Measured Errors + values
@@ -593,7 +593,7 @@ def get_primary_systematic(bpcal_name, bpcal_pos):
     '''
 
     # Get imstat parameters from Stokes I image
-    image_I = glob.glob(cfg.IMAGES + f'/*{bpcal_name}*postXf-MFS-I-image.fits')[0]
+    image_I = glob.glob(cfg.IMAGES + f'/*{bpcal_name}*diagnostic-MFS-I-image.fits')[0]
     ims_I       = get_imstat_values(image_I, bpcal_pos)
     
     # Fit Stokes I (source is very bright)
@@ -602,7 +602,7 @@ def get_primary_systematic(bpcal_name, bpcal_pos):
     flux_I = imf_I['results']['component0']['peak']['value'] 
 
     # Get peak pixel Value from the total polarization image, theoretically should be zero, and thus, will quantify the systematic leakage
-    image_P = glob.glob(cfg.IMAGES + f'/*{bpcal_name}*postXf-MFS-Ptot-image.fits')[0] # Total polarization image 
+    image_P = glob.glob(cfg.IMAGES + f'/*{bpcal_name}*diagnostic-MFS-Ptot-image.fits')[0] # Total polarization image 
     flux_P = get_imstat_values(image_P, bpcal_pos, n_beams=1.0)[0]
 
     # Caculate systematic and return it
