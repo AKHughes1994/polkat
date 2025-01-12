@@ -698,7 +698,6 @@ def generate_syscall_wsclean(mslist,
 
     # Add option to split the deconvolution into IV and QU steps
     # Sources with large rotation measures may not want polynomial fitting to the QU channels
-    print(splitpol)
     if splitpol and pol != 'I':
         spectralpol = ''
 
