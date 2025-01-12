@@ -32,10 +32,10 @@ bad_scans = []
 for _x in LO:
     if 'scan_' in _x:
         dt =  (LO[_x]['0']['EndTime'] - LO[_x]['0']['BeginTime']) * 24.0 * 3600.0
-        if dt > 15.0:
-            good_scans.append(_x.split('scan_')[-1])
-        else:
+        if dt < 15.0 and LO[_x]['IntegrationTime'] < 2.5:
             bad_scans.append(_x.split('scan_')[-1])
+        else:
+            good_scans.append(_x.split('scan_')[-1])
 
 if myscans != '':
     myscans = myscans.split(',')

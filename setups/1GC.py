@@ -10,7 +10,6 @@ sys.path.append(o.abspath(o.join(o.dirname(sys.modules[__name__].__file__), ".."
 
 
 from oxkat import generate_jobs as gen
-from oxkat import generate_imaging as gi
 from oxkat import config as cfg
 
 

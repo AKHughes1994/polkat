@@ -518,7 +518,7 @@ def generate_syscall_wsclean(mslist,
                           joinpolarizations = cfg.WSC_JOINPOLARIZATIONS,
                           squarepolarizations = cfg.WSC_SQUAREPOLARIZATIONS,
                           pol = cfg.WSC_POL,
-                          splitpol = cfg.WSC_POL,
+                          splitpol = cfg.WSC_SPLITPOL,
                           padding = cfg.WSC_PADDING,
                           nomodel = cfg.WSC_NOMODEL,
                           mask = cfg.WSC_MASK,
@@ -698,6 +698,7 @@ def generate_syscall_wsclean(mslist,
 
     # Add option to split the deconvolution into IV and QU steps
     # Sources with large rotation measures may not want polynomial fitting to the QU channels
+    print(splitpol)
     if splitpol and pol != 'I':
         spectralpol = ''
 
