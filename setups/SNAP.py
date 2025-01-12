@@ -152,7 +152,7 @@ def main():
 
             # If model image(s) have been specified use it to predict [DEFAULT assumes 2GC pcalmask]
             model_image_prefix = IMAGES + '/img_' + target_ms.replace('_snapshot','') + '_' + cfg.SNAP_MODELIDENTIFIER
-            if cfg.SNAP_MODELIDENTIFIER != '' and glob.glob(model_image_prefix + '*' ) != [] and cfg.WSC_IMAGE_CHANNELSOUT == cfg.SNAP_CHANNELSOUT:
+            if cfg.SNAP_MODELIDENTIFIER != '' and glob.glob(model_image_prefix + '*model.fits' ) != [] and cfg.WSC_IMAGE_CHANNELSOUT == cfg.SNAP_CHANNELSOUT:
                 pass
 
             # Say (for example) you *accidentally* removed pcalmask model, then this is necessary
