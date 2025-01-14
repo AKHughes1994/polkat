@@ -232,7 +232,7 @@ def check_position(fname, image, xpix, ypix, snr_thresh=5.0, P_image = False, fi
         # If its a P-image don't use the image plane noise as the check criteria as it is (very) non-gaussian
         rms = get_imstat_values(image, x, y, manual_rms_region = manual_rms_region)[3]
         if P_image is True:
-            msg(f'Check image: {image})
+            msg(f'Check image: {image}')
             image_Q = image.replace('-P-', '-Q-')
             image_U = image.replace('-P-', '-U-')
             ims_Q = get_imstat_values(image_Q, x, y, manual_rms_region = manual_rms_region)
