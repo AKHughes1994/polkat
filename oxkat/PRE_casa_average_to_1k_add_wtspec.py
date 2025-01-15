@@ -1,5 +1,5 @@
- # andrew.hughes@physics.ox.ac.uk
-
+# andrew.hughes@physics.ox.ac.uk
+import numpy as np
 import glob, json
 
 exec(open('oxkat/config.py').read())
@@ -26,16 +26,21 @@ else:
 	mychanave = True
 
 # Remove short scans that arise from metadata error from 2s integration observations
-LO = listobs(master_ms)
-good_scans = []
 bad_scans = []
-for _x in LO:
-    if 'scan_' in _x:
-        dt =  (LO[_x]['0']['EndTime'] - LO[_x]['0']['BeginTime']) * 24.0 * 3600.0
-        if dt < 15.0 and LO[_x]['IntegrationTime'] < 2.5:
-            bad_scans.append(_x.split('scan_')[-1])
-        else:
-            good_scans.append(_x.split('scan_')[-1])
+good_scans = []
+
+tb.open(master_ms)
+scans = np.unique(tb.getcol('SCAN_NUMBER'))
+for scan in scans:
+    subtab = tb.query(query='SCAN_NUMBER=='+str(scan)) # scan info
+    scan_times = np.unique(subtab.getcol('TIME')) # scan integration times
+    scan_dt = scan_times[-1] - scan_times[0] # total scan length (s)
+    integration = scan_times[1] - scan_times[0] # integration length (s)
+    if scan_dt < 10.0 and integration < 2.5:
+        bad_scans.append(str(scan))
+    else:
+        good_scans.append(str(scan))
+tb.close()
 
 if myscans != '':
     myscans = myscans.split(',')
@@ -44,7 +49,7 @@ if myscans != '':
 else:
     myscans = ','.join(good_scans)
 
-
+# Transform MS
 mstransform(vis = master_ms,
 	outputvis = opms,
 	field = myfields,
