@@ -206,6 +206,7 @@ def main():
                     mask = img_prefix+'-MFS-image.mask.fits',
                     chanout = cfg.WSC_IMAGE_CHANNELSOUT,
                     field=targetindex,
+                    intervalsout = False,
                     tukeytaper=False,
                     nomodel = True,
                     sourcelist = False,
