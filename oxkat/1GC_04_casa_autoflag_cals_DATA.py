@@ -1,4 +1,4 @@
-# ian.heywood@physics.ox.ac.uk
+# andrew.hughes@physics.ox.ac.uk
 
 exec(open('oxkat/config.py').read())
 exec(open('oxkat/casa_read_project_info.py').read())

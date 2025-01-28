@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# ian.heywood@physics.ox.ac.uk
+# andrew.hughes@physics.ox.ac.uk
 
 
 import logging

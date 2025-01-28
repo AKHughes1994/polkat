@@ -1,7 +1,7 @@
 # Find primary cal
 # Find nearest secondary cal to each target
 # Split a new MS containing primary and secondary-target pairs
-# ian.heywood@physics.ox.ac.uk
+# andrew.hughes@physics.ox.ac.uk
 
 
 import numpy

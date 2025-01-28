@@ -1,5 +1,5 @@
 #!/usr/bin/python
-# ian.heywood@physics.ox.ac.uk
+# andrew.hughes@physics.ox.ac.uk
 
 import logging, json, sys, subprocess
 import numpy as np

@@ -1,7 +1,7 @@
 #!/usr/bin/python
 
 # Plot killMS gain tables
-# ian.heywood@physics.ox.ac.uk
+# andrew.hughes@physics.ox.ac.uk
 
 
 import logging
