@@ -131,7 +131,7 @@ def main():
     step = {}
     step['step'] = 6
     step['comment'] = 'Plot the corrected calibrator visibilities'
-    step['dependency'] = 4
+    step['dependency'] = 5
     step['id'] = 'PLVIS'+code
     syscall = CONTAINER_RUNNER+SHADEMS_CONTAINER+' ' if USE_SINGULARITY else ''
     syscall += 'python3 '+cfg.OXKAT+'/1GC_07_plot_visibilities.py'
