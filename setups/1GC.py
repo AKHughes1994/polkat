@@ -155,7 +155,7 @@ def main():
             step = {}
             step['step'] = 6 + k
             step['comment'] = f'Image {cal_name} for diagnostic of calibration systematics'
-            step['dependency'] = 4 
+            step['dependency'] = 6 + (k - 1) 
             step['id'] = 'DIAGN' + (cal_name[-3:])
             step['slurm_config'] = cfg.SLURM_WSCLEAN
             step['pbs_config'] = cfg.PBS_WSCLEAN
