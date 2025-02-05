@@ -1,0 +1,12 @@
+{
+    "image_directory": ["IMAGES", "INTERVALS"],
+    "image_identifier": ["pcalmask", "restored"],
+    "image_suffix": ["image.fits", "image.fits"],
+    "image_timing": [false, true],
+    "source_name": ["SwiftJ1727", "SwiftJ1727"],
+    "source_ulim":[[true], [true]],
+    "rms_region": [false, false],
+    "source_pos": [["17:27:43.307,-16.12.17.619"], ["17:27:43.307,-16.12.17.619"]],
+    "pos_coeff":[[[]], [[]]],
+    "time0":[[], []]
+}

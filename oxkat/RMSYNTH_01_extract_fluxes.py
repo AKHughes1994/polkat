@@ -1,20 +1,72 @@
-# VERY MESSY SCRIPT TO CALCULATE THE FLUXES OF POLARIZED COMPONENTS
-# BUT IT WORKS
+# andrew.hughes@physics.ox.ac.uk
 
-import glob,os,datetime, subprocess, sys, json
+import glob
+import os
+import datetime
+import subprocess
+import sys
+import json
 import shutil
 import numpy as np
 import os.path as o
 import time
 from scipy.spatial.distance import cdist
 sys.path.append(o.abspath(o.join(o.dirname(sys.modules[__name__].__file__), "..")))
-
 from oxkat import config as cfg
+
 
 def msg(txt):
     stamp = time.strftime(' %Y-%m-%d %H:%M:%S | ')
     print(stamp+txt)
 
+
+def get_imfit_values(fname, image, xpix, ypix):
+
+    '''
+    Run imfit on a specific image
+    Inputs: 
+        fname = string containing estimate file name
+        image = string containing path to image to be fit
+        xpix  = pixel coordinate (RA)
+        ypix  = pixel coordinate (Dec)
+    Returns:
+        imfit dictionary
+    '''
+
+    # Get the beam parameters
+    bmaj        = imhead(image, mode='get', hdkey = 'BMAJ')['value']
+    bmin        = imhead(image, mode='get', hdkey = 'BMIN')['value']
+    bpa         = imhead(image, mode='get', hdkey = 'BPA')['value']
+    pixel_asec  = imhead(image, mode='get', hdkey='cdelt2')['value'] * 3600 * 180.0 / np.pi # pixel size in asecs
+
+
+    # Get the numnber of components
+    n_comp = len(xpix)
+   
+    # For single components
+    if n_comp == 1: 
+        x = xpix[0]
+        y = ypix[0]
+        r = 3 * bmaj
+        src_region = f'circle[[{x}pix,{y}pix],{r}arcsec]'
+    
+    # For multi-components (this won't work if there are components that are VERY far from eachother largely because it will just time out)
+    else:
+        # Define an array of coorindates [[x1,y1], [x2,y2], etc.])
+        point_array =  np.array([xpix, ypix]).T
+
+        # Get maximum distance between points
+        max_dist = np.amax(cdist(point_array,point_array)) * pixel_asec
+    
+        # Take either twice the maximum distance or 10 times the bmaj axis as the bounding region radius
+        x = xpix[0]
+        y = ypix[0]
+        r = np.amax((10 * bmaj, 2.0 * max_dist))
+        src_region = f'circle[[{x}pix,{y}pix],{r}arcsec]'
+    
+    return imfit(image, estimates = fname, region = src_region)
+    
+    
 
 def calculate_P0(flux_P, rms_Q, rms_U, rms_V, pol_flag, Aq = 0.8):
     '''
@@ -47,7 +99,7 @@ def calculate_P0(flux_P, rms_Q, rms_U, rms_V, pol_flag, Aq = 0.8):
         # This doesn't have studies that I can find (Last Update: Mar 27, 2024) -- Going conservative until I do this properly
         rms_P = np.amax([rms_Q, rms_U, rms_V]) # adopt maximum
         
-        # Always de-bias - from Mote Carlo experimental it seems like the bias correction becomes a factor of 2 for P^2 = Q^2 + U^2 + V^2  
+        # Always de-bias - from my own Mote Carlo experiments it seems like the bias correction becomes a factor of 2 for P^2 = Q^2 + U^2 + V^2  
         P0 =  (flux_P ** 2 - 2.0 * rms_P ** 2) ** (0.5)
 
     return flux_P0, rms_P
@@ -69,50 +121,6 @@ def return_max(im, region):
     else:
         return fmin
 
-def get_imfit_values(fname, image, xpix, ypix):
-    '''
-    Run imfit on a specific image
-    Inputs: 
-        fname = string containing estimate file name
-        image = string containing path to image to be fit
-        xpix  = pixel coordinate (RA)
-        ypix  = pixel coordinate (Dec)
-    Returns:
-        imfit dictionary
-    '''
-
-    # Get the beam parameters
-    bmaj        = imhead(image, mode='get', hdkey = 'BMAJ')['value']
-    bmin        = imhead(image, mode='get', hdkey = 'BMIN')['value']
-    bpa         = imhead(image, mode='get', hdkey = 'BPA')['value']
-    pixel_asec  = imhead(image, mode='get', hdkey='cdelt2')['value'] * 3600 * 180.0 / np.pi # pixel size in asecs
-
-
-    # Get the numnber of components
-    n_comp = len(xpix)
-   
-    # For single components
-    if n_comp == 1: 
-        x = xpix[0]
-        y = ypix[0]
-        r = 3 * bmaj
-        src_region = f'circle[[{x}pix,{y}pix],{r}arcsec]'
-    
-    # For multi-components (this won't work if there are components that are VERY far from eachother)
-    else:
-        # Define an array of coorindates [[x1,y1], [x2,y2], etc.])
-        point_array =  np.array([xpix, ypix]).T
-
-        # Get maximum distance between points
-        max_dist = np.amax(cdist(point_array,point_array)) * pixel_asec
-    
-        # Take either twice the maximum distance or 3 times the bmaj axis as the bounding region radius
-        x = xpix[0]
-        y = ypix[0]
-        r = np.amax((3 * bmaj, 2.0 * max_dist))
-        src_region = f'circle[[{x}pix,{y}pix],{r}arcsec]'
-    
-    return imfit(image, estimates = fname, region = src_region)
 
 def get_imstat_values(image, xpix, ypix, manual_rms_region = False):
     '''
@@ -132,8 +140,8 @@ def get_imstat_values(image, xpix, ypix, manual_rms_region = False):
     rms_region = f'annulus[[{xpix}pix,{ypix}pix],[{r_in}arcsec,{r_out}arcsec]]'
     if manual_rms_region:
         rms_region = manual_rms_region
-   # else:
-   #     msg('Using default annular RMS region')
+    #else:
+    #    msg('Using default annular RMS region')
 
     # Values of interest -- Source
     ims = imstat(image, region = src_region)
@@ -145,55 +153,10 @@ def get_imstat_values(image, xpix, ypix, manual_rms_region = False):
     rms = imstat(image, region = rms_region)['rms'][0]
 
     return [flux, xpix, ypix, rms]
-
-
-def make_estimate(fname, image, xpix, ypix, fix_var):
-    '''
-    Take in an array of imstat values from f(get_imstat_values)
-    and return an CASA imfit estimate file name fname
-    Inputs:
-        fname  = string containing name of estimate file
-        image  = string containing name of image to fit
-        src_ra    = Right acension of peak of source(s)
-        src_dec = Right acension of dec of source(s)
-        fix = paramters to fix, default is assume a point source (abp) other revelant example is fixing position (xyabp)
-    '''
-
-    # Get the beam parameters
-    bmaj = imhead(image, mode='get', hdkey = 'BMAJ')['value']
-    bmin = imhead(image, mode='get', hdkey = 'BMIN')['value']
-    bpa  = imhead(image, mode='get', hdkey = 'BPA')['value']
     
-    # Make estimate file
-    f = open(fname, 'w')
-    for x, y, fix in zip(xpix, ypix, fix_var):
-        ims = get_imstat_values(image, x, y)
-        f.write(f'{ims[0]},{x},{y},{bmaj}arcsec,{bmin}arcsec,{bpa}deg, {fix}\n')
-    f.close()            
     
-    return 0    
+def check_position(fname, image, xpix, ypix, snr_thresh = 5.0, P_image = False, fix_additional_comps = False, manual_rms_region = False):
 
-def get_IQUVP_names(im_I, pol_flag, print_type=False):
-    '''
-    Take in an image prefix and return the separated IQUVP images
-    pol_flag = Determines whether you have a pol. ang. cal. or not, if not use total polarization image
-    '''
-    
-    im_Q = im_I.replace('-I-', '-Q-')
-    im_U = im_I.replace('-I-', '-U-')
-    im_V = im_I.replace('-I-', '-V-')
-    if pol_flag:
-        im_P = im_I.replace('-I-', '-Plin-') # This well measure linear polarization precisely (U^2 + Q^2) ** 0.5, with pol. ang.
-
-    else:
-        im_P = im_I.replace('-I-', '-Ptot-') # This will get polarization fraction from P = (V^2 + U^2 + Q ^2)  no pol. ang.
-
-    if print_type:
-        msg(f'Using Pol. Image: {im_P.split("IMAGES/")[-1]}')
-
-    return [im_I, im_Q, im_U, im_V, im_P]
-
-def check_position(fname, image, xpix, ypix, snr_thresh=5.0, P_image = False, fix_additional_comps = False, manual_rms_region = False):
     '''
     Code to check whether there is sufficient flux at a position to allow 
     imfit to fit for position, or if said position should be frozen
@@ -232,106 +195,58 @@ def check_position(fname, image, xpix, ypix, snr_thresh=5.0, P_image = False, fi
         # If its a P-image don't use the image plane noise as the check criteria as it is (very) non-gaussian
         rms = get_imstat_values(image, x, y, manual_rms_region = manual_rms_region)[3]
         if P_image is True:
-            msg(f'Check image: {image}')
-            image_Q = image.replace('-P-', '-Q-')
-            image_U = image.replace('-P-', '-U-')
+            # msg(f'Check image: {image}')
+            image_Q = image.replace('-Plin-', '-Q-').replace('-Ptot-', '-Q-')
+            image_U = image.replace('-Plin-', '-U-').replace('-Ptot-', '-U-')
             ims_Q = get_imstat_values(image_Q, x, y, manual_rms_region = manual_rms_region)
             ims_U = get_imstat_values(image_U, x, y, manual_rms_region = manual_rms_region)
             rms = np.amax((ims_Q[3],ims_U[3]))
-
-        if fix_additional_comps and k > 0:
+        if fix_additional_comps is True and k > 0:
             fix_var.append('xyabp')
-
         elif fix_additional_comps is True and k == 0 and test_flux > snr_thresh * rms:
             fix_var.append('abp')
-
         elif fix_additional_comps is False and test_flux > snr_thresh * rms:
             fix_var.append('abp')
-
         else:
-            msg('Fixing position')
             fix_var.append('xyabp')
         k+=1
 
     # Make the estimate file
     make_estimate(fname, image, xpix, ypix, fix_var)
 
-def initialize_MFS_dict(i_image, imf_I, imf_Q, imf_U, imf_V, imf_P, pol_flag, manual_rms_region = False):
+
+def make_estimate(fname, image, xpix, ypix, fix_var):
     '''
-    Function that will take in the imfit dictionaries for all 4 (+ Lin. Pol.) Stokes Parameters, while
-    returning a trimmed dictionary containing all of the parameters of interest
+    Take in an array of imstat values from f(get_imstat_values)
+    and return an CASA imfit estimate file name fname
+    Inputs:
+        fname  = string containing name of estimate file
+        image  = string containing name of image to fit
+        xpix    = Right acension (pixel) estimate of source(s)
+        ypix  = Declination (pixel) estimate of source(s)
+        fix = paramters to fix, default is assume a point source (abp) other revelant example is fixing position (xyabp)
     '''
 
-    IQUVP_names = get_IQUVP_names(i_image, pol_flag)
-
-    # Initialize Dictionary
-    MFS_dict = {}
-    MFS_dict['beam'] = {}
-    MFS_dict['beam']['bmaj_asec'] = imf_I['results']['component0']['beam']['beamarcsec']['major']['value']
-    MFS_dict['beam']['bmin_asec'] = imf_I['results']['component0']['beam']['beamarcsec']['minor']['value']
-    MFS_dict['beam']['bpa_deg']   = imf_I['results']['component0']['beam']['beamarcsec']['positionangle']['value']
-   
-    # Get the component keys
-    comps = [key for key in imf_I['results'].keys() if 'component' in key]
-    for comp in comps:
-        MFS_dict[comp] = {}
-
-        # Seperate out the fluxes and RMS for readability
-        flux_I = imf_I['results'][comp]['peak']['value'] * 1e3
-        flux_Q = imf_Q['results'][comp]['peak']['value'] * 1e3
-        flux_U = imf_U['results'][comp]['peak']['value'] * 1e3
-        flux_V = imf_V['results'][comp]['peak']['value'] * 1e3
-        flux_P = imf_P['results'][comp]['peak']['value'] * 1e3
-
-        rms_I = get_imstat_values(IQUVP_names[0], imf_I['results'][comp]['pixelcoords'][0], imf_I['results'][comp]['pixelcoords'][1], manual_rms_region)[3] * 1e3
-        rms_Q = get_imstat_values(IQUVP_names[1], imf_Q['results'][comp]['pixelcoords'][0], imf_Q['results'][comp]['pixelcoords'][1], manual_rms_region)[3] * 1e3
-        rms_U = get_imstat_values(IQUVP_names[2], imf_U['results'][comp]['pixelcoords'][0], imf_U['results'][comp]['pixelcoords'][1], manual_rms_region)[3] * 1e3
-        rms_V = get_imstat_values(IQUVP_names[3], imf_V['results'][comp]['pixelcoords'][0], imf_V['results'][comp]['pixelcoords'][1], manual_rms_region)[3] * 1e3
-        flux_P0, rms_P = calculate_P0(flux_P, rms_Q, rms_U, rms_V, pol_flag, Aq = 0.8)
-
-        # Append fluxes and RMS to dictionary
-        MFS_dict[comp]['I_flux_mJy'] = flux_I
-        MFS_dict[comp]['Q_flux_mJy'] = flux_Q
-        MFS_dict[comp]['U_flux_mJy'] = flux_U
-        MFS_dict[comp]['V_flux_mJy'] = flux_V
-        MFS_dict[comp]['P_flux_mJy'] = flux_P
-        MFS_dict[comp]['P0_flux_mJy'] = flux_P0
-
-        MFS_dict[comp]['I_rms_mJy'] = rms_I
-        MFS_dict[comp]['Q_rms_mJy'] = rms_Q
-        MFS_dict[comp]['U_rms_mJy'] = rms_U
-        MFS_dict[comp]['V_rms_mJy'] = rms_V
-        MFS_dict[comp]['P_rms_mJy'] = rms_P
-
-        # Calculate the other Polarisation parameters
-        LP_frac     = flux_P0 / flux_I * 100.0
-        LP_frac_err = LP_frac * np.sqrt( (rms_I / flux_I) ** 2 + (rms_P / flux_P0) ** 2 )
-
-        if pol_flag:
-            LP_EVPA     = np.arctan2(flux_U, flux_Q) * 180.0 / np.pi * 0.5
-            LP_EVPA_err = 0.5 * np.sqrt(flux_U ** 2 * rms_Q **2  + flux_Q ** 2 * rms_U ** 2) / (flux_U ** 2  + flux_Q ** 2) * 180.0 / np.pi
-   
-        else:
-            LP_EVPA     = None
-            LP_EVPA_err = None
+    # Get the beam parameters
+    bmaj = imhead(image, mode='get', hdkey = 'BMAJ')['value']
+    bmin = imhead(image, mode='get', hdkey = 'BMIN')['value']
+    bpa  = imhead(image, mode='get', hdkey = 'BPA')['value']
     
-        # Append additional polarisation parameters
-        MFS_dict[comp]['LP_frac']     = LP_frac
-        MFS_dict[comp]['LP_frac_err'] = LP_frac_err
-        MFS_dict[comp]['LP_EVPA']     = LP_EVPA
-        MFS_dict[comp]['LP_EVPA_err'] = LP_EVPA_err
+    # Make estimate file
+    f = open(fname, 'w')
+    for x, y, fix in zip(xpix, ypix, fix_var):
+        ims = get_imstat_values(image, x, y)
+        f.write(f'{ims[0]},{x},{y},{bmaj}arcsec,{bmin}arcsec,{bpa}deg, {fix}\n')
+    f.close()            
     
-        # Append the positions (Use Stokes I and Lin. Pol.)
-        MFS_dict[comp]['I_RA_deg']  = imf_I['results'][comp]['shape']['direction']['m0']['value'] * 180 / np.pi
-        MFS_dict[comp]['I_Dec_deg']  = imf_I['results'][comp]['shape']['direction']['m1']['value'] * 180 / np.pi
-        MFS_dict[comp]['P_RA_deg'] = imf_P['results'][comp]['shape']['direction']['m0']['value'] * 180 / np.pi
-        MFS_dict[comp]['P_Dec_deg'] = imf_P['results'][comp]['shape']['direction']['m1']['value'] * 180 / np.pi 
+    return 0    
 
-    return MFS_dict
 
-def fit_channel(i_image, xpix_I, ypix_I, xpix_Q, ypix_Q, xpix_U, ypix_U, xpix_P, ypix_P, xpix_V, ypix_V, pol_flag, manual_rms_region = False):
+
+def fit_channel(prefix, manual_rms_region = False):
+
     '''
-    Extract the IQUP parameters from the working channelized image
+    Extract the Stokes IQUVP parameters from the working channelized image
     Inputs:
         i_chan_image = working image
         xpix/ypix  = for the MFS image of each Stokes Parameter
@@ -404,26 +319,15 @@ def fit_channel(i_image, xpix_I, ypix_I, xpix_Q, ypix_Q, xpix_U, ypix_U, xpix_P,
     return [freq, flux_I, flux_Q, flux_U, flux_V, flux_P, flux_P0, LP_frac, LP_EVPA, rms_I, rms_Q, rms_U, rms_V, rms_P, LP_frac_err, LP_EVPA_err]
 
 
-def make_rmsynth_files(src_header, chan_dict):
-    '''
-    Conver the channel dictionary to a text file with the following columns
-    freq (Hz), I flux, Q flux, U flux, I rms, Q rms, U rms
-    '''
-
-    comps = [key for key in chan_dict.keys() if 'component' in key]
-    for comp in comps:
-        freq = np.array(chan_dict[comp]['freq_GHz']) * 1e9
-        I   =   np.array(chan_dict[comp]['I_flux_mJy']) / 1e3
-        Q  =  np.array(chan_dict[comp]['Q_flux_mJy']) / 1e3
-        U  =  np.array(chan_dict[comp]['U_flux_mJy']) / 1e3
-        dI  = np.array(chan_dict[comp]['I_rms_mJy']) / 1e3
-        dQ = np.array(chan_dict[comp]['Q_rms_mJy']) / 1e3
-        dU = np.array(chan_dict[comp]['U_rms_mJy']) / 1e3
-
-        np.savetxt(cfg.RESULTS + f'/{src_header}_{comp}_rmsynth.txt', np.array([freq, I, Q, U, dI, dQ, dU]).T)    
-
-
-def extract_polarization_properties(src_name,  src_im_identifier, src_ra, src_dec, pol_flag, manual_rms_region):
+def extract_polarization_properties(src_name,
+    src_im_identifier,
+    src_im_suffix, 
+    src_ra, 
+    src_dec, 
+    pol_flag, 
+    manual_rms_region, 
+    image_directory,
+    fix_additional_comps = False):
 
     '''
     Fit the Stokes IQUV cube for all components in an image. This assumes
@@ -433,150 +337,516 @@ def extract_polarization_properties(src_name,  src_im_identifier, src_ra, src_de
 
     input parameters:
         src_name       = name of source 
-        src_im_prefix  = identifier for IQUV images that will have there fluxes extracted
+        src_im_prefix  = identifier for images that will have fluxe extraction
+        src_im_suffix  = image suffix, included to differentiate between standard WSCLEAN image products (image.fits) and homogenized produces (image.homogenized.fits)
         src_ra   = Estimated right acension of source(s) pixel units
         src_dec  = Estimated declination of  source(s) pixel units
-        pol_flag = 
+        pol_flag = determines whether or not to solve for total or linear/circular polarization (depending on if cross-hand calibrator was included)
+        manual_rms_region = option to specify the rms region, otherwise use an annuls centerd on the source(s) with a ~100xPSF area
+        fix_addition_comps[default=True] = option to fix the Q,U,V,P position to Stokes I (primarily for faint partially unresolved ejecta)
 
     Output parametres:
-        flux_dict = Compehensive Dictionary containing all MFS and per-channel information for the IQUV fluxes
+        flux_dict = Dictionary containing all MFS and per-channel information for the IQUV fluxes
         rmsynth_arr = Array containing the necessary information to run RM synthesis on each image
     ''' 
 
-    # Initilaize flux dictionary
-    flux_dict = {'name': src_name}
-
-    # Get the image prefixes with and without the full path
-    src_im_prefix = glob.glob(cfg.IMAGES + f'/*{src_name}*{src_im_identifier}*')[0].split(f'{src_im_identifier}')[0] + src_im_identifier
-    src_header = src_im_prefix.split(cfg.IMAGES + '/')[-1]
-    msg(f'Fitting Image MFS images')
+    # Initilaize dictionary to contain the output parameters
+    output_dictionary = {'name' : src_name}
+    output_dictionary['MFS'] = {}
+    output_dictionary['CHAN'] = {}
     
-    # Begin by getting the properties of the MFS images
-    IQUVP_names = get_IQUVP_names(glob.glob(f'{src_im_prefix}-MFS-I-*image.fits')[0], pol_flag ,print_type=True)
-    freqMFS_GHz = imhead(IQUVP_names[0], mode='get', hdkey = 'CRVAL3')['value'] / 1.0e9
-    date_obs  =  imhead(IQUVP_names[0], mode='get', hdkey = 'DATE-OBS').replace('/','-',2).replace('/','T')
+    # Determine if there are multiple stokes parameters or if its strictly Stokes I (suffixes will be, e.g., MFS-image)
+    if glob.glob(f'{src_im_identifier}*-MFS-I-{src_im_suffix}') == []:
+        only_intensity = True
+    else:
+        only_intensity = False
+    
+    # Get unique prefixes, this will now iterate in time (if applicable) if not it will just return arrays of length 1:
+    prefix_arr = glob.glob(f'{src_im_identifier}*-MFS*{src_im_suffix}')
+    prefix_arr = sorted(list(set([x.split('-MFS')[0] for x in prefix_arr])))
+    
+    for k, prefix in enumerate(prefix_arr):
+    
+        # Extract the MFS image parameters
+        msg(f'Fitting MFS image(s) for prefix {k}: {prefix}')
+        
+        # This is to get the image into an array
+        if only_intensity:
+            MFS_images = [f'{prefix}-MFS-{src_im_suffix}']
+        else:
+            # The sorted function will make order the images as I, P, Q, U, V
+            MFS_images = glob.glob(f'{prefix}-MFS-*-{src_im_suffix}')
+            if pol_flag:
+                MFS_images = sorted([im for im in MFS_images if '-Ptot-' not in im])
+            else:
+                MFS_images = sorted([im for im in MFS_images if '-Plin-' not in im])
+    
+        # Get generalized properties from the first image (i.e., Stokes I header)
+        freq_GHz = imhead(MFS_images[0], mode='get', hdkey = 'CRVAL3')['value'] / 1.0e9
+        date_obs = imhead(MFS_images[0], mode='get', hdkey = 'DATE-OBS').replace('/','-',2).replace('/','T')
+        bmaj = imhead(MFS_images[0], mode='get', hdkey = 'bmaj')['value']
+        bmin = imhead(MFS_images[0], mode='get', hdkey = 'bmin')['value']
+        bpa   = imhead(MFS_images[0], mode='get', hdkey = 'bpa')['value']
+    
+        # Convert the RA/DEC guesses to pixel coordinates
+        src_ra_pix = []
+        src_dec_pix = []
+        for k in range(src_ra.size):
+            region = 'circle[[{}deg,{}deg],1.0pix]'.format(src_ra[k], src_dec[k])
+            pixel_imstat = imstat(MFS_images[0], region = region)
+            src_ra_pix.append(pixel_imstat['maxpos'][0])
+            src_dec_pix.append(pixel_imstat['maxpos'][1])
+            
+        # First fit Stokes I -- also extract pixel coordinates
+        make_estimate('estimate_I.txt', MFS_images[0], src_ra_pix, src_dec_pix,  ['abp'] * len(src_ra))
+        MFS_I_imfit = get_imfit_values('estimate_I.txt', MFS_images[0], src_ra_pix, src_dec_pix)
+       
+        # Get number of components
+        components = [key for key in MFS_I_imfit['results'].keys() if 'component' in key]              
+        MFS_I_ra_pix = [MFS_I_imfit['results'][key]['pixelcoords'][0] for key in components]
+        MFS_I_dec_pix = [MFS_I_imfit['results'][key]['pixelcoords'][1] for key in components]
+        
+        # Initialize arrays if they don't exist, else append values to existsing arrays
+        for component in components:
+        
+            # For ease of readability define the desired quantities as variables
+            flux_I = MFS_I_imfit['results'][component]['peak']['value'] * 1e3
+            err_I = MFS_I_imfit['results'][component]['peak']['error'] * 1e3
+            RA_I   = MFS_I_imfit['results'][component]['shape']['direction']['m0']['value'] * 180 / np.pi
+            DEC_I = MFS_I_imfit['results'][component]['shape']['direction']['m1']['value'] * 180 / np.pi
+            RA_pix_I = MFS_I_imfit['results'][component]['pixelcoords'][0]
+            DEC_pix_I = MFS_I_imfit['results'][component]['pixelcoords'][1]
+            rms_I = get_imstat_values(MFS_images[0], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3
+        
+            if component not in output_dictionary['MFS']:
 
-    # The src_ra/decs can be a comma separed list for mutli_component fitting
-    src_ra    = [ra for ra in src_ra.split(',')]
-    src_dec = [dec for dec in src_dec.split(',')]
-
-    # Convert from CASA hmsdms to pixel coordinates
-    for k in range(len(src_ra)):
-        region = f'circle[[{src_ra[k]},{src_dec[k]}],1.0pix]'
-        ims = imstat(IQUVP_names[0], region = region)
-        src_ra[k]  = ims['maxpos'][0]
-        src_dec[k] = ims['maxpos'][1]
-
-    # Make estimate files and fit for Stokes I
-    make_estimate('estimate_I.txt', IQUVP_names[0], src_ra, src_dec,  ['abp'] * len(src_ra))
-    imf_I  = get_imfit_values('estimate_I.txt', IQUVP_names[0], src_ra, src_dec)
-    xpix_I = [imf_I['results'][key]['pixelcoords'][0] for key in imf_I['results'].keys() if 'component' in key]
-    ypix_I = [imf_I['results'][key]['pixelcoords'][1] for key in imf_I['results'].keys() if 'component' in key]
-
-    # Make estimate and fit for Lin. Pol. Intensity -- checking against position of stokes I components
-    check_position('estimate_P.txt', IQUVP_names[4], xpix_I, ypix_I, P_image = True, fix_additional_comps = True, manual_rms_region = manual_rms_region)
-    imf_P  = get_imfit_values('estimate_P.txt', IQUVP_names[4], xpix_I, ypix_I)
-    xpix_P = [imf_P['results'][key]['pixelcoords'][0] for key in imf_P['results'].keys() if 'component' in key]
-    ypix_P = [imf_P['results'][key]['pixelcoords'][1] for key in imf_P['results'].keys() if 'component' in key]
-
-    # Make estimate and fit for Q/U -- checking against position of Lin. Pol. components
-    check_position('estimate_Q.txt', IQUVP_names[1], xpix_P, ypix_P, fix_additional_comps = True, manual_rms_region = manual_rms_region)
-    imf_Q  = get_imfit_values('estimate_Q.txt', IQUVP_names[1], xpix_P, ypix_P)
-    xpix_Q = [imf_Q['results'][key]['pixelcoords'][0] for key in imf_Q['results'].keys() if 'component' in key]
-    ypix_Q = [imf_Q['results'][key]['pixelcoords'][1] for key in imf_Q['results'].keys() if 'component' in key]
+                output_dictionary['MFS'][component] = {}
+            
+                output_dictionary['MFS'][component]['freq_GHz'] = [freq_GHz]
+                output_dictionary['MFS'][component]['date_isot'] = [date_obs]
+                output_dictionary['MFS'][component]['bmaj_asec'] = [bmaj]
+                output_dictionary['MFS'][component]['bmin_asec'] = [bmin]
+                output_dictionary['MFS'][component]['bpa_deg'] = [bpa]
+                output_dictionary['MFS'][component]['I_flux_mJy'] = [flux_I]
+                output_dictionary['MFS'][component]['I_err_mJy'] = [err_I]
+                output_dictionary['MFS'][component]['I_rms_mJy'] = [rms_I]
+                output_dictionary['MFS'][component]['I_RA_deg'] = [RA_I]
+                output_dictionary['MFS'][component]['I_DEC_deg'] = [DEC_I]
+                         
+            else:
+                output_dictionary['MFS'][component]['freq_GHz'].append(freq_GHz)
+                output_dictionary['MFS'][component]['date_isot'].append(date_obs)
+                output_dictionary['MFS'][component]['bmaj_asec'].append(bmaj)
+                output_dictionary['MFS'][component]['bmin_asec'].append(bmin)
+                output_dictionary['MFS'][component]['bpa_deg'].append(bpa)
+                output_dictionary['MFS'][component]['I_flux_mJy'].append(flux_I)
+                output_dictionary['MFS'][component]['I_err_mJy'].append(err_I)
+                output_dictionary['MFS'][component]['I_rms_mJy'].append(rms_I)
+                output_dictionary['MFS'][component]['I_RA_deg'].append(RA_I)
+                output_dictionary['MFS'][component]['I_DEC_deg'].append(DEC_I)
+            
+        
+        # Next fit Polarization intensity and check if source is bright enough to allow positions to vary freely
+        if not only_intensity:
+            check_position('estimate_P.txt', MFS_images[1], MFS_I_ra_pix, MFS_I_dec_pix, P_image = True, fix_additional_comps = fix_additional_comps, manual_rms_region = manual_rms_region)
+            MFS_P_imfit  = get_imfit_values('estimate_P.txt', MFS_images[1], MFS_I_ra_pix, MFS_I_dec_pix)
+            MFS_P_ra_pix = [MFS_P_imfit['results'][key]['pixelcoords'][0] for key in components]
+            MFS_P_dec_pix = [MFS_P_imfit['results'][key]['pixelcoords'][1] for key in components]   
+            
+            # Make estimate and fit for Q/U -- checking against position of Lin. Pol. components
+            check_position('estimate_Q.txt', MFS_images[2], MFS_P_ra_pix, MFS_P_dec_pix, P_image = False, fix_additional_comps = fix_additional_comps, manual_rms_region = manual_rms_region)
+            MFS_Q_imfit  = get_imfit_values('estimate_Q.txt', MFS_images[2], MFS_P_ra_pix, MFS_P_dec_pix)
+            MFS_Q_ra_pix = [MFS_Q_imfit['results'][key]['pixelcoords'][0] for key in components]
+            MFS_Q_dec_pix = [MFS_Q_imfit['results'][key]['pixelcoords'][1] for key in components]   
    
-    check_position('estimate_U.txt', IQUVP_names[2], xpix_P, ypix_P, fix_additional_comps = True, manual_rms_region = manual_rms_region)
-    imf_U  = get_imfit_values('estimate_U.txt', IQUVP_names[2], xpix_P, ypix_P)
-    xpix_U = [imf_U['results'][key]['pixelcoords'][0] for key in imf_U['results'].keys() if 'component' in key]
-    ypix_U = [imf_U['results'][key]['pixelcoords'][1] for key in imf_U['results'].keys() if 'component' in key]
+            check_position('estimate_U.txt', MFS_images[3], MFS_P_ra_pix, MFS_P_dec_pix, P_image = False, fix_additional_comps = fix_additional_comps, manual_rms_region = manual_rms_region)
+            MFS_U_imfit  = get_imfit_values('estimate_U.txt', MFS_images[3], MFS_P_ra_pix, MFS_P_dec_pix)
+            MFS_U_ra_pix = [MFS_U_imfit['results'][key]['pixelcoords'][0] for key in components]
+            MFS_U_dec_pix = [MFS_U_imfit['results'][key]['pixelcoords'][1] for key in components]   
 
-    # Make estimate and fit Stokes V  -- checking against position of stokes I components
-    check_position('estimate_V.txt', IQUVP_names[3], xpix_I, ypix_I, fix_additional_comps = True, manual_rms_region = manual_rms_region)
-    imf_V  = get_imfit_values('estimate_V.txt', IQUVP_names[3], xpix_I, ypix_I)
-    xpix_V = [imf_V['results'][key]['pixelcoords'][0] for key in imf_V['results'].keys() if 'component' in key]
-    ypix_V = [imf_V['results'][key]['pixelcoords'][1] for key in imf_V['results'].keys() if 'component' in key]
+            # Make estimate and fit Stokes V  -- checking against position of stokes I components
+            check_position('estimate_V.txt', MFS_images[4], MFS_I_ra_pix, MFS_I_dec_pix, P_image = False, fix_additional_comps = fix_additional_comps, manual_rms_region = manual_rms_region)
+            MFS_V_imfit  = get_imfit_values('estimate_V.txt', MFS_images[4], MFS_I_ra_pix, MFS_I_dec_pix)
+            MFS_V_ra_pix = [MFS_V_imfit['results'][key]['pixelcoords'][0] for key in components]
+            MFS_V_dec_pix = [MFS_V_imfit['results'][key]['pixelcoords'][1] for key in components]   
+  
+            # Once again initialize arrays that don't exist
+            for component in components:
+            
+                # For ease and readability separate out the parameters for calculations and rms extraction
+                flux_P = MFS_P_imfit['results'][component]['peak']['value'] * 1e3
+                flux_Q = MFS_Q_imfit['results'][component]['peak']['value'] * 1e3
+                flux_U = MFS_U_imfit['results'][component]['peak']['value'] * 1e3
+                flux_V = MFS_V_imfit['results'][component]['peak']['value'] * 1e3
+                
+                err_P = MFS_P_imfit['results'][component]['peak']['error'] * 1e3
+                err_Q = MFS_Q_imfit['results'][component]['peak']['error'] * 1e3
+                err_U = MFS_U_imfit['results'][component]['peak']['error'] * 1e3
+                err_V = MFS_V_imfit['results'][component]['peak']['error'] * 1e3
 
-    # Initialize the MFS parameters
-    MFS_dict = initialize_MFS_dict(IQUVP_names[0], imf_I, imf_Q, imf_U, imf_V, imf_P, pol_flag, manual_rms_region)
+                RA_P   = MFS_P_imfit['results'][component]['shape']['direction']['m0']['value'] * 180 / np.pi
+                DEC_P = MFS_P_imfit['results'][component]['shape']['direction']['m1']['value'] * 180 / np.pi
+                
+                rms_Q = get_imstat_values(MFS_images[2], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3                
+                rms_U = get_imstat_values(MFS_images[3], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3                
+                rms_V = get_imstat_values(MFS_images[4], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3                
 
-    # Append the MFS imge parameters
-    MFS_dict['freqMFS_GHz'] = freqMFS_GHz
+                # Calculate additional linear polarisation parameters
+                flux_P0, rms_P = calculate_P0(flux_P, rms_Q, rms_U, rms_V, pol_flag, Aq = 0.8)
+                
+                # Calculate the other Polarisation parameters
+                LP_frac     = flux_P0 / flux_I * 100.0
+                LP_frac_err = LP_frac * np.sqrt( (rms_I / flux_I) ** 2 + (rms_P / flux_P0) ** 2 )
 
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
-    # Now iterate through channelized images to get the frequecny evolution  #
-    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
+                if pol_flag:
+                    LP_EVPA     = np.arctan2(flux_U, flux_Q) * 180.0 / np.pi * 0.5
+                    LP_EVPA_err = np.sqrt(flux_U ** 2 * rms_Q ** 2  + flux_Q ** 2 * rms_U ** 2) / (flux_U ** 2  + flux_Q ** 2) * 180.0 / np.pi * 0.5
+   
+                else:
+                    LP_EVPA = None
+                    LP_EVPA_err = None  
+
+                # Append values to dictionary -- Initialize if it doesn't exist
+                if 'P_flux_mJy' not in output_dictionary['MFS'][component]:
+
+                    output_dictionary['MFS'][component]['Q_flux_mJy'] = [flux_Q]            
+                    output_dictionary['MFS'][component]['U_flux_mJy'] = [flux_U]                
+                    output_dictionary['MFS'][component]['V_flux_mJy'] = [flux_V]                
+                    output_dictionary['MFS'][component]['P_flux_mJy'] = [flux_P]           
+                    output_dictionary['MFS'][component]['P0_flux_mJy'] = [flux_P0]    
+
+                    output_dictionary['MFS'][component]['Q_err_mJy'] = [err_Q]            
+                    output_dictionary['MFS'][component]['U_err_mJy'] = [err_U]                
+                    output_dictionary['MFS'][component]['V_err_mJy'] = [err_V]                
+                    output_dictionary['MFS'][component]['P_err_mJy'] = [err_P]           
+
+                    output_dictionary['MFS'][component]['Q_rms_mJy'] = [rms_Q]            
+                    output_dictionary['MFS'][component]['U_rms_mJy'] = [rms_U]                
+                    output_dictionary['MFS'][component]['V_rms_mJy'] = [rms_V]                
+                    output_dictionary['MFS'][component]['P_rms_mJy'] = [rms_P]        
+
+                    output_dictionary['MFS'][component]['P_RA_deg'] = [RA_P]
+                    output_dictionary['MFS'][component]['P_DEC_deg'] = [DEC_P]    
+
+                    output_dictionary['MFS'][component]['LP_frac'] = [LP_frac]
+                    output_dictionary['MFS'][component]['LP_frac_err'] = [LP_frac_err]
+                    output_dictionary['MFS'][component]['LP_EVPA'] = [LP_EVPA]
+                    output_dictionary['MFS'][component]['LP_EVPA_err'] = [LP_EVPA_err]        
+            
+                else:
+
+                    output_dictionary['MFS'][component]['Q_flux_mJy'].append(flux_Q)         
+                    output_dictionary['MFS'][component]['U_flux_mJy'].append(flux_U)               
+                    output_dictionary['MFS'][component]['V_flux_mJy'].append(flux_V)               
+                    output_dictionary['MFS'][component]['P_flux_mJy'].append(flux_P)           
+                    output_dictionary['MFS'][component]['P0_flux_mJy'].append(flux_P0)    
+
+                    output_dictionary['MFS'][component]['Q_err_mJy'].append(err_Q)            
+                    output_dictionary['MFS'][component]['U_err_mJy'].append(err_U)               
+                    output_dictionary['MFS'][component]['V_err_mJy'].append(err_V)                
+                    output_dictionary['MFS'][component]['P_err_mJy'].append(err_P)           
+
+                    output_dictionary['MFS'][component]['Q_rms_mJy'].append(rms_Q)            
+                    output_dictionary['MFS'][component]['U_rms_mJy'].append(rms_U)                
+                    output_dictionary['MFS'][component]['V_rms_mJy'].append(rms_V)                
+                    output_dictionary['MFS'][component]['P_rms_mJy'].append(rms_P)        
+
+                    output_dictionary['MFS'][component]['P_RA_deg'].append(RA_P)
+                    output_dictionary['MFS'][component]['P_DEC_deg'].append(DEC_P)    
+
+                    output_dictionary['MFS'][component]['LP_frac'].append(LP_frac)
+                    output_dictionary['MFS'][component]['LP_frac_err'].append(LP_frac_err)
+                    output_dictionary['MFS'][component]['LP_EVPA'].append(LP_EVPA)
+                    output_dictionary['MFS'][component]['LP_EVPA_err'].append(LP_EVPA_err)     
+                
+
+        ###########################
+        # Extract the CHAN image parameters  #
+        ###########################
+
+        msg(f'Fitting CHAN image(s) for prefix {k}: {prefix}')
+
+        # Glob the images
+        CHAN_images = sorted(glob.glob(f'{prefix}-[!MFS]*-{src_im_suffix}'))
+
+        # Reshape to so that each component is a set of Stokes parameters
+        if only_intensity:
+            CHAN_images_arr = np.array(CHAN_images).reshape(len(CHAN_images), 1)
+
+        else:
+            if pol_flag:
+               CHAN_images = sorted([im for im in CHAN_images if '-Ptot-' not in im])
+            else:
+               CHAN_images = sorted([im for im in CHAN_images if '-Plin-' not in im])
+
+            CHAN_images_arr = np.array(CHAN_images).reshape(int(len(CHAN_images) / 5), 5) # reshape to group in frequency for each set of Stokes paramete
+
+        # Iterate through the frequency channels, fit, and append to output dictionary
+        for CHAN_images in CHAN_images_arr[:]:
+         
+            try:
+
+                msg(f'Fitting image: {CHAN_images[0]}')
+
+                # First fit Stokes I amd get the fix coordinates
+                bmaj = imhead(CHAN_images[0], mode='get', hdkey = 'bmaj')['value']
+                bmin = imhead(CHAN_images[0], mode='get', hdkey = 'bmin')['value']
+                bpa   = imhead(CHAN_images[0], mode='get', hdkey = 'bpa')['value']           
+                freq_GHz = imhead(CHAN_images[0], mode='get', hdkey = 'CRVAL3')['value'] / 1.0e9     
+
+                check_position('estimate_I.txt', CHAN_images[0], MFS_I_ra_pix, MFS_I_dec_pix, manual_rms_region = manual_rms_region)
+                CHAN_I_imfit = get_imfit_values('estimate_I.txt', CHAN_images[0], MFS_I_ra_pix, MFS_I_dec_pix)
+                CHAN_I_ra_pix = [CHAN_I_imfit['results'][key]['pixelcoords'][0] for key in components]
+                CHAN_I_dec_pix = [CHAN_I_imfit['results'][key]['pixelcoords'][1] for key in components]
+
+                # Initialize arrays if they don't exist, else append values to existsing arrays
+                for component in components:
+        
+                    # For ease of readability define the desired quantities as variables
+                    flux_I = CHAN_I_imfit['results'][component]['peak']['value'] * 1e3
+                    err_I = CHAN_I_imfit['results'][component]['peak']['error'] * 1e3
+                    RA_I   = CHAN_I_imfit['results'][component]['shape']['direction']['m0']['value'] * 180 / np.pi
+                    DEC_I = CHAN_I_imfit['results'][component]['shape']['direction']['m1']['value'] * 180 / np.pi
+                    RA_pix_I = CHAN_I_imfit['results'][component]['pixelcoords'][0]
+                    DEC_pix_I = CHAN_I_imfit['results'][component]['pixelcoords'][1]
+                    rms_I = get_imstat_values(CHAN_images[0], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3
+        
+                    # Append values to the ouput dictionary
+                    if component not in output_dictionary['CHAN']:
+
+                        output_dictionary['CHAN'][component] = {}
+                
+                        output_dictionary['CHAN'][component]['freq_GHz'] = [[freq_GHz]] + (len(prefix_arr) - 1) * [[]]
+                        output_dictionary['CHAN'][component]['bmaj_asec'] = [[bmaj]] + (len(prefix_arr) - 1) * [[]]
+                        output_dictionary['CHAN'][component]['bmin_asec'] = [[bmin]] + (len(prefix_arr) - 1) * [[]]
+                        output_dictionary['CHAN'][component]['bpa_deg'] = [[bpa]] + (len(prefix_arr) - 1) * [[]]
+                        output_dictionary['CHAN'][component]['I_flux_mJy'] = [[flux_I]] + (len(prefix_arr) - 1) * [[]]
+                        output_dictionary['CHAN'][component]['I_err_mJy'] = [[err_I]] + (len(prefix_arr) - 1) * [[]]
+                        output_dictionary['CHAN'][component]['I_rms_mJy'] = [[rms_I]] + (len(prefix_arr) - 1) * [[]]
+                        output_dictionary['CHAN'][component]['I_RA_deg'] = [[RA_I]] + (len(prefix_arr) - 1) * [[]]
+                        output_dictionary['CHAN'][component]['I_DEC_deg'] = [[DEC_I]] + (len(prefix_arr) - 1) * [[]]
+                         
+                    else:
+                        output_dictionary['CHAN'][component]['freq_GHz'][k].append(freq_GHz)
+                        output_dictionary['CHAN'][component]['bmaj_asec'][k].append(bmaj)
+                        output_dictionary['CHAN'][component]['bmin_asec'][k].append(bmin)
+                        output_dictionary['CHAN'][component]['bpa_deg'][k].append(bpa)
+                        output_dictionary['CHAN'][component]['I_flux_mJy'][k].append(flux_I)
+                        output_dictionary['CHAN'][component]['I_err_mJy'][k].append(err_I)
+                        output_dictionary['CHAN'][component]['I_rms_mJy'][k].append(rms_I)
+                        output_dictionary['CHAN'][component]['I_RA_deg'][k].append(RA_I)
+                        output_dictionary['CHAN'][component]['I_DEC_deg'][k].append(DEC_I)
+
+
+            
+                # Next fit Polarization intensity and check if source is bright enough to allow positions to vary freely
+                if not only_intensity:
+
+                    check_position('estimate_P.txt', CHAN_images[1], CHAN_I_ra_pix, CHAN_I_dec_pix, P_image = True, fix_additional_comps = fix_additional_comps, manual_rms_region = manual_rms_region)
+                    CHAN_P_imfit  = get_imfit_values('estimate_P.txt', CHAN_images[1], CHAN_I_ra_pix, CHAN_I_dec_pix)
+                    CHAN_P_ra_pix = [CHAN_P_imfit['results'][key]['pixelcoords'][0] for key in components]
+                    CHAN_P_dec_pix = [CHAN_P_imfit['results'][key]['pixelcoords'][1] for key in components]   
+                
+                    # Make estimate and fit for Q/U -- checking against position of Lin. Pol. components
+                    check_position('estimate_Q.txt', CHAN_images[2], CHAN_P_ra_pix, CHAN_P_dec_pix, P_image = False, fix_additional_comps = fix_additional_comps, manual_rms_region = manual_rms_region)
+                    CHAN_Q_imfit  = get_imfit_values('estimate_Q.txt', CHAN_images[2], CHAN_P_ra_pix, CHAN_P_dec_pix)
+                    CHAN_Q_ra_pix = [CHAN_Q_imfit['results'][key]['pixelcoords'][0] for key in components]
+                    CHAN_Q_dec_pix = [CHAN_Q_imfit['results'][key]['pixelcoords'][1] for key in components]   
+   
+                    check_position('estimate_U.txt', CHAN_images[3], CHAN_P_ra_pix, CHAN_P_dec_pix, P_image = False, fix_additional_comps = fix_additional_comps, manual_rms_region = manual_rms_region)
+                    CHAN_U_imfit  = get_imfit_values('estimate_U.txt', CHAN_images[3], CHAN_P_ra_pix, CHAN_P_dec_pix)
+                    CHAN_U_ra_pix = [CHAN_U_imfit['results'][key]['pixelcoords'][0] for key in components]
+                    CHAN_U_dec_pix = [CHAN_U_imfit['results'][key]['pixelcoords'][1] for key in components]   
+
+                    # Make estimate and fit Stokes V  -- checking against position of stokes I components
+                    check_position('estimate_V.txt', CHAN_images[4], CHAN_I_ra_pix, CHAN_I_dec_pix, P_image = False, fix_additional_comps = fix_additional_comps, manual_rms_region = manual_rms_region)
+                    CHAN_V_imfit  = get_imfit_values('estimate_V.txt', CHAN_images[4], CHAN_I_ra_pix, CHAN_I_dec_pix)
+                    CHAN_V_ra_pix = [CHAN_V_imfit['results'][key]['pixelcoords'][0] for key in components]
+                    CHAN_V_dec_pix = [CHAN_V_imfit['results'][key]['pixelcoords'][1] for key in components]   
+  
+                    # Once again initialize arrays that don't exist
+                    for component in components:
+
+                        RA_pix_I = CHAN_I_imfit['results'][component]['pixelcoords'][0]
+                        DEC_pix_I = CHAN_I_imfit['results'][component]['pixelcoords'][1]
+            
+                        # For ease and readability separate out the parameters for calculations and rms extraction
+                        flux_P = CHAN_P_imfit['results'][component]['peak']['value'] * 1e3
+                        flux_Q = CHAN_Q_imfit['results'][component]['peak']['value'] * 1e3
+                        flux_U = CHAN_U_imfit['results'][component]['peak']['value'] * 1e3
+                        flux_V = CHAN_V_imfit['results'][component]['peak']['value'] * 1e3
+                
+                        err_P = CHAN_P_imfit['results'][component]['peak']['error'] * 1e3
+                        err_Q = CHAN_Q_imfit['results'][component]['peak']['error'] * 1e3
+                        err_U = CHAN_U_imfit['results'][component]['peak']['error'] * 1e3
+                        err_V = CHAN_V_imfit['results'][component]['peak']['error'] * 1e3
     
-    # Initialize dictionary
-    chan_dict = {}
-    comps = [key for key in imf_I['results'].keys() if 'component' in key]
-    for comp in comps:
-        chan_dict[comp] = {'freq_GHz' : [], 'I_flux_mJy': [], 'Q_flux_mJy': [], 'U_flux_mJy': [], 'V_flux_mJy': [], 'P_flux_mJy': [], 'P0_flux_mJy': [], 'LP_frac': [], 'LP_EVPA' : [],  
-                                            'I_rms_mJy': [], 'Q_rms_mJy': [], 'U_rms_mJy': [],  'V_rms_mJy': [], 'P_rms_mJy': [], 'LP_frac_err': [], 'LP_EVPA_err':[]}
+                        RA_P   = CHAN_P_imfit['results'][component]['shape']['direction']['m0']['value'] * 180 / np.pi
+                        DEC_P = CHAN_P_imfit['results'][component]['shape']['direction']['m1']['value'] * 180 / np.pi
+                    
+                        rms_Q = get_imstat_values(CHAN_images[2], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3                
+                        rms_U = get_imstat_values(CHAN_images[3], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3                
+                        rms_V = get_imstat_values(CHAN_images[4], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3                
     
-    # Iterate through the channelized images    
-    i_chan_images = sorted(glob.glob(f'{src_im_prefix}-[!MFS]*-I-image.fits'))
-    for i_chan_image in i_chan_images[:]:
-        try: 
-            msg(f'Fitting Image: {i_chan_image.split("IMAGES/")[-1]}')
-            chan_data = fit_channel(i_chan_image, xpix_I, ypix_I, xpix_Q, ypix_Q, xpix_U, ypix_U, xpix_P, ypix_P, xpix_V, ypix_V, pol_flag, manual_rms_region)
+                        # Calculate additional linear polarisation parameters
+                        flux_P0, rms_P = calculate_P0(flux_P, rms_Q, rms_U, rms_V, pol_flag, Aq = 0.8)
+                    
+                        # Calculate the other Polarisation parameters
+                        LP_frac     = flux_P0 / flux_I * 100.0
+                        LP_frac_err = LP_frac * np.sqrt( (rms_I / flux_I) ** 2 + (rms_P / flux_P0) ** 2 )
 
-            for k, comp in enumerate(comps):
-                chan_dict[comp]['freq_GHz'].append(chan_data[0][k])
-                chan_dict[comp]['I_flux_mJy'].append(chan_data[1][k])
-                chan_dict[comp]['Q_flux_mJy'].append(chan_data[2][k])
-                chan_dict[comp]['U_flux_mJy'].append(chan_data[3][k])
-                chan_dict[comp]['V_flux_mJy'].append(chan_data[4][k])
-                chan_dict[comp]['P_flux_mJy'].append(chan_data[5][k])
-                chan_dict[comp]['P0_flux_mJy'].append(chan_data[6][k])
-                chan_dict[comp]['LP_frac'].append(chan_data[7][k])
-                chan_dict[comp]['LP_EVPA'].append(chan_data[8][k])
-                chan_dict[comp]['I_rms_mJy'].append(chan_data[9][k])
-                chan_dict[comp]['Q_rms_mJy'].append(chan_data[10][k])
-                chan_dict[comp]['U_rms_mJy'].append(chan_data[11][k])
-                chan_dict[comp]['V_rms_mJy'].append(chan_data[12][k])
-                chan_dict[comp]['P_rms_mJy'].append(chan_data[13][k])
-                chan_dict[comp]['LP_frac_err'].append(chan_data[14][k])
-                chan_dict[comp]['LP_EVPA_err'].append(chan_data[15][k])
-        except:
-            msg('Fitting Failed: Channel is likely flagged')
+                        if pol_flag:
+                            LP_EVPA     = np.arctan2(flux_U, flux_Q) * 180.0 / np.pi * 0.5
+                            LP_EVPA_err = np.sqrt(flux_U ** 2 * rms_Q ** 2  + flux_Q ** 2 * rms_U ** 2) / (flux_U ** 2  + flux_Q ** 2) * 180.0 / np.pi * 0.5
+                        else:
+                            LP_EVPA = None
+                            LP_EVPA_err = None  
 
-    # Attach the sub_directories to the large directory + save as JSON
-    flux_dict['date_isot']   = date_obs
-    flux_dict['full_pol_cal'] = pol_flag
-    flux_dict['MFS']  = MFS_dict
-    flux_dict['CHAN'] = chan_dict
+                        # Append values to dictionary -- Initialize if it doesn't exist
+                        if 'P_flux_mJy' not in output_dictionary['CHAN'][component]:
+    
+                            output_dictionary['CHAN'][component]['Q_flux_mJy'] = [[flux_Q]] + (len(prefix_arr) - 1) * [[]]      
+                            output_dictionary['CHAN'][component]['U_flux_mJy'] = [[flux_U]] + (len(prefix_arr) - 1) * [[]]              
+                            output_dictionary['CHAN'][component]['V_flux_mJy'] = [[flux_V]] + (len(prefix_arr) - 1) * [[]]              
+                            output_dictionary['CHAN'][component]['P_flux_mJy'] = [[flux_P]] + (len(prefix_arr) - 1) * [[]]         
+                            output_dictionary['CHAN'][component]['P0_flux_mJy'] = [[flux_P0]] + (len(prefix_arr) - 1) * [[]]   
+    
+                            output_dictionary['CHAN'][component]['Q_err_mJy'] = [[err_Q]] + (len(prefix_arr) - 1) * [[]]            
+                            output_dictionary['CHAN'][component]['U_err_mJy'] = [[err_U]]  + (len(prefix_arr) - 1) * [[]]              
+                            output_dictionary['CHAN'][component]['V_err_mJy'] = [[err_V]]  + (len(prefix_arr) - 1) * [[]]              
+                            output_dictionary['CHAN'][component]['P_err_mJy'] = [[err_P]]  + (len(prefix_arr) - 1) * [[]]         
 
-    with open(cfg.RESULTS + f'/{src_header}_polarization.json', 'w') as jfile:
-        jfile.write(json.dumps(flux_dict, indent=4, sort_keys=True))
+                            output_dictionary['CHAN'][component]['Q_rms_mJy'] = [[rms_Q]] + (len(prefix_arr) - 1) * [[]]            
+                            output_dictionary['CHAN'][component]['U_rms_mJy'] = [[rms_U]]  + (len(prefix_arr) - 1) * [[]]              
+                            output_dictionary['CHAN'][component]['V_rms_mJy'] = [[rms_V]]  + (len(prefix_arr) - 1) * [[]]              
+                            output_dictionary['CHAN'][component]['P_rms_mJy'] = [[rms_P]]  + (len(prefix_arr) - 1) * [[]]      
 
-    # Make RM synthesis text files
-    if pol_flag:
-        make_rmsynth_files(src_header, chan_dict)
+                            output_dictionary['CHAN'][component]['P_RA_deg'] = [[RA_P]] + (len(prefix_arr) - 1) * [[]]
+                            output_dictionary['CHAN'][component]['P_DEC_deg'] = [[DEC_P]] + (len(prefix_arr) - 1) * [[]]    
+
+                            output_dictionary['CHAN'][component]['LP_frac'] = [[LP_frac]] + (len(prefix_arr) - 1) * [[]]
+                            output_dictionary['CHAN'][component]['LP_frac_err'] = [[LP_frac_err]] + (len(prefix_arr) - 1) * [[]]
+                            output_dictionary['CHAN'][component]['LP_EVPA'] = [[LP_EVPA]] + (len(prefix_arr) - 1) * [[]]
+                            output_dictionary['CHAN'][component]['LP_EVPA_err'] = [[LP_EVPA_err]] + (len(prefix_arr) - 1) * [[]]      
+                
+                        else:
+
+                            output_dictionary['CHAN'][component]['Q_flux_mJy'][k].append(flux_Q)         
+                            output_dictionary['CHAN'][component]['U_flux_mJy'][k].append(flux_U)               
+                            output_dictionary['CHAN'][component]['V_flux_mJy'][k].append(flux_V)               
+                            output_dictionary['CHAN'][component]['P_flux_mJy'][k].append(flux_P)           
+                            output_dictionary['CHAN'][component]['P0_flux_mJy'][k].append(flux_P0)    
+    
+                            output_dictionary['CHAN'][component]['Q_err_mJy'][k].append(err_Q)            
+                            output_dictionary['CHAN'][component]['U_err_mJy'][k].append(err_U)               
+                            output_dictionary['CHAN'][component]['V_err_mJy'][k].append(err_V)                
+                            output_dictionary['CHAN'][component]['P_err_mJy'][k].append(err_P)           
+
+                            output_dictionary['CHAN'][component]['Q_rms_mJy'][k].append(rms_Q)            
+                            output_dictionary['CHAN'][component]['U_rms_mJy'][k].append(rms_U)                
+                            output_dictionary['CHAN'][component]['V_rms_mJy'][k].append(rms_V)                
+                            output_dictionary['CHAN'][component]['P_rms_mJy'][k].append(rms_P)        
+
+                            output_dictionary['CHAN'][component]['P_RA_deg'][k].append(RA_P)
+                            output_dictionary['CHAN'][component]['P_DEC_deg'][k].append(DEC_P)    
+        
+                            output_dictionary['CHAN'][component]['LP_frac'][k].append(LP_frac)
+                            output_dictionary['CHAN'][component]['LP_frac_err'][k].append(LP_frac_err)
+                            output_dictionary['CHAN'][component]['LP_EVPA'][k].append(LP_EVPA)
+                            output_dictionary['CHAN'][component]['LP_EVPA_err'][k].append(LP_EVPA_err)     
+
+            except RuntimeError:
+                msg('Fitting Failed: Channel is likely flagged')
+
+
+        # Write RM Synthesis files (freq, I, Q, U, dI, dQ, dU)
+        if not only_intensity:
+            for component in components:
+                rmsynth_arr = np.array([np.array(output_dictionary['CHAN'][component]['freq_GHz'][k]) * 1e9, 
+                                                    np.array(output_dictionary['CHAN'][component]['I_flux_mJy'][k]) / 1e3, 
+                                                    np.array(output_dictionary['CHAN'][component]['Q_flux_mJy'][k]) / 1e3, 
+                                                    np.array(output_dictionary['CHAN'][component]['U_flux_mJy'][k]) / 1e3,
+                                                    np.array(output_dictionary['CHAN'][component]['I_rms_mJy'][k]) / 1e3,
+                                                    np.array(output_dictionary['CHAN'][component]['Q_rms_mJy'][k]) / 1e3,
+                                                    np.array(output_dictionary['CHAN'][component]['U_rms_mJy'][k]) / 1e3])
+
+                np.savetxt('{}_{}_rmsynth.txt'.format(prefix, component).replace(image_directory, 'RESULTS'), rmsynth_arr.T)
+
+    # Save the full dictionary with all  times, etc.
+    with open('{}_polarization.json'.format(prefix).replace(image_directory, 'RESULTS'), 'w') as j:
+        json.dump(output_dictionary, j, indent = 4)
 
     return 0
 
 def main():
     
     # Load in the rmsynthesis data
-    rmsynth_info = np.genfromtxt(cfg.DATA + '/rmsynth/rmsynth_info.txt', skip_header = 2, dtype=str)
+    with open(cfg.DATA + '/rmsynth/rmsynth_info.json', 'r') as j:
+        rmsynth_info = json.load(j)
 
     # Check to see if there is a Polarization angle calibrator -- pol_flag = Trye means that you do have
     pol_flag=False
     if cfg.POLANG_NAME != '':
         pol_flag = True
+        
+    # Iterate through sources as specified in rmsynth_info.json
+    for k in range(len(rmsynth_info['image_directory'])):      
+    
+        # Construct image identifier based on input options
+        if rmsynth_info["image_timing"][k]:
+            src_im_identifier = cfg.CWD +'/{}/*{}*.ms_{}-t'.format(rmsynth_info["image_directory"][k], 
+                                                                                            rmsynth_info["source_name"][k], 
+                                                                                            rmsynth_info["image_identifier"][k])
+        else:
+            src_im_identifier = cfg.CWD +'/{}/*{}*.ms_{}'.format(rmsynth_info["image_directory"][k], 
+                                                                                            rmsynth_info["source_name"][k], 
+                                                                                           rmsynth_info["image_identifier"][k])                                                                                           
+        # Separate out source positions
+        src_ra   = []
+        src_dec = []
+        for pos in rmsynth_info['source_pos'][k]:
+        
+            # If the positions are given in CASA h:m:s d.m.s format covert to degrees
+            if ':' in pos:
+                pos_i = pos.split(',')
+                pos_i[0], pos_i[1] = pos_i[0].split(':'), pos_i[1].split('.')
+                
+                if len(pos_i[1]) > 3:
+                    pos_i[1][2] = pos_i[1][2] + '.' + pos_i[1][3]
+                    pos_i[1] = pos_i[1][:3]
+                
+                sign = 1.0
+                if '-' in pos_i[1][0]:
+                    sign = -1.0
+                
+                pos_i[0] = float(pos_i[0][0]) * 15 + float(pos_i[0][1]) / 4. + float(pos_i[0][2]) / 240.
+                pos_i[1] = (abs(float(pos_i[1][0])) + float(pos_i[1][1]) / 60.0 + float(pos_i[1][2]) / 3600.0) * sign
 
-    # Tweak this if you want to specify the RMS region
-    manual_rms_region = 'circle[[17:27:36.9147415550,-16.14.05.2861563048], 2arcmin]'
+            # Else just remove 'deg' string (if there) and convert to floats
+            else:
+                pos_i.replace('deg', '').split(',')
+            
+            src_ra.append(pos_i[0])
+            src_dec.append(pos_i[1])      
+            
+        src_ra, src_deg = np.array(src_ra), np.array(src_dec)  
 
-    # If this is a 1-D array convert to two 2-D
-    rmsynth_info = np.atleast_2d(rmsynth_info)
+        ###########################
+        # Add the position prediction from here #
+        ###########################
+        
+        msg(f'Starting property extraction for identifier: {src_im_identifier}')
+        extract_polarization_properties(rmsynth_info["source_name"][k],
+            src_im_identifier,
+            rmsynth_info["image_suffix"][k], 
+            src_ra, 
+            src_dec, 
+            pol_flag, 
+            rmsynth_info['rms_region'][k],
+            rmsynth_info['image_directory'][k],
+            fix_additional_comps = True)
 
-    # Break the columns into the relevant properties
-    src_names, src_im_identifiers, src_ras, src_decs= rmsynth_info[:,0], rmsynth_info[:,1], rmsynth_info[:,2], rmsynth_info[:,3]
 
-    for src_name, src_im_identifier, src_ra, src_dec in zip(src_names, src_im_identifiers, src_ras, src_decs):
-        msg(f'\nStarting Analysis of {src_name}')
-        extract_polarization_properties(src_name, src_im_identifier, src_ra, src_dec, pol_flag, manual_rms_region)
 
 if __name__  == "__main__":
     main()
