@@ -28,9 +28,10 @@ syscall += cfg.IMAGES + '/*.pb.* '
 syscall += cfg.IMAGES + '/*.wt.* '
 syscall += cfg.IMAGES + '/*kernel* '
 syscall += cfg.IMAGES + '/*J1939*-00* '
+subprocess.run([syscall], shell=True)
+
+syscall   = 'rm -rf '
 syscall += cfg.INTERVALS + '/*psf* '
-syscall += cfg.IMAGES + '/*J1331*-00*-V-* '
 syscall += cfg.INTERVALS + '/*modelsub*.fits '
 syscall += cfg.INTERVALS + '/*-psf*.fits '
-
 subprocess.run([syscall], shell=True)
