@@ -68,6 +68,8 @@ def main():
     if cfg.SNAP_FIELDS != '':
         target_names = cfg.SNAP_FIELDS.split(',')
 
+    predict_pol = cfg.WSC_POL
+
     pol = 'I'
     if cfg.SNAP_POL == True:
         pol = 'IQUV'
@@ -241,6 +243,8 @@ def main():
                 steps.append(step)
                 n += 1
 
+                predict_pol = pol # If you make a new image, predict the polarisations based on the imaged polarisations
+
                 if cfg.WSC_MAX_CHANNELS < cfg.SNAP_CHANNELSOUT:
                     step = {}
                     step['step'] = n
@@ -266,6 +270,7 @@ def main():
             syscall += prefix + gen.generate_syscall_predict(msname = target_ms,
                 imgname = model_image_prefix,
                 field = '0',
+                pol = predict_pol,
                 chanout = cfg.SNAP_CHANNELSOUT,
                 absmem = absmem)
             step['syscall'] = syscall
