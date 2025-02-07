@@ -210,7 +210,7 @@ def main():
                 
                     model_mask = f"{blind_image_prefix}-MFS-image.mask.fits"
 
-                if n = 0:
+                if n == 0:
                     dependency = last_split_code
                 else:
                     dependency = n - 1 
