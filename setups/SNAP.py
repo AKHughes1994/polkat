@@ -170,7 +170,7 @@ def main():
                     step = {}
                     step['step'] = n
                     step['comment'] = 'Shallow blind wsclean on DATA column of ' + target_ms
-                    step['dependency'] = n - 1 
+                    step['dependency'] = last_split_code
                     step['id'] = 'WBSNA'+code
                     step['slurm_config'] = cfg.SLURM_WSCLEAN
                     step['pbs_config'] = cfg.PBS_WSCLEAN
@@ -210,10 +210,15 @@ def main():
                 
                     model_mask = f"{blind_image_prefix}-MFS-image.mask.fits"
 
+                if n = 0:
+                    dependency = last_split_code
+                else:
+                    dependency = n - 1 
+
                 step = {}
                 step['step'] = n
                 step['comment'] = 'Run wsclean, masked deconvolution of the DATA column of' + target_ms
-                step['dependency'] = n - 1 
+                step['dependency'] = dependency
                 step['id'] = 'WMSNA'+code
                 step['slurm_config'] = cfg.SLURM_WSCLEAN
                 step['pbs_config'] = cfg.PBS_WSCLEAN
