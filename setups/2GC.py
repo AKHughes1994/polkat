@@ -76,6 +76,7 @@ def main():
     target_steps = []
     codes = []
     ii = 1
+    last_target_code = None
 
     # Loop over targets
 
@@ -124,7 +125,7 @@ def main():
             step = {}
             step['step'] = n
             step['comment'] = 'Run Tricolour on '+myms
-            step['dependency'] = None
+            step['dependency'] = last_target_code
             step['id'] = 'TRILE'+code
             step['slurm_config'] = cfg.SLURM_TRICOLOUR
             step['pbs_config'] = cfg.PBS_TRICOLOUR
@@ -311,6 +312,7 @@ def main():
             step['syscall'] = syscall
             steps.append(step)
             n += 1
+            last_target_code = 'WSCMA'+code
 
             if cfg.WSC_MAX_CHANNELS < cfg.WSC_IMAGE_CHANNELSOUT or cfg.WSC_HOMOGENIZEBEAM:
                 step = {}
@@ -379,6 +381,7 @@ def main():
                 step['syscall'] = syscall
                 steps.append(step)
                 n += 1
+                last_target_code = 'WSUNI'+code
 
                 step = {}
                 step['step'] = n
@@ -402,6 +405,7 @@ def main():
                 step['syscall'] = syscall
                 steps.append(step)
                 n += 1
+                last_target_code = 'MKLPI'+code
 
             target_steps.append((steps,kill_file,targetname))
 
