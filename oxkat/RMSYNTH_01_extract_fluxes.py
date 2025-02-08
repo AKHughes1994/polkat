@@ -324,6 +324,7 @@ def extract_polarization_properties(src_name,
     src_im_suffix, 
     src_ra, 
     src_dec, 
+    src_ulims,
     pol_flag, 
     manual_rms_region, 
     image_directory,
@@ -391,14 +392,22 @@ def extract_polarization_properties(src_name,
         # Convert the RA/DEC guesses to pixel coordinates
         src_ra_pix = []
         src_dec_pix = []
-        for k in range(src_ra.size):
-            region = 'circle[[{}deg,{}deg],1.0pix]'.format(src_ra[k], src_dec[k])
+        for z in range(src_ra.size):
+            region = 'circle[[{}deg,{}deg],1.0pix]'.format(src_ra[z], src_dec[z])
             pixel_imstat = imstat(MFS_images[0], region = region)
             src_ra_pix.append(pixel_imstat['maxpos'][0])
             src_dec_pix.append(pixel_imstat['maxpos'][1])
             
         # First fit Stokes I -- also extract pixel coordinates
-        make_estimate('estimate_I.txt', MFS_images[0], src_ra_pix, src_dec_pix,  ['abp'] * len(src_ra))
+        fix = []
+        for z, boolean in enumerate(src_ulims):        
+            msg(f'For source {src_name} component {k} has upper limit = {boolean}')
+            if boolean:
+                fix.append('xyabp')
+            else:
+                fix.append('abp')
+    
+        make_estimate('estimate_I.txt', MFS_images[0], src_ra_pix, src_dec_pix,  fix)
         MFS_I_imfit = get_imfit_values('estimate_I.txt', MFS_images[0], src_ra_pix, src_dec_pix)
        
         # Get number of components
@@ -407,7 +416,7 @@ def extract_polarization_properties(src_name,
         MFS_I_dec_pix = [MFS_I_imfit['results'][key]['pixelcoords'][1] for key in components]
         
         # Initialize arrays if they don't exist, else append values to existsing arrays
-        for component in components:
+        for z, component in enumerate(components):
         
             # For ease of readability define the desired quantities as variables
             flux_I = MFS_I_imfit['results'][component]['peak']['value'] * 1e3
@@ -421,7 +430,8 @@ def extract_polarization_properties(src_name,
             if component not in output_dictionary['MFS']:
 
                 output_dictionary['MFS'][component] = {}
-            
+
+                output_dictionary['MFS'][component]['upperlimit'] = [src_ulims[z]]           
                 output_dictionary['MFS'][component]['freq_GHz'] = [freq_GHz]
                 output_dictionary['MFS'][component]['date_isot'] = [date_obs]
                 output_dictionary['MFS'][component]['bmaj_asec'] = [bmaj]
@@ -593,6 +603,12 @@ def extract_polarization_properties(src_name,
                 bmin = imhead(CHAN_images[0], mode='get', hdkey = 'bmin')['value']
                 bpa   = imhead(CHAN_images[0], mode='get', hdkey = 'bpa')['value']           
                 freq_GHz = imhead(CHAN_images[0], mode='get', hdkey = 'CRVAL3')['value'] / 1.0e9     
+
+                # Check if the beam is significantly elongated with respect to the expectation from MFS image (Channel is probably very flagged and should be omitted)
+                beam_scaled = output_dictionary['MFS']['component0']['freq_GHz'][k] / freq_GHz   * output_dictionary['MFS']['component0']['bmaj_asec'][k]
+                if bmaj > 3.0 * beam_scaled:
+                    msg('Skipping Channel: BMAJ is very different from expectation based on MFS image (likely high flagged)')
+                    continue 
 
                 check_position('estimate_I.txt', CHAN_images[0], MFS_I_ra_pix, MFS_I_dec_pix, manual_rms_region = manual_rms_region)
                 CHAN_I_imfit = get_imfit_values('estimate_I.txt', CHAN_images[0], MFS_I_ra_pix, MFS_I_dec_pix)
@@ -790,7 +806,7 @@ def main():
         pol_flag = True
         
     # Iterate through sources as specified in rmsynth_info.json
-    for k in range(len(rmsynth_info['image_directory'])):      
+    for k in range(len(rmsynth_info['image_directory']))[:]:      
     
         # Construct image identifier based on input options
         if rmsynth_info["image_timing"][k]:
@@ -838,9 +854,10 @@ def main():
         msg(f'Starting property extraction for identifier: {src_im_identifier}')
         extract_polarization_properties(rmsynth_info["source_name"][k],
             src_im_identifier,
-            rmsynth_info["image_suffix"][k], 
+            rmsynth_info['image_suffix'][k], 
             src_ra, 
             src_dec, 
+            rmsynth_info['source_ulim'][k],
             pol_flag, 
             rmsynth_info['rms_region'][k],
             rmsynth_info['image_directory'][k],
