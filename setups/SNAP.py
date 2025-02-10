@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # andrew.hughes@physics.ox.ac.uk
-
+# fraser.cowie@physics.ox.ac.uk
 
 import glob
 import json
@@ -260,7 +260,10 @@ def main():
             step = {}
             step['step'] = n
             step['comment'] = 'Run wsclean-predict to populate snapshot MS DATA column of ' + target_ms
-            step['dependency'] = n - 1 
+            if n == 0:
+                step['dependency'] = last_split_code
+            else:
+                step['dependency'] = n - 1 
             step['id'] = 'PRSNA'+code
             step['slurm_config'] = cfg.SLURM_WSCLEAN
             step['pbs_config'] = cfg.PBS_WSCLEAN
