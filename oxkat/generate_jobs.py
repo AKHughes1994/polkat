@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # andrew.hughes@physics.ox.ac.uk
-
+# fraser.cowie@physics.ox.ac.uk
 
 import glob
 import datetime
@@ -21,6 +21,7 @@ def preamble():
     print('   p o l  k  a  t    | The poorly coded, younger brother of oxkat:')
     print('                     | Feel free to email questions/concerns to:')
     print('                     | hughesakh@gmail.com')
+    print('                     | fraser.cowie@physics.ox.ac.uk')
     print('                     |')
     print('---------------------+----------------------------------------------------------')
     print(now()+'Observing band is '+cfg.BAND)

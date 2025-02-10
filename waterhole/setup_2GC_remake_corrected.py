@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 # andrew.hughes@physics.ox.ac.uk
+# fraser.cowie@physics.ox.ac.uk
 # If peeling goes wrong you can use this script to restore the CORRECTED_DATA column
 
 

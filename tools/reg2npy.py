@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 # andrew.hughes@physics.ox.ac.uk
+# fraser.cowie@physics.ox.ac.uk
 
 # Convert a DS9 (circles only) region file to a ClusterCat.npy file
 # for use with killMS. This is a pure Python script to avoid having

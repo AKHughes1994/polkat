@@ -1,5 +1,6 @@
 #!/usr/bin/python
 # andrew.hughes@physics.ox.ac.uk
+# fraser.cowie@physics.ox.ac.uk
 
 
 import logging

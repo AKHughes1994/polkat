@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 # andrew.hughes@physics.ox.ac.uk
+# fraser.cowie@physics.ox.ac.uk
 
 
 # Clip killMS solutions based on the first differential of the amplitudes

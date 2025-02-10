@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 # andrew.hughes@physics.ox.ac.uk
+# fraser.cowie@physics.ox.ac.uk
 
 
 # Usage: python tools/merge_CHPC_1GC_jobs.py <submit_jobs.sh>
