@@ -123,11 +123,16 @@ def get_container(pathlist,pattern,use_singularity):
     return container
 
 
-def setup_dir(DIR):
+def setup_dir(DIR,relabel=False):
 
     # Make scripts folder if it doesn't exist
 
     if not o.isdir(DIR):
+        os.mkdir(DIR)
+    elif o.isdir(DIR) and relabel and (len(os.listdir(DIR)) != 0):
+        dirs = glob.glob(DIR+'*')
+        n = len(dirs)
+        os.rename(DIR,DIR+str(n))
         os.mkdir(DIR)
 
 
