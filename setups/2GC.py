@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # andrew.hughes@physics.ox.ac.uk
-
+# fraser.cowie@physics.ox.a.uk
 
 import glob
 import json
@@ -125,7 +125,11 @@ def main():
             step = {}
             step['step'] = n
             step['comment'] = 'Run Tricolour on '+myms
-            step['dependency'] = last_target_code
+            step['dependency'] = None
+            if tt > 0:
+                step['dependency_on_prev_target'] = last_target_code
+            else:
+                step['dependency_on_prev_target'] = None
             step['id'] = 'TRILE'+code
             step['slurm_config'] = cfg.SLURM_TRICOLOUR
             step['pbs_config'] = cfg.PBS_TRICOLOUR
@@ -142,7 +146,8 @@ def main():
             step = {}
             step['step'] = n
             step['comment'] = 'Shallow blind wsclean on CORRECTED_DATA column for source {}'.format(targetname)
-            step['dependency'] = n - 1 
+            step['dependency'] = n - 1
+            step['dependency_on_prev_target'] = None
             step['id'] = 'WSDBL'+code
             step['slurm_config'] = cfg.SLURM_WSCLEAN
             step['pbs_config'] = cfg.PBS_WSCLEAN
@@ -173,6 +178,7 @@ def main():
             step['step'] = n
             step['comment'] = 'Make cleaning mask for ' + targetname
             step['dependency'] = n - 1
+            step['dependency_on_prev_target'] = None
             step['id'] = 'MASK0'+code
             syscall  = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
             syscall += gen.generate_syscall_breizorro(restoredimage = f"{img_prefix}-MFS-image.fits", outfile = f"{img_prefix}-MFS-image.mask.fits")[0]
@@ -184,6 +190,7 @@ def main():
             step['step'] = n
             step['comment'] = 'Apply primary beam correction to '+targetname+' (BLIND) image'
             step['dependency'] = n - 2
+            step['dependency_on_prev_target'] = None
             step['id'] = 'PBDBL'+code
             syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
             syscall += 'python3 '+TOOLS+'/pbcor_katbeam.py --band '+band[0]+' '+img_prefix+'-MFS-image.fits'
@@ -195,6 +202,7 @@ def main():
             step['step'] = n
             step['comment'] = 'Run wsclean, masked deconvolution of the CORRECTED_DATA column for source {}'.format(targetname)
             step['dependency'] = n - 1 
+            step['dependency_on_prev_target'] = None
             step['id'] = 'WSDMA'+code
             step['slurm_config'] = cfg.SLURM_WSCLEAN
             step['pbs_config'] = cfg.PBS_WSCLEAN
@@ -223,6 +231,7 @@ def main():
                 step['step'] = n
                 step['comment'] = f'Homogenize the MASK resolution across frequency channels'
                 step['dependency'] = n - 1
+                step['dependency_on_prev_target'] = None
                 step['id'] = 'HODMA' +code
                 prefix = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
                 syscall =  prefix + f'python3 {cfg.TOOLS}/fix_image_naming.py {cfg.WSC_IMAGE_CHANNELSOUT} {data_img_prefix}\n\n'
@@ -235,6 +244,7 @@ def main():
             step['step'] = n
             step['comment'] = 'Run wsclean-predict on masked deconvolution of the model for source {}'.format(targetname)
             step['dependency'] = n - 1 
+            step['dependency_on_prev_target'] = None
             step['id'] = 'PRDMA'+code
             step['slurm_config'] = cfg.SLURM_WSCLEAN
             step['pbs_config'] = cfg.PBS_WSCLEAN
@@ -253,6 +263,7 @@ def main():
             step['step'] = n
             step['comment'] = f'Apply primary beam correction to {targetname} (MASK) image'
             step['dependency'] = n - 1
+            step['dependency_on_prev_target'] = None
             step['id'] = 'PBDMA'+code
             syscall = ''
             images = []
@@ -277,6 +288,7 @@ def main():
             step['step'] = n
             step['comment'] = 'Run phase self-calibration on the target {}'.format(targetname)
             step['dependency'] = n - 1
+            step['dependency_on_prev_target'] = None
             step['id'] = 'CL2GC'+code
             step['slurm_config'] = cfg.SLURM_WSCLEAN
             step['pbs_config'] = cfg.PBS_WSCLEAN
@@ -292,6 +304,7 @@ def main():
             step['step'] = n
             step['comment'] = f'Run wsclean, masked deconvolution of the CORRECTED_DATA (self-calibrated) for {targetname}'
             step['dependency'] = n - 1
+            step['dependency_on_prev_target'] = None
             step['id'] = 'WSCMA'+code
             step['slurm_config'] = cfg.SLURM_WSCLEAN
             step['pbs_config'] = cfg.PBS_WSCLEAN
@@ -319,6 +332,7 @@ def main():
                 step['step'] = n
                 step['comment'] = f'Homogenize the PCAL resolution across frequency channels'
                 step['dependency'] = n - 1
+                step['dependency_on_prev_target'] = None
                 step['id'] = 'HOCMA' + code
                 prefix = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
                 syscall =  prefix + f'python3 {cfg.TOOLS}/fix_image_naming.py {cfg.WSC_IMAGE_CHANNELSOUT} {pcal_img_prefix}\n\n'
@@ -332,6 +346,7 @@ def main():
             step['step'] = n
             step['comment'] = 'Apply primary beam correction to '+targetname+'(PCAL) image'
             step['dependency'] = n - 1
+            step['dependency_on_prev_target'] = None
             step['id'] = 'PBPCL'+code
             syscall = ''
             images = []
@@ -357,6 +372,7 @@ def main():
                 step['step'] = n
                 step['comment'] = 'Run high angular resolution, wsclean, masked deconvolution of the CORRECTED_DATA (self-calibrated) for {}'.format(targetname)
                 step['dependency'] = n - 1
+                step['dependency_on_prev_target'] = None
                 step['id'] = 'WSUNI'+code
                 step['slurm_config'] = cfg.SLURM_WSCLEAN
                 step['pbs_config'] = cfg.PBS_WSCLEAN
@@ -387,6 +403,7 @@ def main():
                 step['step'] = n
                 step['comment'] = 'Apply primary beam correction to '+targetname+'(UNIFORM) image'
                 step['dependency'] = n - 1
+                step['dependency_on_prev_target'] = None
                 step['id'] = 'PBUNI'+code
                 syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
                 syscall += 'python3 '+TOOLS+'/pbcor_katbeam.py --band '+band[0]+' '+uniform_img_prefix+'-MFS-image.fits'
@@ -399,6 +416,7 @@ def main():
                 step['step'] = n
                 step['comment'] = 'Make Polarization Intensity Images'
                 step['dependency'] = n - 1
+                step['dependency_on_prev_target'] = None
                 step['id'] = 'MKLPI'+code
                 syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
                 syscall += f"python3 {cfg.TOOLS}/make_pol_images.py {cfg.IMAGES}"
@@ -441,6 +459,8 @@ def main():
                 dependency = steps[step['dependency']]['id']
             else:
                 dependency = None
+            if step['dependency_on_prev_target'] is not None:
+                dependency = step['dependency_on_prev_target']
             syscall = step['syscall']
             if 'slurm_config' in step.keys():
                 slurm_config = step['slurm_config']
