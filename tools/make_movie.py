@@ -61,7 +61,7 @@ if __name__ == '__main__':
     logging.basicConfig(filename=logfile, level=logging.DEBUG, format='%(asctime)s |  %(message)s', datefmt='%d/%m/%Y %H:%M:%S ')
 
 
-    fitslist = sorted(glob.glob('*-t*-image-restored.fits'))
+    fitslist = sorted(glob.glob('*_restored-t*-MFS-image.fits'))
     ids = numpy.arange(0,len(fitslist))
     nframes = len(fitslist)
     j = 8

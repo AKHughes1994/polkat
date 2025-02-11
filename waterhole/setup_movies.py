@@ -1,3 +1,7 @@
+#!/usr/bin/env python
+# andrew.hughes@physics.ox.ac.uk
+# fraser.cowie@physics.ox.ac.uk
+
 import glob
 import os
 import os.path as o
@@ -31,9 +35,9 @@ def main():
 
 
     INFRASTRUCTURE, CONTAINER_PATH = gen.set_infrastructure(('','idia'))
-    ASTROPY_CONTAINER = gen.get_container(CONTAINER_PATH,cfg.ASTROPY_PATTERN,True)
+    OXKAT_CONTAINER = gen.get_container(CONTAINER_PATH,cfg.MOVIE_PATTERN,True)
 
-    intervals = sorted(glob.glob('INTERVALS/*scan*'))
+    intervals = sorted(glob.glob('INTERVALS*/'))
     rootdir = os.getcwd()
 
     runfile = 'submit_movie_jobs.sh'
@@ -45,14 +49,14 @@ def main():
 
         os.chdir(mydir)
         code = os.getcwd().split('/')[-1].split('_')[-1].replace('scan','movie')
-        syscall = 'singularity exec '+ASTROPY_CONTAINER+' '
+        syscall = 'singularity exec '+OXKAT_CONTAINER+' '
         syscall += 'python3 '+rootdir+'/tools/make_movie.py'
 
         slurm_file = 'slurm_'+code+'.sh'
         log_file = 'slurm_'+code+'.log'
 
         write_slurm(opfile=slurm_file,jobname=code,logfile=log_file,syscall=syscall )
-        os.chdir('../../')
+        os.chdir('../')
 
         # print('cd '+mydir)
         # print('sbatch '+slurm_file)
@@ -60,7 +64,7 @@ def main():
 
         f.writelines(['cd '+mydir+'\n',
             'sbatch '+slurm_file+'\n',
-            'cd ../../\n'])
+            'cd ../\n'])
 
     f.close()
     gen.make_executable(runfile)

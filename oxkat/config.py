@@ -70,7 +70,7 @@ WSCLEAN_PATTERN = 'polkat-0.1.1'
 SHADEMS_PATTERN = 'polkat-0.1.1'
 ALBUS_PATTERN = 'polkat-albus'
 TRICOLOUR_PATTERN = 'polkat-0.1.1'
-
+MOVIE_PATTERN = 'oxkat-0.41'
 
 
 # ------------------------------------------------------------------------
