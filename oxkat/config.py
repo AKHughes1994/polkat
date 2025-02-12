@@ -434,7 +434,7 @@ WSC_CIRCULARBEAM = False
 WSC_POL = 'IQUV'
 WSC_SPLITPOL = False # Image V/I and Q/U separately (necessary for High RM and MFS fitting)
 WSC_JOINPOLARIZATIONS = True
-WSC_SQUAREPOLARIZATIONS = True
+WSC_SQUAREPOLARIZATIONS = False
 # Masking
 WSC_MASK = False
 WSC_THRESHOLD = False
