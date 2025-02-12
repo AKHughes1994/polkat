@@ -265,7 +265,7 @@ def main():
             else:
                 step['dependency'] = n - 1 
             step['id'] = 'PRSNA'+code
-            step['slurm_config'] = cfg.SLURM_WSCLEAN
+            step['slurm_config'] = cfg.SLURM_PREDICT
             step['pbs_config'] = cfg.PBS_WSCLEAN
             absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
             prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''

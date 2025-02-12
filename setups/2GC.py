@@ -246,7 +246,7 @@ def main():
             step['dependency'] = n - 1 
             step['dependency_on_prev_target'] = None
             step['id'] = 'PRDMA'+code
-            step['slurm_config'] = cfg.SLURM_WSCLEAN
+            step['slurm_config'] = cfg.SLURM_PREDICT
             step['pbs_config'] = cfg.PBS_WSCLEAN
             absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
             prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
@@ -290,8 +290,6 @@ def main():
             step['dependency'] = n - 1
             step['dependency_on_prev_target'] = None
             step['id'] = 'CL2GC'+code
-            step['slurm_config'] = cfg.SLURM_WSCLEAN
-            step['pbs_config'] = cfg.PBS_WSCLEAN
             syscall = CONTAINER_RUNNER + CASA_CONTAINER+' ' if USE_SINGULARITY else ''
             syscall += gen.generate_syscall_casa(casascript=cfg.OXKAT+f'/2GC_casa_pcal_source.py -f {save_flag} -s {cfg.CAL_2GC_PSOLINT} {targetname}')
             step['syscall'] = syscall
