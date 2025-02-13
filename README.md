@@ -2,7 +2,7 @@
 
 ### What is this?
 
-This modified version of the semi-automated routine [oxkat](https://github.com/IanHeywood/oxkat) includes polarisation calibration and imaging. This assumes you are familiar with the oxkat workflow
+This modified version of the semi-automated routine [oxkat](https://github.com/IanHeywood/oxkat) that was tweaked to include full polarisation calibration and for Stokes I, Q, U, V imaging. We assume you are somewhat familiar with the oxkat workflow and its file system. This guide will walk you through a standard use case and point out some changes to the `config.py` file and some new options. 
 
 
 ---
