@@ -15,6 +15,19 @@ This routine has been designed primarily for use on the ILIFU clusters operated 
 * 2GC  — FLAG and 2GC have been combined into a single setup; all imaging/masking/self-cal is now in 2GC
 
 ---
+##### Standard Workflow
+
+Henceforth, we will assume a Linux-based operating system (I use Ubuntu). 
+
+You can begin by initializing a working directory, moving or symlinking your CASA measurement file (i.e., ms-file), and cloning this repository. For example:
+
+```
+git clone -b [VERSION] 
+```
+
+
+
+
 ##### Changes to `config.py` — new parameters
 
 * `POLANG_NAME = 'J1331+3030'` — This is the source's name to be used as a polarization angle calibrator. The default is J1331+3030 (3C286). If blank, the routine will skip the polarization angle calibration. 
