@@ -90,19 +90,21 @@ If 1GC is successful, please take a look at the visibility/gain solutions; as po
 
 ##### 2GC
 
-After 1GC is complete, perform final flagging, imaging, and direction-independent phase self-calibration
+After 1GC is complete, final flagging, imaging (with WSCLEAN), and direction-independent phase self-calibration are performed. The image products will include channelised images, as well as a single MFS image that combines the data from the different frequency channels into a single Multi-frequency synthesis image (maximizing sensitivity, but may cause bandwidth depolarisation)
 
    ```
    $ python setups/2GC.py idia
    $ ./submit_2GC_job.sh
    ```
 
-At this point, you should have all the imaging data products. Here, if you want to run snapshot imaging on a field and have set the `SNAP_FIELDS` parameter in `config.py` you can run, 
+There are too many bells and whistles to list all of them (feel free to discuss them if there are any questions). Some key ones are:
 
-   ```
-   $ python setups/SNAP.py idia
-   $ ./submit_snap_job.sh
-   ```
+* `WSC_WEIGHT  = briggs 0.0` — The weighting for the imaging; by default it uses a [Briggs](https://casa.nrao.edu/Documents/Briggs-PhD.pdf) robustness of zero. This is the most natural (i.e., sensitivity maximizing) weighting before the MeerKAT synthesized beam becomes extremely non-Gaussian (and thus hard to deconvolve via CLEAN-based imagers)
+* `WSC_UNIFORM_IMAGE = True` — This flag will make a high-angular resolution image in addition to the standard images using the weighting set by the variable `WSC_WEIGHT_HIGHRES`. It is helpful if you have a weakly polarised point source where you want natural weighting to maximize the sensitivity for pol. Detections, by high angular resolution for Stokes I astrometry.
+* `WSC_POL = 'IQUV'` — Specify which Stokes parameters you want images; just leave this alone. 
+* `WSC_IMAGE_CHANNELSOUT = 8` — This sets the frequency channels to be images, which may need to be increased if you are doing polarisation imaging of a source with a considerable rotation measure.
+* `WSC_MAX_CHANNELS = 16` — This is new to polkat; it says a maximum amount of frequency channels to be imaged at a given time as you tend to run out of memory if you go above 16 channels with IQUV imaging. If `WSC_IMAGE_CHANNELSOUT` > `WSC_MAX_CHANNELS`, the channelized imaging is broken into multiple steps; the downside is that you no longer get an MFS image stacked in visibility space. CAUTION: polkat will make an MFS image by homogenizing the beam in frequency and stacking in the image plane, but this should be taken as qualitative; DO NOT REPORT THE FLUXES FROM THE MFS IMAGE IN THIS CASE. 
+
 
 ###### RMSYNTH
 
