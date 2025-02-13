@@ -175,7 +175,7 @@ Here is a list of what each entry does:
    * "rms_region": Option to specify a manual RMS region (in standard CASA region format), if not, it will be calculated within the software as an annulus
    * "source_pos": List of component positions in standard CASA format. In this example, we are only fitting one component per image set. If you want to fit multiple components, just add another entry, e.g., "source_pos": [["17:27:43.307,-16.12.17.619", "17:27:44.307,-16.12.20.619"], ["17:27:43.307,-16.12.17.619", "17:27:44.307,-16.12.20.619"]],
 
-You don't need to worry about the bottom two; I haven't implemented them yet. The default should be good for most targetted point source observations; all you need to do change "source_name" and "source_pos"
+You don't need to worry about the bottom two; I haven't implemented them yet. The default should be good for most targetted point source observations; all you need to do is change "source_name" and "source_pos". If you didn't do snapshot imaging, remove the second entry from each of the lists!
 
 ---
 
