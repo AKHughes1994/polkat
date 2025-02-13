@@ -2,11 +2,13 @@
 
 ### What is this?
 
-This modified version of the semi-automated routine [oxkat](https://github.com/IanHeywood/oxkat) that was tweaked to include full polarisation calibration and for Stokes I, Q, U, V imaging. We assume you are somewhat familiar with the oxkat workflow and its file system. This guide will walk you through a standard use case and point out some changes to the `config.py` file and some new options. 
+This modified version of the semi-automated routine [oxkat](https://github.com/IanHeywood/oxkat) that was tweaked to include full polarisation calibration and for Stokes I, Q, U, V imaging. We assume you are somewhat familiar with the oxkat workflow and its file system. This guide will walk you through a standard use case and highlight some changes to the `config.py` file and new options. 
 
 
 ---
-##### Change of workflow when compared to Oxkat
+##### Before We Start 
+
+This routine has been designed primarily for use on the ILIFU clusters operated by The Inter-university Institute for Data Intensive Astronomy (IDIA); however, you can run it locally if you have the comprising software. The necessary software has been combined into containers using [apptainer](https://apptainer.org/) (previously known as singularity). The containers themselves can be found in the `/software/containers` directory on ILIFU and follow the naming convention of `polkat-[version].sif`. If you do not have access to ILIFU but still want to use polkat and thus require the container, please send an email to 'hughesakh [at] gmail [dot] com', and a download link will be made available.
 
 * INFO — The ms file is averaged in this step; creates a `json` dictionary called "pre_fields" that contains index-to-name mapping
 * 1GC  — Calibration now included leakage and cross-hand phase calibration
