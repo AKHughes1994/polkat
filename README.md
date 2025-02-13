@@ -2,7 +2,7 @@
 
 ### What is this?
 
-This modified version of the MeerKAT semi-automated data processing routine [oxkat](https://github.com/IanHeywood/oxkat) that was tweaked to include full polarisation calibration and for Stokes I, Q, U, V imaging. We assume you are familiar with the oxkat workflow and its file system. This guide will walk you through a standard use case and highlight some changes to the `config.py` file and new options. 
+This modified version of the MeerKAT semi-automated data processing routine [oxkat](https://github.com/IanHeywood/oxkat) that was tweaked to include full polarisation calibration and for Stokes I, Q, U, V imaging. We assume you are familiar with the oxkat workflow and its file system and that data processing options are contained in and changed by editing `oxkat/config.py`. This guide will walk you through a standard use case and highlight some changes to the `config.py` file and new options. 
 
 
 ---
@@ -36,11 +36,20 @@ You run commands in `working_dir/` for the remainder of the data processing. It 
 singularity exec /point/to/container/polkat-[version].sif python3 tools/ms_info.py [ms-file.ms]
 ```
 
-Once you know your observations you may begin processing. 
+Once you know your observations, you may begin processing. 
 
 ###### INFO
 
+The first step, 'INFO,' can be run with the following commands: 
 
+```
+python3 setups/INFO.py idia
+./submit_info_job.sh
+```
+
+This step goes through your ms-file and extracts the info for the targets/calibrators, storing them in `project_info.json`. Furthermore, one change that has been made is INFO now splits out your desired fields and averages your ms-file down to (by default) 1024 frequency channels (oxkat did this at the start of the next step, 1GC). Moreover, the current version flaggs any short scans (< 10 seconds) if the dump time of your observations is 2 seconds as there is a known META data bug that will create short scans and mislabel the pointing direction (for most use cases, this removal will be desired unless you have target scans that are actually < 10 seconds). 
+
+There are some `config.py` 
 
 
 ##### Changes to `config.py` — new parameters
