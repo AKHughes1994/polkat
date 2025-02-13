@@ -24,7 +24,7 @@ git clone -b polkat_casa https://github.com/AKHughes1994/polkat.git
 ln -s /idia/raw/point/to/your/file.ms .
 ```
 
-The above example makes a symbolic link following the directory structure of ILIFU; if you are running locally instead, you would `mv` your file into `working_directory`. Furthermore, in this example, the `git` call will make a directory called `polkat/` inside `working_directory/`. You will need to move the contents of `polkat/' one-level up, e.g.,:
+The above example makes a symbolic link following the directory structure of ILIFU; if you are running locally instead, you would `mv` your file into `working_directory/`. Furthermore, in this example, the `git` call will make a directory called `polkat/` inside `working_directory/`. You will need to move the contents of `polkat/' one-level up, e.g.,:
 
 ```
 mv pokat/* .
