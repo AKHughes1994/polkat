@@ -108,7 +108,7 @@ There are too many bells and whistles to list all of them (feel free to discuss 
 
 Feel free to reach out if you want to discuss any of the other parameters. Most `config.py` imaging parameters are found after the comment `# wsclean and 2GC defaults` and are just links to the various [wsclean](https://wsclean.readthedocs.io/en/latest/) options.
 
-For most people, the final image(s) you will be working with will have suffixes like `pcalmask-MFS-I-image.fits` or `pcalmask-[CHAN_NUMBER]-I-image.fits; where in this case 'I' identifies the image as a Stokes I (or total intensity image). One step of 2GC will also produce linear polarisation intensity images (`Plin`, $\sqrt{Q^2+U^2}$) and total polarisation intensity images (`Ptot`; $\sqrt{Q^2+U^2+V^2}$) images.
+For most people, the final image(s) you will be working with will have suffixes like `pcalmask-MFS-I-image.fits` or `pcalmask-[CHAN_NUMBER]-I-image.fits`; where in this case 'I' identifies the image as a Stokes I (or total intensity image). One step of 2GC will also produce linear polarisation intensity images (`Plin`, $\sqrt{Q^2+U^2}$) and total polarisation intensity images (`Ptot`; $\sqrt{Q^2+U^2+V^2}$) images.
 
 ###### RMSYNTH
 
