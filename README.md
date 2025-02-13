@@ -11,7 +11,7 @@ This modified version of the MeerKAT semi-automated data processing routine [oxk
 This routine has been designed primarily for use on the ILIFU clusters operated by The Inter-university Institute for Data Intensive Astronomy (IDIA); however, you can run it locally if you have the comprising software. The necessary software has been combined into containers using [apptainer](https://apptainer.org/) (previously known as singularity). The containers can be found in the `/software/containers` directory on ILIFU and follow the naming convention of `polkat-[version].sif`. If you do not have access to ILIFU but still want to use polkat and thus require the container, please email 'hughesakh [at] gmail [dot] com', and a download link can be made available.
 
 ---
-##### Standard Workflow
+#### Standard Workflow
 
 Henceforth, we will assume a Linux-based operating system (I use Ubuntu). 
 
@@ -38,7 +38,7 @@ singularity exec /point/to/container/polkat-[version].sif python3 tools/ms_info.
 
 Once you know your observations, you may begin processing. 
 
-###### INFO
+##### INFO
 
 The first step, 'INFO,' can be run with the following commands: 
 
@@ -46,6 +46,8 @@ The first step, 'INFO,' can be run with the following commands:
 python3 setups/INFO.py idia
 ./submit_info_job.sh
 ```
+
+If you are running polkat locally, replace `idia` with `node` and make sure the variable `NODE_CONTAINER_PATH` in `config.py` includes wherever you have the `polkat-[version].sif`
 
 This step goes through your ms-file and extracts the info for the targets/calibrators, storing them in `project_info.json`. Furthermore, one change that has been made is INFO now splits out your desired fields and averages your ms-file down to (by default) 1024 frequency channels (oxkat did this at the start of the next step, 1GC). Moreover, the current version flaggs any short scans (< 10 seconds) if the dump time of your observations is 2 seconds as there is a known META data bug that will create short scans and mislabel the pointing direction (for most use cases, this removal will be desired unless you have target scans that are actually < 10 seconds). 
 
