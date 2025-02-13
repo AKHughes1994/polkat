@@ -61,32 +61,34 @@ There are some `config.py` variables that will be commonly customised to fit you
 
 The two polarisation angle calibrators provided by SARAO/MeerKAT are J1331+3030 (3C286) and J0521+1638 (3C138), the default assumes 3C286 but in the config file. The correct parameters for 3C138 are also included. There are ways to use other calibrators if you are being created, but for if you do use a non-standard calibrator you likely an expert user and, as a result, are on your own ;). 
 
+At the end of INFO, you should have your working ms-file that will (most likely) follow the naming covention `[ms-file]_1024ch.ms`. You are now ready to proceed.
+
 ---
-##### Standard Workflow
 
-If you are working on IDIA/ILIFU, here would be a standard workflow from start to finish:
+##### 1GC
 
-###### INFO
+The second step, '1GC', performs reference calibration (i.e., it uses the calibrator fields to calibrate your target) using [casa](https://casa.nrao.edu/). Like 'INFO', it is run with: 
 
-Get ms info, and average channels (to 1024 by default)
+```
+python3 setups/1GC.py idia
+./submit_1GC_job.sh
+```
 
-   ```
-   $ python setups/INFO.py idia
-   $ ./submit_info_job.sh
-   ```
+At the time of writing this (Feb 13, 2025), MeerKAT ms-files that were made using the SARAO archive (i.e., pressing this button ![image](https://github.com/user-attachments/assets/05d49a3a-b4cf-42af-9f6c-9db278b647fe)) will have mislabelled the there X/Y feeds. This mislabeling will result in WRONG polarisation properties if not corrected (see EVLA Memo 219). polkat corrects this mislabelling in its first two steps. CAUTION: Other (less common) ways to pull data from the archive may also correct for this, and you don't want to double correct; polkat assumes you use the button, but you should make sure by knowing who or what you got your data from! A good way to know you didn't correct this effect is if the polarization properties of the diagnostic images (more on that later) strongly disagree with the archival values see [here](https://science.nrao.edu/facilities/vla/docs/manuals/obsguide/modes/pol). For most use cases, polkat should handle all this for you! 
 
-###### 1GC
+Here are the most import `config.py` variables that will be commonly customised to fit specific observations:
 
-After INFO is complete, you can perform reference 1GC calibration using calibrator fields.
+* `CAL_1GC_DIAGNOSTICS = True` — This flag (on by default) will image your calibrators in Stokes I, Q, U, and V. The primary (also the leakage calibrator, typically J1939) should be unpolarized (Q = U = V = 0) and the polarization angle calibrator should have properties consistent with the catalogue values. Please leave this on; the extra time is worth knowing whether the calibration worked adequately.
+* `CAL_1GC_AGGRESSIVE_FLAGS = False` — This flag (off by default) will more aggressively flag the baselines. By default, some RFI is only flagged on shorter baselines as they are more significantly affected. Turning this on flags that RFI on all baselines is necessary for high-precision polarimetry. The default flagging will result in spurious polarisation at the ~0.3% level, whereas turning it on the spurious signal is often <0.1% (this comes at the cost of some signal-to-noise).
+* `POLANG_MOD  = [1.0, 0.0, 0.5, 0.0]` — This list contains a quasi-arbitrary initialization model for the polarisation angle calibrator (default is 3C286); it is fed into the casa command `setjy`. The `config.py` file also contains the model tested for 3C138.
 
-   ```
-   $ python setups/1GC.py idia
-   $ ./submit_1GC_job.sh
-   ```
+The last parameter, `POLANG_MOD', is why I recommend leaving diagnostic imaging turned on. It turns out that for linear feed instruments, the casa cross-hand phase solver does not need the correct model; all it requires is to get the 'quadrant' of the angle approximately correct. This model dependency is discussed in detail in EVLA Memo 219, and (I think) it needs an initialization because multiple solutions exist for the (model-independent) cross-hand phase. As a result of this pseudo-model independence, the polarisation angle calibrator also acts as a polarisation check source! All my testing converges on the correct solution despite the input model being junk, allowing us to get a feel for the systematic errors by comparing the measured values to the expected ones!
 
-please inspect the visibility/gain solutions as polarization can be finicky
+If 1GC is successful, please take a look at the visibility/gain solutions; as polarization can be finicky, you can now move on to 2GC (self-calibration and target imaging). 
 
-###### 2GC
+---
+
+##### 2GC
 
 After 1GC is complete, perform final flagging, imaging, and direction-independent phase self-calibration
 
