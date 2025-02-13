@@ -38,6 +38,8 @@ singularity exec /point/to/container/polkat-[version].sif python3 tools/ms_info.
 
 Once you know your observations, you may begin processing. 
 
+--
+
 ##### INFO
 
 The first step, 'INFO,' can be run with the following commands: 
