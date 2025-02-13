@@ -630,8 +630,10 @@ def generate_syscall_wsclean(mslist,
     else:
         syscall += '-no-mf-weighting '
     if tukeytaper:
-        syscall += f'-minuv-l 0.0 -taper-inner-tukey {tukeytaper} '
-
+        if minuvl == '':
+            syscall += f'-minuv-l 0.0 -taper-inner-tukey {tukeytaper} '
+        else:
+            syscall += f'-minuv-l {minuvl} -taper-inner-tukey {tukeytaper} '
 
     # Deconvolution
     if paralleldeconvolution != 0:

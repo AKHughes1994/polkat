@@ -394,6 +394,7 @@ WSC_MAXUVL = ''
 WSC_EVEN = False
 WSC_ODD = False
 WSC_TUKEYTAPER = False
+WSC_TAPERMASK = False
 WSC_INTERVAL0 = None
 WSC_INTERVAL1 = None
 WSC_INTERVALSOUT = False
@@ -451,8 +452,29 @@ WSC_AUTOMASK = 3.0
 WSC_AUTOTHRESHOLD = 1.0
 WSC_LOCALRMS = False
 # Determines if you want to Homogenize the resolution
-WSC_HOMOGENIZEBEAM = False
-WSC_HOMOGENIZETIME = True
+WSC_HOMOGENIZEBEAM = False # Homogenize in freq
+WSC_HOMOGENIZETIME = False # Homogenize in freq AND time
+# Determine if you want to match the large resolvable angular scale by frequency
+WSC_MATCHSCALES = WSC_HOMOGENIZEBEAM
+if WSC_MATCHSCALES:
+    speed_of_light = 299792458. # m / s
+    min_baseline = 29. # m 
+    # Calculate the largest resovable angular scale using top of band + 10 wavelengths as padding
+    if BAND == 'UHF':
+        minuvl = min_baseline / (speed_of_light / 1088.0e6) + 10. 
+    if BAND == 'L':
+        minuvl = min_baseline / (speed_of_light / 1712.0e6) + 10. 
+    if BAND == 'S0':
+        minuvl = min_baseline / (speed_of_light / 2625.0e6) + 10. 
+    if BAND == 'S1':
+        minuvl = min_baseline / (speed_of_light / 2843.0e6) + 10. 
+    if BAND == 'S2':
+        minuvl = min_baseline / (speed_of_light / 3062.0e6) + 10. 
+    if BAND == 'S3':
+        minuvl = min_baseline / (speed_of_light / 3281.0e6) + 10. 
+    if BAND == 'S4':
+        minuvl = min_baseline / (speed_of_light / 3500.0e6) + 10. 
+    WSC_MINUVL = '{}.0'.format(round(minuvl))
 
 # Band modifiers
 if BAND == 'UHF':

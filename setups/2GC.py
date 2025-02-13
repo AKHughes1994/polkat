@@ -66,6 +66,15 @@ def main():
     myms = project_info['working_ms']
     pcals = project_info['target_cal_map']
 
+
+    # Determine if the blind/datamask images are going to be tapered
+    if not cfg.WSC_TAPERMASK:
+        tukeytaper = False
+        minuvl = ''
+    else:
+        tukeytaper = cfg.WSC_TUKEYTAPER
+        minuvl = cfg.WSC_MINUVL   
+
     # ------------------------------------------------------------------------------
     #
     # 2GC recipe definition
@@ -165,7 +174,8 @@ def main():
                         localrms = False,
                         automask = 10.0,
                         autothreshold = 3.0,
-                        tukeytaper=False,
+                        tukeytaper=tukeytaper,
+                        minuvl = minuvl,
                         field=targetindex,
                         absmem = absmem)
             for call in imcall: 
@@ -216,7 +226,8 @@ def main():
                     chanout = cfg.WSC_IMAGE_CHANNELSOUT,
                     field=targetindex,
                     intervalsout = False,
-                    tukeytaper=False,
+                    tukeytaper=tukeytaper,
+                    minuvl = minuvl,
                     nomodel = True,
                     sourcelist = False,
                     absmem = absmem)
@@ -387,6 +398,8 @@ def main():
                     field=targetindex,
                     weight=cfg.WSC_WEIGHT_HIGHRES,
                     mfweight=True,
+                    tukeytaper=False,
+                    minuvl = '',
                     pol='I',
                     sourcelist = False,
                     absmem = absmem)
