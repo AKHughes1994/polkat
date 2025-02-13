@@ -108,53 +108,86 @@ There are too many bells and whistles to list all of them (feel free to discuss 
 
 Also, you can control the solution interval for self-calibration using `CAL_2GC_PSOLINT=32s`; by default, this solves in 32s intervals (i.e. four 8s dump times following the oxkat default). Decrease this number if you have a good model of a bright target field.
 
-Please feel free to reach out if you'd like to discuss any of the other parameters. Most `config.py` imaging parameters are found after the comment `# wsclean and 2GC defaults` and are just links to the various [wsclean](https://wsclean.readthedocs.io/en/latest/) options.
+Please don't hesitate to reach out if you'd like to discuss any of the other parameters. Most `config.py` imaging parameters are found after the comment `# wsclean and 2GC defaults` and are just links to the various [wsclean](https://wsclean.readthedocs.io/en/latest/) options.
 
 For most people, the final image(s) you will be working with will have suffixes like `pcalmask-MFS-I-image.fits` or `pcalmask-[CHAN_NUMBER]-I-image.fits`; where in this case 'I' identifies the image as a Stokes I (or total intensity image). One step of 2GC will also produce linear polarisation intensity images (`Plin`, $\sqrt{Q^2+U^2}$) and total polarisation intensity images (`Ptot`; $\sqrt{Q^2+U^2+V^2}$) images.
 
-###### RMSYNTH
+---
 
-This is a new setup that will fit the full Stokes I, Q, U, and V images, before running it open the images with the 'Plin' or 'Ptot' identifiers and see if there is a polarization detection.  If there is you can run:
+##### SNAP
+
+This new step will perform snapshot imaging following the Heywood-ian approach. It will (efficiently) make short-timescale images by subtracting a time-averaged model and then looking for image plane variability in the post-subtracted images. It can be run with. 
 
    ```
-   $ python setups/RMSYNTH.py idia
-   $ ./submit_rmsynth_job.sh
+   $ python setups/SNAP.py idia
+   $ ./submit_snap_job.sh
    ```
 
-What this will do is: 
+The relevant parameters in `config.py` can be found after the comment `Snapshot imaging defaults' below are the key variables:
+   
+   * `SNAP_FIELDS = ''` — Names of the fields to perform snapshot imaging; the default will perform the snapshot imaging on every field (so you'll probably want to specify your target)
+   * `SNAP_INTBIN = 1` — Integer number of dump times per snapshot image; default of 1 will make one snapshot image per dump time; 4 would make combine 4 dump times in each snapshot image
+   * `SNAP_INTEND = True`—This will throw away the edge bins if they don't equal `SNAP_INTBIN`; e.g., for observation with 11 total dump times and 'SNAP_INTBIN = 2', `SNAP_INTEND = True` will result in 5 snapshot images being made using dump times 1 to 10, but it will throw away the last dump time (as it can't be grouped into 2) to ensure equispaced (in time) snapshot images. This works across scan boundaries.
+   * `SNAP_Pol = True` — Default makes IQUV snapshots; turn it off to make only Stokes I snapshots.
 
-   * Fit the source with an arbitrary number of Gaussians using the `casa` task `imfit`
-   * If `CAL_1GC_DIAGNOSTICS = True` (which it should be) it will quantify the systematic calibration effects through image plane analysis of the calibrators
-   * Run RM Synthesis on every source/component extracting polarisation angles/rotation measures
-   * Run ALBUS to get ionospheric RM for post-processing corrections. This randomly fails sometimes you can (i) run it again; (ii) Change `RED_TYPE = RI_G03` to `RED_TYPE = RI_G01`, the former will fail if only one GPS station is operational
-
-The only thing that needs to be modified is the file `data/rmsynth/rmsynth_info.txt`. Below is an example file:
-
-```
-# Text file containing information to feed into the RMSYNTH_01_extract_fluxes.py routine columns are:
-# Field name, image identifier (for IQUV cube, e.g., "pcalmask"), ra, dec (pixels) separated by spaces (can include multiple RA/DEC for one image)
-Field1 pcalmask 17:27:43.3346781657,17:27:43.3378907659 -16.12.19.5120108691,-16.12.26.3558690263
-Field2 datamask 18:00:00 -17:00:00
-```
-Ignoring the preamble, the code will look for the four columns to get the necessary information for fitting:
-  1. The first column is the field name (as seen in the ms file)
-  2. The second column is the image identifier; if you want to fit the self-called images, use 'pcalmask'
-  3. The third/fourth column is the RA/Dec guess(es) in the standard CASA format (note the period separators for declination). These can be single-coordinates or comma-separated lists for multi-component fitting (e.g. if you have core + jet ejecta)
-
-For this example, you will fit the Field1 self-calibrated image with a two-component fit, and the Field2 masked image (no self-cal) with a one-component fit.
+The rest of the options should be reasonably self-explanatory! Reach out if anything is confusing.
 
 ---
 
-##### ThunderKAT (No Polarization Angle Calibration)
+##### RMSYNTH
 
-polkat will work without a polarization angle calibrator. As long as the primary if unpolarized leakage calibration will be sufficient to measure the total polarization, you will not be able to distinguish between circular and linearly polarized emission. However, given that XRBs are synchrotron sources, the VAST majority will be circularly unpolarized, and thus, the total polarization is a good measure of linear polarization in the absence of a polarization calibrator. 
+This new step seeks to automate going from images to fluxes for some arbitrary number of point sources; please verify that the fluxes make sense;
 
-Leave `POLANG_NAME = ''`, RMSYNTH will skip the RM Synthesis steps, and only quantify the systematics using the leakage calibrator
+What it does is:
+
+   1. Fit the target MFS/channelized/snapshot images with some user-specified number of Gaussians using the casa task `imfit`
+   2. If `CAL_1GC_DIAGNOSTICS = True` (which it should be), it will quantify the systematic calibration effects through image plane analysis of the calibrators
+   3. Run RM Synthesis on every Gaussian component from every target, extracting polarisation angles/rotation measures
+   4. Run ALBUS to get ionospheric RM for post-processing corrections. This randomly fails sometimes. You can (i) rerun it; (ii) Change `RED_TYPE = RI_G03` to `RED_TYPE = RI_G01` in `config.py`; the former will fail if only one GPS station is operational
+
+The only thing that needs to be modified is the file `data/rmsynth/rmsynth_info.json`. Below is the default file contents that I left as an example:
+
+```
+{
+    "image_directory": ["IMAGES", "INTERVALS"],
+    "image_identifier": ["pcalmask", "restored"],
+    "image_suffix": ["image.fits", "image.fits"],
+    "image_timing": [false, true],
+    "source_name": ["SwiftJ1727", "SwiftJ1727"],
+    "source_ulim":[[false], [false]],
+    "rms_region": [false, false],
+    "source_pos": [["17:27:43.307,-16.12.17.619"], ["17:27:43.307,-16.12.17.619"]],
+    "pos_coeff":[[[]], [[]]],
+    "time0":[[], []]
+}
+```
+
+It will extract the properties for N sets of images where N is set by the length of "image_directory" (and all the other parameters) 
+
+Here is a list of what each entry does:
+
+   * "image_directory": Specify the directory where the images you are going to fit are being held; IMAGES will contain 2GC images; INTERVALS will contain snapshot images
+   * "image_identifier": Specify the identifier used to locate the images; pcalmask points to the 2GC images products and restored points to the snapshot images
+   * "image_suffix": Specify the type of image, "image.fits" is the standard wsclean output; the other option would be "image.homogenized.fits" if you want the homogenized resolution images
+   * "image_timing": Specify if the images have been broken up in time (e.g., snapshot images), this will change the wsclean output names to include a '-t[SNAPSHOT_NUMBER]' in the file name.
+   * "source_name": Self-explanatory
+   * "source_ulim": Determines whether of not to fix the position of the component to the value given by "source_pos"
+   * "rms_region": Option to specify a manual RMS region (in standard CASA region format), if not, it will be calculated within the software as an annulus
+   * "source_pos": List of component positions in standard CASA format. In this example, we are only fitting one component per image set. If you want to fit multiple components, just add another entry, e.g., "source_pos": [["17:27:43.307,-16.12.17.619"], ["17:27:43.307,-16.12.17.619"]],
 
 ---
-##### To-Do List
 
-1. Investigate systematic offset of 3C286 properties vs. expectation
-2. Investigate full self-calibration polarisation routines
-3. Add peeling capabilities
+##### Note: No Polarization Angle Calibrator
+
+polkat will work without a polarization angle calibrator. As long as the primary can work as an unpolarized leakage calibrator, it will be sufficient to measure the total polarization; you cannot distinguish between circular and linearly polarized emission. However, given that a lot of radio is synchrotron sources, the VAST majority will be circularly unpolarized, and thus, the total polarization is a good measure of linear polarization without a polarization angle calibrator. 
+
+Leave `POLANG_NAME = ''` for these cases
+
+---
+## THE COMPRISING PACKAGES
+
+polkat is fundamentally a compilation of actual software; these packages are the actual lifeblood and deserve all the credit!
+
+
+
 
