@@ -207,8 +207,13 @@ polkat is fundamentally a compilation of actual software; these packages are the
 | [`RMTools`](https://github.com/CIRADA-Tools/RM-Tools?tab=readme-ov-file) | RMSynth | Rotation Measure Synthesis | Van Eck et al.|
 | [`ALBUS`](https://github.com/twillis449/ALBUS_ionosphere) | RMSynth | Ionospheric RM Estimation | Willis et al.|
 
-
-
 ---
+
+## THE COMPRISING PACKAGES
+
+1. Further improve documentation and include a PDF with some examples
+2. Make a new version called polkat_QC that uses Quartical for self-calibration following a similar routine as oxkat
+3. Add 3GC, specifically after 2 as it will be easier to adapt
+
 
 
