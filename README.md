@@ -2,17 +2,13 @@
 
 ### What is this?
 
-This modified version of the semi-automated routine [oxkat](https://github.com/IanHeywood/oxkat) that was tweaked to include full polarisation calibration and for Stokes I, Q, U, V imaging. We assume you are somewhat familiar with the oxkat workflow and its file system. This guide will walk you through a standard use case and highlight some changes to the `config.py` file and new options. 
+This modified version of the MeerKAT semi-automated data processing routine [oxkat](https://github.com/IanHeywood/oxkat) that was tweaked to include full polarisation calibration and for Stokes I, Q, U, V imaging. We assume you are familiar with the oxkat workflow and its file system. This guide will walk you through a standard use case and highlight some changes to the `config.py` file and new options. 
 
 
 ---
 ##### Before We Start 
 
-This routine has been designed primarily for use on the ILIFU clusters operated by The Inter-university Institute for Data Intensive Astronomy (IDIA); however, you can run it locally if you have the comprising software. The necessary software has been combined into containers using [apptainer](https://apptainer.org/) (previously known as singularity). The containers themselves can be found in the `/software/containers` directory on ILIFU and follow the naming convention of `polkat-[version].sif`. If you do not have access to ILIFU but still want to use polkat and thus require the container, please send an email to 'hughesakh [at] gmail [dot] com', and a download link will be made available.
-
-* INFO — The ms file is averaged in this step; creates a `json` dictionary called "pre_fields" that contains index-to-name mapping
-* 1GC  — Calibration now included leakage and cross-hand phase calibration
-* 2GC  — FLAG and 2GC have been combined into a single setup; all imaging/masking/self-cal is now in 2GC
+This routine has been designed primarily for use on the ILIFU clusters operated by The Inter-university Institute for Data Intensive Astronomy (IDIA); however, you can run it locally if you have the comprising software. The necessary software has been combined into containers using [apptainer](https://apptainer.org/) (previously known as singularity). The containers can be found in the `/software/containers` directory on ILIFU and follow the naming convention of `polkat-[version].sif`. If you do not have access to ILIFU but still want to use polkat and thus require the container, please email 'hughesakh [at] gmail [dot] com', and a download link can be made available.
 
 ---
 ##### Standard Workflow
@@ -22,8 +18,27 @@ Henceforth, we will assume a Linux-based operating system (I use Ubuntu).
 You can begin by initializing a working directory, moving or symlinking your CASA measurement file (i.e., ms-file), and cloning this repository. For example:
 
 ```
-git clone -b [VERSION] 
+mkdir working_directory
+cd working_directory
+git clone -b polkat_casa https://github.com/AKHughes1994/polkat.git
+ln -s /idia/raw/point/to/your/file.ms
 ```
+
+The above example makes a symbolic link following the directory structure of ILIFU; if you are running locally instead, you would `mv` your file into `working_directory`. Furthermore, in this example, the `git` call will make a directory called `polkat/` inside `working_directory/`. You will need to move the contents of `polkat/' one-level up, e.g.,:
+
+```
+mv pokat/* .
+```
+
+You run commands in `working_dir/` for the remainder of the data processing. It is always a good idea to check your ms-file to know your calibrator/target field names, observing band, frequency resolution, etc. This can done through the following command:
+
+```
+singularity exec /point/to/container/polkat-[version].sif python3 tools/ms_info.py [ms-file.ms]
+```
+
+Once you know your observations you may begin processing. 
+
+###### INFO
 
 
 
