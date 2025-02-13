@@ -38,7 +38,7 @@ singularity exec /point/to/container/polkat-[version].sif python3 tools/ms_info.
 
 Once you know your observations, you may begin processing. 
 
---
+---
 
 ##### INFO
 
@@ -53,20 +53,13 @@ If you are running polkat locally, replace `idia` with `node` and make sure the 
 
 This step goes through your ms-file and extracts the info for the targets/calibrators, storing them in `project_info.json`. Furthermore, one change that has been made is INFO now splits out your desired fields and averages your ms-file down to (by default) 1024 frequency channels (oxkat did this at the start of the next step, 1GC). Moreover, the current version flaggs any short scans (< 10 seconds) if the dump time of your observations is 2 seconds as there is a known META data bug that will create short scans and mislabel the pointing direction (for most use cases, this removal will be desired unless you have target scans that are actually < 10 seconds). 
 
-There are some `config.py` 
+There are some `config.py` variables that will be commonly customised to fit your specific observations:
 
+* `POLANG_NAME = 'J1331+3030'` — This is the name of the polarization angle calibrator as seen in the ms-file. The default is J1331+3030 (3C286). If left blank, the routine assumes no polarization angle calibration. 
+* `POLANG_DIR  = '13:31:08.2881,+30.30.32.959'` — Coordinates of polarization angle calibrator. The default is J1331+3030 (3C286) coordindates
+* `PRE_FIELDS = ''` — This is where you specify the fields of interest. For multi-target ms-files, it will run polkat on each target. If you are only interested in one target, you'll want to specify the names of the target, the target phase calibrator, primary, and (if applicable) the polarization angle calibrator
 
-##### Changes to `config.py` — new parameters
-
-* `POLANG_NAME = 'J1331+3030'` — This is the source's name to be used as a polarization angle calibrator. The default is J1331+3030 (3C286). If blank, the routine will skip the polarization angle calibration. 
-* `POLANG_DIR  = '13:31:08.2881,+30.30.32.959'` — Coordinates of polarization angle calibrator. The default is J1331+3030 (3C286) coorindates
-* `PRE_FIELDS = ''` — If this is not blank (''), must contain `POLANG_NAME`
-* `POLANG_MOD = [1.0, 0.0, 0.5, 0.0]` — an array to initialize a (quasi-)arbitrary polarization model. The default works for 3C286.
-* `UNIFORM_IMAGE = True` — Flag to make an additional uniform weighted image. Useful if you want high angular resolution for ejecta and high sensitivity for polarisation. Images are made by default.
-* `SNAP_FIELDS = ''` — Name of field(s) to perform Heywood snapshot imaging routine.
-* `RED_TYPE = RI_G03` — Type of GPS fitting when determining ionospheric RM using [ALBUS](https://github.com/twillis449/ALBUS_ionosphere/blob/master/python_scripts/MS_Iono_functions.py).
-*  `CAL_1GC_DIAGNOSTICS = True` — Flag to determine if you will image/fit leakage and polarisation angle calibrator to quantify systematics. Just leave this turned on. 
-
+The two polarisation angle calibrators provided by SARAO/MeerKAT are J1331+3030 (3C286) and J0521+1638 (3C138), the default assumes 3C286 but in the config file. The correct parameters for 3C138 are also included. There are ways to use other calibrators if you are being created, but for if you do use a non-standard calibrator you likely an expert user and, as a result, are on your own ;). 
 
 ---
 ##### Standard Workflow
