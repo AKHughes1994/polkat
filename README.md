@@ -209,7 +209,7 @@ polkat is fundamentally a compilation of actual software; these packages are the
 
 ---
 
-## THE COMPRISING PACKAGES
+## TO DO LIST
 
 1. Further improve documentation and include a PDF with some examples
 2. Make a new version called polkat_QC that uses Quartical for self-calibration following a similar routine as oxkat
