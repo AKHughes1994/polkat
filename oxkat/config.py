@@ -202,6 +202,7 @@ CAL_1GC_PRIMARY_INTENT = 'BANDPASS'  # (partial) string to match for primary int
 CAL_1GC_SECONDARY_INTENT = 'PHASE'   # (partial) string to match for secondary intents
 CAL_1GC_DIAGNOSTICS = True          #  Choose if you want to make diagnostic plots of the Leakage + Phase cal
 CAL_1GC_AGGRESSIVE_FLAGS = False     #  Choose if you want to aggresively flag the visibilities -- required for high-precision polarimetry (i.e., <1%)
+CAL_1GC_RENAME_FEEDS = True # Turn true [Default] if you need switch feed naming; the SARAO Archive by default mislabels X as Y; and Y as X.  
 
 # Pre-processing, operations applied when master MS is split to working MS
 PRE_FIELDS = ''  # Comma-separated list of fields to select from raw MS

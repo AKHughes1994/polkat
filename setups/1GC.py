@@ -67,76 +67,85 @@ def main():
     myms  = project_info['working_ms']
     code = gen.get_code(myms)
 
+    n = 0
     steps = []
-    step = {}
-    step['step'] = 0
-    step['comment'] = 'Swap H and V polarization labels'
-    step['dependency'] = None
-    step['id'] = 'SWPHV'+code
-    syscall = CONTAINER_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
-    syscall += f"python3 {cfg.OXKAT}/1GC_01_correct_parang.py"
-    step['syscall'] = syscall
-    steps.append(step)
+    if cfg.CAL_1GC_RENAME_FEEDS:
+        step = {}
+        step['step'] = 0
+        step['comment'] = 'Swap H and V polarization labels'
+        step['dependency'] = None
+        step['id'] = 'SWPHV'+code
+        syscall = CONTAINER_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
+        syscall += f"python3 {cfg.OXKAT}/1GC_01_correct_parang.py"
+        step['syscall'] = syscall
+        steps.append(step)
+        n += 1
+
+        step = {}
+        step['step'] = n
+        step['comment'] = 'Set the feed offset angle to zero'
+        step['dependency'] = n - 1
+        step['id'] = 'ZEROF'+code
+        syscall = CONTAINER_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
+        syscall += gen.generate_syscall_casa(casascript=cfg.OXKAT+'/1GC_02_zero_feed.py ' + myms)
+        step['syscall'] = syscall
+        steps.append(step)
+        n += 1    
 
     step = {}
-    step['step'] = 1
-    step['comment'] = 'Set the feed offset angle to zero'
-    step['dependency'] = 0
-    step['id'] = 'ZEROF'+code
-    syscall = CONTAINER_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
-    syscall += gen.generate_syscall_casa(casascript=cfg.OXKAT+'/1GC_02_zero_feed.py ' + myms)
-    step['syscall'] = syscall
-    steps.append(step)
-
-    step = {}
-    step['step'] = 2
+    step['step'] = n
     step['comment'] = 'Apply basic flagging steps to all fields'
-    step['dependency'] = 1
+    step['dependency'] = None if n == 0 else n - 1  
     step['id'] = 'FGBAS'+code
     syscall = CONTAINER_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
     syscall += gen.generate_syscall_casa(casascript=cfg.OXKAT+'/1GC_03_casa_basic_flags.py')
     step['syscall'] = syscall
     steps.append(step)
+    n += 1
 
     step = {}
-    step['step'] = 3
+    step['step'] = n
     step['comment'] = 'Run auto-flaggers on calibrators'
-    step['dependency'] = 2
+    step['dependency'] = n - 1
     step['id'] = 'FGCAL'+code
     syscall = CONTAINER_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
     syscall += gen.generate_syscall_casa(casascript=cfg.OXKAT+'/1GC_04_casa_autoflag_cals_DATA.py')
     step['syscall'] = syscall
     steps.append(step)
+    n += 1
 
     step = {}
-    step['step'] = 4
+    step['step'] = n
     step['comment'] = 'Using reference calibrators perform full polarization calibration'
-    step['dependency'] = 3
+    step['dependency'] = n - 1
     step['id'] = 'CL1GC'+code
     syscall = CONTAINER_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
     syscall += gen.generate_syscall_casa(casascript=cfg.OXKAT+'/1GC_05_casa_refcal.py')
     step['syscall'] = syscall
     steps.append(step)
+    n += 1
 
     step = {}
-    step['step'] = 5
+    step['step'] = n
     step['comment'] = 'Plot the final gain tables'
-    step['dependency'] = 4
+    step['dependency'] = n - 1
     step['id'] = 'PLTAB'+code
     syscall = CONTAINER_RUNNER+SHADEMS_CONTAINER+' ' if USE_SINGULARITY else ''
     syscall += 'python3 '+cfg.OXKAT+'/1GC_06_plot_gaintables.py cal_1GC_*'
     step['syscall'] = syscall
     steps.append(step)
+    n += 1
 
     step = {}
-    step['step'] = 6
+    step['step'] = n
     step['comment'] = 'Plot the corrected calibrator visibilities'
-    step['dependency'] = 5
+    step['dependency'] = n - 1
     step['id'] = 'PLVIS'+code
     syscall = CONTAINER_RUNNER+SHADEMS_CONTAINER+' ' if USE_SINGULARITY else ''
     syscall += 'python3 '+cfg.OXKAT+'/1GC_07_plot_visibilities.py'
     step['syscall'] = syscall
     steps.append(step)
+    n += 1
     
     if cfg.CAL_1GC_DIAGNOSTICS:
 
@@ -153,9 +162,9 @@ def main():
             img_prefix = f"{cfg.IMAGES}/img_{name_ms}_diagnostic"
 
             step = {}
-            step['step'] = 6 + k
+            step['step'] = n + k
             step['comment'] = f'Image {cal_name} for diagnostic of calibration systematics'
-            step['dependency'] = 6 + (k - 1) 
+            step['dependency'] = n + (k - 1) 
             step['id'] = 'DIAGN' + (cal_name[-3:])
             step['slurm_config'] = cfg.SLURM_WSCLEAN
             step['pbs_config'] = cfg.PBS_WSCLEAN
@@ -217,7 +226,7 @@ def main():
 
 
     submit_file = 'submit_1GC_jobs.sh'
-    kill_file = cfg.    SCRIPTS+'/kill_1GC_jobs.sh'
+    kill_file = cfg.SCRIPTS+'/kill_1GC_jobs.sh'
 
     f = open(submit_file,'w')
     f.write('#!/usr/bin/env bash\n')
