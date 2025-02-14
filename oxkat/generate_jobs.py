@@ -633,7 +633,7 @@ def generate_syscall_wsclean(mslist,
         if minuvl == '':
             syscall += f'-minuv-l 0.0 -taper-inner-tukey {tukeytaper} '
         else:
-            syscall += f'-minuv-l {minuvl} -taper-inner-tukey {tukeytaper} '
+            syscall += f'-taper-inner-tukey {tukeytaper} '
 
     # Deconvolution
     if paralleldeconvolution != 0:
