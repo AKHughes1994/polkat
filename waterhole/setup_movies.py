@@ -13,62 +13,94 @@ from oxkat import generate_jobs as gen
 from oxkat import config as cfg
 
 
-def write_slurm(opfile,jobname,logfile,syscall):
-
-    f = open(opfile,'w')
-    f.writelines(['#!/bin/bash\n',
-        '#file: '+opfile+':\n',
-        '#SBATCH --job-name='+jobname+'\n',
-        '#SBATCH --time=02:00:00\n',
-        '#SBATCH --partition=Main\n'
-        '#SBATCH --ntasks=1\n',
-        '#SBATCH --nodes=1\n',
-        '#SBATCH --cpus-per-task=4\n',
-        '#SBATCH --mem=16GB\n',
-        '#SBATCH --account=b24-thunderkat-ag\n',
-        '#SBATCH --output='+logfile+'\n',
-        syscall+'\n'])
-    f.close()
-
-
 def main():
 
+    USE_SINGULARITY = cfg.USE_SINGULARITY
+    INFRASTRUCTURE, CONTAINER_PATH = gen.set_infrastructure(sys.argv)
+    POLKAT_CONTAINER = gen.get_container(CONTAINER_PATH,cfg.MOVIE_PATTERN,True)
+    if CONTAINER_PATH is not None:
+        CONTAINER_RUNNER='singularity exec '
+    else:
+        CONTAINER_RUNNER=''
 
-    INFRASTRUCTURE, CONTAINER_PATH = gen.set_infrastructure(('','idia'))
-    OXKAT_CONTAINER = gen.get_container(CONTAINER_PATH,cfg.MOVIE_PATTERN,True)
-
-    intervals = sorted(glob.glob('INTERVALS*/'))
+    intervals = sorted(glob.glob(cfg.INTERVALS+'*/'))
     rootdir = os.getcwd()
 
-    runfile = 'submit_movie_jobs.sh'
 
-    f = open(runfile,'w')
-    f.writelines(['#!/bin/bash\n'])
+    steps = []
+    for k, interval in enumerate(intervals):
 
-    for mydir in intervals:
+        step = {}
+        step['step'] = k
+        step['comment'] = 'Making movie for images in {interval}'
+        step['dependency'] = None if k == 0 else k-1
+        step['id'] = interval
+        syscall = CONTAINER_RUNNER+POLKAT_CONTAINER+' ' if USE_SINGULARITY else ''
+        syscall += f"python3 {cfg.TOOLS}/make_movie.py {interval}"
+        step['syscall'] = syscall
+        steps.append(step)
 
-        os.chdir(mydir)
-        code = os.getcwd().split('/')[-1].split('_')[-1].replace('scan','movie')
-        syscall = 'singularity exec '+OXKAT_CONTAINER+' '
-        syscall += 'python3 '+rootdir+'/tools/make_movie.py'
+    # ------------------------------------------------------------------------------
+    #
+    # Write the run file and kill file based on the recipe
+    #
+    # ------------------------------------------------------------------------------
 
-        slurm_file = 'slurm_'+code+'.sh'
-        log_file = 'slurm_'+code+'.log'
 
-        write_slurm(opfile=slurm_file,jobname=code,logfile=log_file,syscall=syscall )
-        os.chdir('../')
+    submit_file = 'submit_movie_jobs.sh'
+    kill_file = cfg.SCRIPTS+'/kill_movie_jobs.sh'
 
-        # print('cd '+mydir)
-        # print('sbatch '+slurm_file)
-        # print('cd ../../')
+    f = open(submit_file,'w')
+    f.write('#!/usr/bin/env bash\n')
+    f.write('export SINGULARITY_BINDPATH='+cfg.BINDPATH+'\n')
 
-        f.writelines(['cd '+mydir+'\n',
-            'sbatch '+slurm_file+'\n',
-            'cd ../\n'])
+    id_list = []
 
+    for step in steps:
+
+        step_id = step['id']
+        id_list.append(step_id)
+        if step['dependency'] is not None:
+            dependency = steps[step['dependency']]['id']
+        else:
+            dependency = None
+        syscall = step['syscall']
+        if 'slurm_config' in step.keys():
+            slurm_config = step['slurm_config']
+        else:
+            slurm_config = cfg.SLURM_DEFAULTS
+        if 'pbs_config' in step.keys():
+            pbs_config = step['pbs_config']
+        else:
+            pbs_config = cfg.PBS_DEFAULTS
+        comment = step['comment']
+
+        run_command = gen.job_handler(syscall = syscall,
+                        jobname = step_id,
+                        infrastructure = INFRASTRUCTURE,
+                        dependency = dependency,
+                        slurm_config = slurm_config,
+                        pbs_config = pbs_config)
+
+
+        f.write('\n# '+comment+'\n')
+        f.write(run_command)
+
+
+    if INFRASTRUCTURE == 'idia' or INFRASTRUCTURE == 'hippo':
+        kill = '\necho "scancel "$'+'" "$'.join(id_list)+' > '+kill_file+'\n'
+        f.write(kill)
+    elif INFRASTRUCTURE == 'chpc':
+        kill = '\necho "qdel "$'+'" "$'.join(id_list)+' > '+kill_file+'\n'
+        f.write(kill)
+    
     f.close()
-    gen.make_executable(runfile)
-    print('Wrote '+runfile+' script')
+
+    gen.make_executable(submit_file)
+
+    gen.print_spacer()
+    print(gen.col('Run file')+submit_file)
+    gen.print_spacer()
 
 if __name__ == "__main__":
 

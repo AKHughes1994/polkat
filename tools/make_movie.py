@@ -9,6 +9,7 @@ import os
 import random 
 import numpy
 import string
+import sys
 
 from astropy.io import fits
 from astropy.time import Time
@@ -57,20 +58,26 @@ def make_png(ff,i):
 
 if __name__ == '__main__':
 
+    interval = sys.argv[-1]
+
     logfile = 'make_movie.log'
     logging.basicConfig(filename=logfile, level=logging.DEBUG, format='%(asctime)s |  %(message)s', datefmt='%d/%m/%Y %H:%M:%S ')
 
 
-    fitslist = sorted(glob.glob('*_restored-t*-MFS-image.fits'))
-    ids = numpy.arange(0,len(fitslist))
-    nframes = len(fitslist)
-    j = 8
+    for stoke in ['', '-I', '-Q', '-U', '-V', '-Ptot', '-Plin']:
+   
+        fitslist = sorted(glob.glob('{}/*_restored-t*-MFS{}-image.fits'.format(interval, stoke)))
 
-    pool = Pool(processes=j)
+        if fitslist != []:
+            ids = numpy.arange(0,len(fitslist))
+            nframes = len(fitslist)
+            j = 8
+
+            pool = Pool(processes=j)
 #    pool.map(make_png,fitslist)
-    pool.starmap(make_png,zip(fitslist,ids))
+            pool.starmap(make_png,zip(fitslist,ids))
 
-    frame = '2340x2340'
-    fps = 10
-    opmovie = fitslist[0].split('-t')[0]+'.mp4'
-    os.system('ffmpeg -r '+str(fps)+' -f image2 -s '+frame+' -i pic_%04d.png -vcodec libx264 -crf 25 -pix_fmt yuv420p '+opmovie)
+            frame = '2340x2340'
+            fps = 10
+            opmovie = fitslist[0].split('-t')[0]+f'{stoke}.mp4'
+            os.system('ffmpeg -y -r '+str(fps)+' -f image2 -s '+frame+' -i pic_%04d.png -vcodec libx264 -crf 25 -pix_fmt yuv420p '+opmovie)
