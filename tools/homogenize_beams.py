@@ -650,14 +650,14 @@ def homogenize_images(identifier, beam):
             z = 0
             data = []
             freq  = []
-            images = sorted(glob.glob(f'{identifier}-[!MFS]*{stoke}-image.fits'))
+            images = sorted(glob.glob(f'{identifier}-[!MFS]*{stoke}-image.homogenized.fits'))
             for k, im in enumerate(images[:]):
                 freq.append(fits.getheader(im)['CRVAL3'])
-                if good_images[k]:
-                    if z == 0:
-                        header = fits.getheader(im)
-                        z += 1
-                    data.append(get_image(im))
+                msg(im)
+                if z == 0:
+                    header = fits.getheader(im)
+                    z += 1
+                data.append(get_image(im))
 
             # Adopt median values for each pixel and output MFS image
             data = np.median(data, axis = 0)

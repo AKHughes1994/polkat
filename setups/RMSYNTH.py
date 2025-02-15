@@ -38,14 +38,10 @@ def main():
     gen.setup_dir(cfg.GAINPLOTS)
     gen.setup_dir(cfg.VISPLOTS)
 
-    f = open('data/rmsynth/rmsynth_info.txt', 'r')
-    k = 0
-    for line in f:
-        line = line.strip()
-        if k > 2:
-            print(gen.col(f'Field {k - 2}: ') + f'{line.split(" ")[0]}')
-        k+=1
-    f.close()
+    with open('data/rmsynth/rmsynth_info.json', 'r') as j:
+        rmsynth_info = json.load(j)
+    for k, name in enumerate(rmsynth_info['image_directory']):
+        print(gen.col() + 'Trying to fit {} in directory {}'.format(rmsynth_info['image_directory'][k],rmsynth_info['source_name'][k]))
     gen.print_spacer()
 
     INFRASTRUCTURE, CONTAINER_PATH = gen.set_infrastructure(sys.argv)

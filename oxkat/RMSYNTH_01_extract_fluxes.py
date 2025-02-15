@@ -210,6 +210,7 @@ def check_position(fname, image, xpix, ypix, snr_thresh = 5.0, P_image = False, 
             fix_var.append('abp')
         else:
             fix_var.append('xyabp')
+            msg(f'Fixing position of image: {image}')
         k+=1
 
     # Make the estimate file
@@ -356,6 +357,12 @@ def extract_polarization_properties(src_name,
     output_dictionary = {'name' : src_name}
     output_dictionary['MFS'] = {}
     output_dictionary['CHAN'] = {}
+
+    # Check if the MFS image exists for the suffix, if not, use homgenized one
+    og_src_im_suffix = src_im_suffix[:]
+    if glob.glob(f'{src_im_identifier}*-MFS*{src_im_suffix}') == []:
+        msg(f'WARNING: {src_im_suffix} does not exist in MFS image due to channel splitting; Using: image.homogenized.fits')
+        src_im_suffix = 'image.homogenized.fits' # if this doesn't work you don't have the images required for this analysis
     
     # Determine if there are multiple stokes parameters or if its strictly Stokes I (suffixes will be, e.g., MFS-image)
     if glob.glob(f'{src_im_identifier}*-MFS-I-{src_im_suffix}') == []:
@@ -382,6 +389,10 @@ def extract_polarization_properties(src_name,
                 MFS_images = sorted([im for im in MFS_images if '-Ptot-' not in im])
             else:
                 MFS_images = sorted([im for im in MFS_images if '-Plin-' not in im])
+
+        # Output image name
+        for MFS_image in MFS_images:
+            msg(f'Fitting MFS image name(s): {MFS_image}')
     
         # Get generalized properties from the first image (i.e., Stokes I header)
         freq_GHz = imhead(MFS_images[0], mode='get', hdkey = 'CRVAL3')['value'] / 1.0e9
@@ -575,7 +586,8 @@ def extract_polarization_properties(src_name,
         # Extract the CHAN image parameters  #
         ###########################
 
-        msg(f'Fitting CHAN image(s) for prefix {k}: {prefix}')
+        src_im_suffix = og_src_im_suffix[:]
+        msg(f'Fitting CHAN image(s) for prefix {k} with {src_im_suffix}: {prefix}')
 
         # Glob the images
         CHAN_images = sorted(glob.glob(f'{prefix}-[!MFS]*-{src_im_suffix}'))
@@ -789,8 +801,8 @@ def extract_polarization_properties(src_name,
 
                 np.savetxt('{}_{}_rmsynth.txt'.format(prefix, component).replace(image_directory, 'RESULTS'), rmsynth_arr.T)
 
-    # Save the full dictionary with all  times, etc.
-    with open('{}_polarization.json'.format(prefix).replace(image_directory, 'RESULTS'), 'w') as j:
+    # Save the full dictionary with all times, etc.
+    with open('{}_polarization.json'.format(src_im_identifier).replace(image_directory, 'RESULTS'), 'w') as j:
         json.dump(output_dictionary, j, indent = 4)
 
     return 0
