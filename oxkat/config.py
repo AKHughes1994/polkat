@@ -104,7 +104,7 @@ SLURM_TRICOLOUR = {
 }
 
 SLURM_RM = {
-	'TIME': '12:00:00',
+	'TIME': '24:00:00',
 	'PARTITION': 'Main',
 	'NTASKS': '1',
 	'NODES': '1',

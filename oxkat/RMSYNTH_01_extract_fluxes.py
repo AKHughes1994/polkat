@@ -244,83 +244,6 @@ def make_estimate(fname, image, xpix, ypix, fix_var):
     return 0    
 
 
-
-def fit_channel(prefix, manual_rms_region = False):
-
-    '''
-    Extract the Stokes IQUVP parameters from the working channelized image
-    Inputs:
-        i_chan_image = working image
-        xpix/ypix  = for the MFS image of each Stokes Parameter
-    Outputs:
-        Array containing the relevant flux/Polarization parameters
-    '''
-
-    # Get all of the image names:
-    IQUVP_names = get_IQUVP_names(i_image, pol_flag)
-
-    # Fit Stokes I
-    check_position('estimate_I.txt', IQUVP_names[0], xpix_I, ypix_I, manual_rms_region = manual_rms_region)
-    imf_I  = get_imfit_values('estimate_I.txt', IQUVP_names[0], xpix_I, ypix_I)
-
-    # Fit Stokes Q
-    check_position('estimate_Q.txt', IQUVP_names[1], xpix_Q, ypix_Q, fix_additional_comps = True, manual_rms_region = manual_rms_region)
-    imf_Q  = get_imfit_values('estimate_Q.txt', IQUVP_names[1], xpix_Q, ypix_Q)
-
-    # Fit Stokes U
-    check_position('estimate_U.txt', IQUVP_names[2], xpix_U, ypix_U, fix_additional_comps = True, manual_rms_region = manual_rms_region)
-    imf_U  = get_imfit_values('estimate_U.txt', IQUVP_names[2], xpix_U, ypix_U)
-
-    # Fit Stokes V
-    check_position('estimate_V.txt', IQUVP_names[3], xpix_V, ypix_V, fix_additional_comps = True, manual_rms_region = manual_rms_region)
-    imf_V  = get_imfit_values('estimate_V.txt', IQUVP_names[3], xpix_V, ypix_V)
-
-    # Fit Stokes P
-    check_position('estimate_P.txt', IQUVP_names[4], xpix_P, ypix_P, P_image=True, fix_additional_comps = True, manual_rms_region = manual_rms_region)
-    imf_P  = get_imfit_values('estimate_P.txt', IQUVP_names[4], xpix_P, ypix_P)
-       
-    # Get the number of components
-    comps = [key for key in imf_I['results'].keys() if 'component' in key]
-    n_comps = len(comps)
-
-    # Get the frequencies
-    freq = np.ones(n_comps) * imhead(IQUVP_names[0], mode='get', hdkey = 'CRVAL3')['value'] / 1.0e9
-
-    # Get the fluxes
-    flux_I, flux_Q, flux_U, flux_V, flux_P, flux_P0 = np.ones((6, n_comps))
-    rms_I,  rms_Q,  rms_U,  rms_V, rms_P = np.ones((5, n_comps))
-
-    # Get the component keys
-    comps = [key for key in imf_I['results'].keys() if 'component' in key]
-    for k, comp in enumerate(comps):
-
-        # Fluxes
-        flux_I[k] = imf_I['results'][comp]['peak']['value'] * 1e3
-        flux_Q[k] = imf_Q['results'][comp]['peak']['value'] * 1e3
-        flux_U[k] = imf_U['results'][comp]['peak']['value'] * 1e3
-        flux_V[k] = imf_V['results'][comp]['peak']['value'] * 1e3
-        flux_P[k] = imf_P['results'][comp]['peak']['value'] * 1e3
-
-        # RMS
-        rms_I[k] = get_imstat_values(IQUVP_names[0], imf_I['results'][comp]['pixelcoords'][0], imf_I['results'][comp]['pixelcoords'][1], manual_rms_region)[3] * 1e3
-        rms_Q[k] = get_imstat_values(IQUVP_names[1], imf_Q['results'][comp]['pixelcoords'][0], imf_Q['results'][comp]['pixelcoords'][1], manual_rms_region)[3] * 1e3
-        rms_U[k] = get_imstat_values(IQUVP_names[2], imf_U['results'][comp]['pixelcoords'][0], imf_U['results'][comp]['pixelcoords'][1], manual_rms_region)[3] * 1e3
-        rms_V[k] = get_imstat_values(IQUVP_names[3], imf_V['results'][comp]['pixelcoords'][0], imf_V['results'][comp]['pixelcoords'][1], manual_rms_region)[3] * 1e3
-        flux_P0[k], rms_P[k] = calculate_P0(flux_P[k], rms_Q[k], rms_U[k], rms_V[k], pol_flag, Aq = 0.8)
-    LP_frac     = flux_P0 / flux_I * 100.0
-    LP_frac_err = LP_frac * np.sqrt( (rms_I / flux_I) ** 2 + (rms_P / flux_P0) ** 2 )
-
-    # Angle calculations
-    if pol_flag:
-        LP_EVPA     = np.arctan2(flux_U, flux_Q) * 180.0 / np.pi * 0.5
-        LP_EVPA_err = 0.5 * np.sqrt(flux_U ** 2 * rms_Q **2  + flux_Q ** 2 * rms_U ** 2) / (flux_U ** 2  + flux_Q ** 2) * 180.0 / np.pi
-    else:
-        LP_EVPA     = [None] * len(comps)
-        LP_EVPA_err = [None] * len(comps)
-    
-    return [freq, flux_I, flux_Q, flux_U, flux_V, flux_P, flux_P0, LP_frac, LP_EVPA, rms_I, rms_Q, rms_U, rms_V, rms_P, LP_frac_err, LP_EVPA_err]
-
-
 def extract_polarization_properties(src_name,
     src_im_identifier,
     src_im_suffix, 
@@ -330,6 +253,7 @@ def extract_polarization_properties(src_name,
     pol_flag, 
     manual_rms_region, 
     image_directory,
+    image_identifier,
     fix_additional_comps = False):
 
     '''
@@ -802,7 +726,8 @@ def extract_polarization_properties(src_name,
                 np.savetxt('{}_{}_rmsynth.txt'.format(prefix, component).replace(image_directory, 'RESULTS'), rmsynth_arr.T)
 
     # Save the full dictionary with all times, etc.
-    with open('{}_polarization.json'.format(src_im_identifier).replace(image_directory, 'RESULTS'), 'w') as j:
+    file_name = prefix.split(f'{image_identifier}-t')[0] + image_identifier
+    with open('{}_polarization.json'.format(file_name).replace(image_directory, 'RESULTS'), 'w') as j:
         json.dump(output_dictionary, j, indent = 4)
 
     return 0
@@ -874,6 +799,7 @@ def main():
             pol_flag, 
             rmsynth_info['rms_region'][k],
             rmsynth_info['image_directory'][k],
+            rmsynth_info["image_identifier"][k],
             fix_additional_comps = True)
 
 
