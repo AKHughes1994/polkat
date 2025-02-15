@@ -726,7 +726,10 @@ def extract_polarization_properties(src_name,
                 np.savetxt('{}_{}_rmsynth.txt'.format(prefix, component).replace(image_directory, 'RESULTS'), rmsynth_arr.T)
 
     # Save the full dictionary with all times, etc.
-    file_name = prefix.split(f'{image_identifier}-t')[0] + image_identifier
+    if len(prefix.split(f'{image_identifier}-t')) > 1:
+        file_name = prefix.split(f'{image_identifier}-t')[0] + image_identifier
+    else:
+        file_name = prefix
     with open('{}_polarization.json'.format(file_name).replace(image_directory, 'RESULTS'), 'w') as j:
         json.dump(output_dictionary, j, indent = 4)
 
