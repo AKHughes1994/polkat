@@ -463,19 +463,25 @@ if WSC_MATCHSCALES:
     # Calculate the largest resovable angular scale using top of band + 10 wavelengths as padding
     if BAND == 'UHF':
         minuvl = min_baseline / (speed_of_light / 1088.0e6) + 10. 
+        WSC_MINUVL = '{}.0'.format(round(minuvl))
     if BAND == 'L':
         minuvl = min_baseline / (speed_of_light / 1712.0e6) + 10. 
+        WSC_MINUVL = '{}.0'.format(round(minuvl))
     if BAND == 'S0':
         minuvl = min_baseline / (speed_of_light / 2625.0e6) + 10. 
+        WSC_MINUVL = '{}.0'.format(round(minuvl))
     if BAND == 'S1':
         minuvl = min_baseline / (speed_of_light / 2843.0e6) + 10. 
+        WSC_MINUVL = '{}.0'.format(round(minuvl))
     if BAND == 'S2':
         minuvl = min_baseline / (speed_of_light / 3062.0e6) + 10. 
+        WSC_MINUVL = '{}.0'.format(round(minuvl))
     if BAND == 'S3':
         minuvl = min_baseline / (speed_of_light / 3281.0e6) + 10. 
+        WSC_MINUVL = '{}.0'.format(round(minuvl))
     if BAND == 'S4':
         minuvl = min_baseline / (speed_of_light / 3500.0e6) + 10. 
-    WSC_MINUVL = '{}.0'.format(round(minuvl))
+        WSC_MINUVL = '{}.0'.format(round(minuvl))
 
 # Band modifiers
 if BAND == 'UHF':
