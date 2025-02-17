@@ -145,7 +145,6 @@ def main():
     syscall += 'python3 '+cfg.OXKAT+'/1GC_07_plot_visibilities.py'
     step['syscall'] = syscall
     steps.append(step)
-    n += 1
     
     if cfg.CAL_1GC_DIAGNOSTICS:
 
