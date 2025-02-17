@@ -88,7 +88,8 @@ applycal(vis=myms,
     parang=True,
     gaintable = gaintables + [gptab],
     gainfield = gainfields + [field],
-    interp = interps + ['linear'])
+    interp = interps + ['linear'],
+    flagbackup = False)
 
 # ----- Save final flags for selfcal iteration
 
