@@ -34,7 +34,7 @@ def main():
         step['step'] = k
         step['comment'] = 'Making movie for images in {interval}'
         step['dependency'] = None if k == 0 else k-1
-        step['id'] = interval
+        step['id'] = 'MKMOV'+ str(k)
         syscall = CONTAINER_RUNNER+POLKAT_CONTAINER+' ' if USE_SINGULARITY else ''
         syscall += f"python3 {cfg.TOOLS}/make_movie.py {interval}"
         step['syscall'] = syscall
