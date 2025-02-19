@@ -213,7 +213,7 @@ def main():
                 sourcelist = False,
                 absmem = absmem)
             for call in imcall: 
-                syscall += prefix + call
+                syscall += prefix + call '\n\n'
             step['syscall'] = syscall
             steps.append(step)
    
