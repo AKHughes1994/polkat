@@ -63,13 +63,13 @@ HIPPO_CONTAINER_PATH = None
 NODE_CONTAINER_PATH = [HOME+'/containers/', '/mnt/ephem/containers']
 
 
-PYTHON3_PATTERN = 'polkat-0.1.1'
-CASA_PATTERN = 'polkat-0.1.1'
-QUARTICAL_PATTERN = 'polkat-0.1.1'
-WSCLEAN_PATTERN = 'polkat-0.1.1'
-SHADEMS_PATTERN = 'polkat-0.1.1'
+PYTHON3_PATTERN = 'polkat-0.1.2'
+CASA_PATTERN = 'polkat-0.1.2'
+QUARTICAL_PATTERN = 'polkat-0.1.2'
+WSCLEAN_PATTERN = 'polkat-0.1.2'
+SHADEMS_PATTERN = 'polkat-0.1.2'
 ALBUS_PATTERN = 'polkat-albus'
-TRICOLOUR_PATTERN = 'polkat-0.1.1'
+TRICOLOUR_PATTERN = 'polkat-0.1.2'
 MOVIE_PATTERN = 'polkat-0.1.2'
 
 
