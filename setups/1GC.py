@@ -176,7 +176,7 @@ def main():
                 field = cal_index,
                 weight=cfg.WSC_WEIGHT_CAL,
                 imsize = cfg.WSC_CAL_IMSIZE,
-                chanout = cfg.WSC_CAL_CHANNELSOUT,
+                chanout = cfg.WSC_MASK_CHANNELSOUT,
                 pol='I',
                 multiscale = False,
                 joinpolarizations=False,
