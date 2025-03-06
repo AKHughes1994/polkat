@@ -95,12 +95,13 @@ elif primary_tag == 'other':
 
 for i in range(0,len(pcals)):
     pcal = pcals[i]
-    setjy(vis =myms,
-        field = pcal,
-        standard = 'manual',
-        fluxdensity = [1.0,0,0,0],
-        reffreq = '1000MHz',
-        usescratch = True)
+    if pcal != bpcal and pcal != bpcal_name:
+        setjy(vis =myms,
+            field = pcal,
+            standard = 'manual',
+            fluxdensity = [1.0,0,0,0],
+            reffreq = '1000MHz',
+            usescratch = True)
 
 # --------------------------------------------------------------- #
 # --------------------------------------------------------------- #
