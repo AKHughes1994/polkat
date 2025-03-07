@@ -34,6 +34,8 @@ def main():
     IMAGES = cfg.IMAGES
     SCRIPTS = cfg.SCRIPTS
     TOOLS = cfg.TOOLS
+    GAINTABLES = cfg.GAINTABLES
+    LOGS = cfg.LOGS
 
 
     gen.setup_dir(IMAGES)
@@ -52,7 +54,7 @@ def main():
     CASA_CONTAINER = gen.get_container(CONTAINER_PATH,cfg.CASA_PATTERN,USE_SINGULARITY)
     TRICOLOUR_CONTAINER = gen.get_container(CONTAINER_PATH,cfg.TRICOLOUR_PATTERN,USE_SINGULARITY)
     WSCLEAN_CONTAINER = gen.get_container(CONTAINER_PATH,cfg.WSCLEAN_PATTERN,USE_SINGULARITY)
-
+    QUARTICAL_CONTAINER = gen.get_container(CONTAINER_PATH,cfg.QUARTICAL_PATTERN,USE_SINGULARITY)
 
     # Get target information from project json
 
@@ -63,8 +65,6 @@ def main():
     target_ids = project_info['target_ids'] 
     target_names = project_info['target_names']
     target_ms = project_info['target_ms']
-    myms = project_info['working_ms']
-    pcals = project_info['target_cal_map']
 
 
     # Determine if the blind/datamask images are going to be tapered
@@ -85,15 +85,13 @@ def main():
     target_steps = []
     codes = []
     ii = 1
-    last_target_code = None
+    stamp = gen.timenow()
 
     # Loop over targets
-
     for tt in range(0,len(target_ids)):
 
         targetname   = target_names[tt]
-        pcal = pcals[tt]
-        restore_flag  = 'after_Xf_solutions'
+        myms = target_ms[tt]
 
         if targetname not in project_info['working_names']:
 
@@ -114,13 +112,18 @@ def main():
                 code += '_'+str(ii)
                 ii += 1
             codes.append(code)
+
+            print(filename_targetname)
         
-            # Image prefix
-            name_ms = myms.replace('.ms', f'_{targetname}.ms') # This makes the naming convention the same as oxkat
-            img_prefix = IMAGES+f'/img_{name_ms}_datablind'
-            data_img_prefix = IMAGES+f'/img_{name_ms}_datamask'
-            pcal_img_prefix = IMAGES+f'/img_{name_ms}_pcalmask'
-            uniform_img_prefix = IMAGES+f'/img_{name_ms}_uniform'
+            # Define output parameters for 2GC steo
+            gain_outdir_2GC = GAINTABLES+'/2GC_'+str(filename_targetname)+f'_{stamp}.qc/'
+            log_outdir_2GC = LOGS+'/2GC_'+str(filename_targetname)+f'_{stamp}.qc/'
+
+            # Image prefixes
+            img_prefix = IMAGES+f'/img_{myms}_datablind'
+            data_img_prefix = IMAGES+f'/img_{myms}_datamask'
+            pcal_img_prefix = IMAGES+f'/img_{myms}_pcalmask'
+            uniform_img_prefix = IMAGES+f'/img_{myms}_uniform'
 
             # Target-specific kill file
             kill_file = SCRIPTS+'/kill_2GC_jobs_'+filename_targetname+'.sh'
@@ -135,37 +138,36 @@ def main():
             step['step'] = n
             step['comment'] = 'Run Tricolour on '+myms
             step['dependency'] = None
-            if tt > 0:
-                step['dependency_on_prev_target'] = last_target_code
-            else:
-                step['dependency_on_prev_target'] = None
             step['id'] = 'TRILE'+code
             step['slurm_config'] = cfg.SLURM_TRICOLOUR
             step['pbs_config'] = cfg.PBS_TRICOLOUR
             syscall = CONTAINER_RUNNER+TRICOLOUR_CONTAINER+' ' if USE_SINGULARITY else ''
             syscall += gen.generate_syscall_tricolour(myms = myms,
                     config = DATA+'/tricolour/target_flagging_1_narrow.yaml',
-                    datacol = 'CORRECTED_DATA',
-                    fields = targetindex,
+                    datacol = 'DATA',
                     strategy = 'polarisation')
             step['syscall'] = syscall
             steps.append(step)
             n += 1
 
-            step = {}
-            step['step'] = n
-            step['comment'] = 'Shallow blind wsclean on CORRECTED_DATA column for source {}'.format(targetname)
-            step['dependency'] = n - 1
-            step['dependency_on_prev_target'] = None
-            step['id'] = 'WSDBL'+code
-            step['slurm_config'] = cfg.SLURM_WSCLEAN
-            step['pbs_config'] = cfg.PBS_WSCLEAN
-            absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
-            syscall = ''
-            prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
-            imcall = gen.generate_syscall_wsclean(mslist = [myms],
+            
+            # Check for mask, if doesn't exist make one
+            mask = glob.glob(cfg.IMAGES+'/*'+targetname+'*.mask.fits')
+            if mask == []:
+
+                step = {}
+                step['step'] = n
+                step['comment'] = 'Shallow blind wsclean on CORRECTED_DATA column for source {}'.format(targetname)
+                step['dependency'] = n - 1
+                step['id'] = 'WSDBL'+code
+                step['slurm_config'] = cfg.SLURM_WSCLEAN
+                step['pbs_config'] = cfg.PBS_WSCLEAN
+                absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
+                syscall = ''
+                prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
+                imcall = gen.generate_syscall_wsclean(mslist = [myms],
                         imgname = img_prefix,
-                        datacol = 'CORRECTED_DATA',
+                        datacol = 'DATA',
                         chanout = cfg.WSC_MASK_CHANNELSOUT,
                         nomodel = True,
                         pol = 'I',
@@ -176,43 +178,45 @@ def main():
                         autothreshold = 3.0,
                         tukeytaper=tukeytaper,
                         minuvl = minuvl,
-                        field=targetindex,
                         absmem = absmem)
-            for call in imcall: 
-                syscall += prefix + call + '\n\n'
-            step['syscall'] = syscall
-            steps.append(step)
-            n += 1
+                for call in imcall: 
+                    syscall += prefix + call + '\n\n'
+                step['syscall'] = syscall
+                steps.append(step)
+                n += 1
+
+                step = {}
+                step['step'] = n
+                step['comment'] = 'Make cleaning mask for ' + targetname
+                step['dependency'] = n - 1
+                step['id'] = 'MASK0'+code
+                syscall  = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
+                syscall += gen.generate_syscall_breizorro(restoredimage = f"{img_prefix}-MFS-image.fits", outfile = f"{img_prefix}-MFS-image.mask.fits")[0]
+                step['syscall'] = syscall
+                steps.append(step)
+                n += 1
+
+                step = {}
+                step['step'] = n
+                step['comment'] = 'Apply primary beam correction to '+targetname+' (BLIND) image'
+                step['dependency'] = n - 2
+                step['id'] = 'PBDBL'+code
+                syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
+                syscall += 'python3 '+TOOLS+'/pbcor_katbeam.py --band '+band[0]+' '+img_prefix+'-MFS-image.fits'
+                step['syscall'] = syscall
+                steps.append(step)
+                n += 1
+                mask = f"{img_prefix}-MFS-image.mask.fits"
+                print(gen.col('Mask')+ 'None')
+
+            else:
+                mask = mask[0]
+                print(gen.col('Mask')+mask)
 
             step = {}
             step['step'] = n
-            step['comment'] = 'Make cleaning mask for ' + targetname
-            step['dependency'] = n - 1
-            step['dependency_on_prev_target'] = None
-            step['id'] = 'MASK0'+code
-            syscall  = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
-            syscall += gen.generate_syscall_breizorro(restoredimage = f"{img_prefix}-MFS-image.fits", outfile = f"{img_prefix}-MFS-image.mask.fits")[0]
-            step['syscall'] = syscall
-            steps.append(step)
-            n += 1
-
-            step = {}
-            step['step'] = n
-            step['comment'] = 'Apply primary beam correction to '+targetname+' (BLIND) image'
-            step['dependency'] = n - 2
-            step['dependency_on_prev_target'] = None
-            step['id'] = 'PBDBL'+code
-            syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
-            syscall += 'python3 '+TOOLS+'/pbcor_katbeam.py --band '+band[0]+' '+img_prefix+'-MFS-image.fits'
-            step['syscall'] = syscall
-            steps.append(step)
-            n += 1
-
-            step = {}
-            step['step'] = n
-            step['comment'] = 'Run wsclean, masked deconvolution of the CORRECTED_DATA column for source {}'.format(targetname)
+            step['comment'] = 'Run wsclean, masked deconvolution of the DATA column for source {}'.format(targetname)
             step['dependency'] = n - 1 
-            step['dependency_on_prev_target'] = None
             step['id'] = 'WSDMA'+code
             step['slurm_config'] = cfg.SLURM_WSCLEAN
             step['pbs_config'] = cfg.PBS_WSCLEAN
@@ -221,10 +225,9 @@ def main():
             prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
             imcall = gen.generate_syscall_wsclean(mslist = [myms],
                     imgname = data_img_prefix,
-                    datacol = 'CORRECTED_DATA',
-                    mask = img_prefix+'-MFS-image.mask.fits',
+                    datacol = 'DATA',
+                    mask = mask,
                     chanout = cfg.WSC_IMAGE_CHANNELSOUT,
-                    field=targetindex,
                     intervalsout = False,
                     tukeytaper=tukeytaper,
                     minuvl = minuvl,
@@ -242,7 +245,6 @@ def main():
                 step['step'] = n
                 step['comment'] = f'Homogenize the MASK resolution across frequency channels'
                 step['dependency'] = n - 1
-                step['dependency_on_prev_target'] = None
                 step['id'] = 'HODMA' +code
                 prefix = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
                 syscall =  prefix + f'python3 {cfg.TOOLS}/fix_image_naming.py {cfg.WSC_IMAGE_CHANNELSOUT} {data_img_prefix}\n\n'
@@ -255,7 +257,6 @@ def main():
             step['step'] = n
             step['comment'] = 'Run wsclean-predict on masked deconvolution of the model for source {}'.format(targetname)
             step['dependency'] = n - 1 
-            step['dependency_on_prev_target'] = None
             step['id'] = 'PRDMA'+code
             step['slurm_config'] = cfg.SLURM_PREDICT
             step['pbs_config'] = cfg.PBS_WSCLEAN
@@ -264,7 +265,6 @@ def main():
             syscall = prefix + 'python3 '+TOOLS+'/fix_nan_models.py ' + data_img_prefix + '\n\n'
             syscall += prefix + gen.generate_syscall_predict(msname = myms,
                     imgname = data_img_prefix,
-                    field=targetindex,
                     absmem = absmem)
             step['syscall'] = syscall
             steps.append(step)
@@ -274,7 +274,6 @@ def main():
             step['step'] = n
             step['comment'] = f'Apply primary beam correction to {targetname} (MASK) image'
             step['dependency'] = n - 1
-            step['dependency_on_prev_target'] = None
             step['id'] = 'PBDMA'+code
             syscall = ''
             images = []
@@ -297,23 +296,21 @@ def main():
 
             step = {}
             step['step'] = n
-            step['comment'] = 'Run phase self-calibration on the target {}'.format(targetname)
+            step['comment'] = 'Run Quartical self-calibration on the target {}'.format(targetname)
             step['dependency'] = n - 1
-            step['dependency_on_prev_target'] = None
             step['id'] = 'CL2GC'+code
-            syscall = CONTAINER_RUNNER + CASA_CONTAINER+' ' if USE_SINGULARITY else ''
-            syscall += gen.generate_syscall_casa(casascript=cfg.OXKAT+f'/2GC_casa_pcal_source.py -f {save_flag} -s {cfg.CAL_2GC_PSOLINT} {targetname}')
+            syscall = CONTAINER_RUNNER + QUARTICAL_CONTAINER+' ' if USE_SINGULARITY else ''
+            syscall += gen.generate_syscall_quartical(yaml = cfg.CAL_2GC_YAML,
+                    myms = myms,
+                    extra_args = f'output.gain_directory={gain_outdir_2GC} output.log_directory={log_outdir_2GC}')
             step['syscall'] = syscall
             steps.append(step)
             n += 1
-
-            restore_flag = save_flag
 
             step = {}
             step['step'] = n
             step['comment'] = f'Run wsclean, masked deconvolution of the CORRECTED_DATA (self-calibrated) for {targetname}'
             step['dependency'] = n - 1
-            step['dependency_on_prev_target'] = None
             step['id'] = 'WSCMA'+code
             step['slurm_config'] = cfg.SLURM_WSCLEAN
             step['pbs_config'] = cfg.PBS_WSCLEAN
@@ -323,10 +320,9 @@ def main():
             imcall = gen.generate_syscall_wsclean(mslist = [myms],
                     imgname = pcal_img_prefix,
                     datacol = 'CORRECTED_DATA',
-                    mask = img_prefix+'-MFS-image.mask.fits',
+                    mask = mask,
                     chanout = cfg.WSC_IMAGE_CHANNELSOUT,
                     nomodel=True,
-                    field=targetindex,
                     sourcelist = False,
                     absmem = absmem)
             for call in imcall: 
@@ -341,7 +337,6 @@ def main():
                 step['step'] = n
                 step['comment'] = f'Homogenize the PCAL resolution across frequency channels'
                 step['dependency'] = n - 1
-                step['dependency_on_prev_target'] = None
                 step['id'] = 'HOCMA' + code
                 prefix = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
                 syscall =  prefix + f'python3 {cfg.TOOLS}/fix_image_naming.py {cfg.WSC_IMAGE_CHANNELSOUT} {pcal_img_prefix}\n\n'
@@ -354,7 +349,6 @@ def main():
             step['step'] = n
             step['comment'] = 'Apply primary beam correction to '+targetname+'(PCAL) image'
             step['dependency'] = n - 1
-            step['dependency_on_prev_target'] = None
             step['id'] = 'PBPCL'+code
             syscall = ''
             images = []
@@ -380,7 +374,6 @@ def main():
                 step['step'] = n
                 step['comment'] = 'Run high angular resolution, wsclean, masked deconvolution of the CORRECTED_DATA (self-calibrated) for {}'.format(targetname)
                 step['dependency'] = n - 1
-                step['dependency_on_prev_target'] = None
                 step['id'] = 'WSUNI'+code
                 step['slurm_config'] = cfg.SLURM_WSCLEAN
                 step['pbs_config'] = cfg.PBS_WSCLEAN
@@ -390,11 +383,10 @@ def main():
                 imcall = gen.generate_syscall_wsclean(mslist = [myms],
                     imgname = uniform_img_prefix,
                     datacol = 'CORRECTED_DATA',
-                    mask = img_prefix+'-MFS-image.mask.fits',
+                    mask = mask,
                     chanout = cfg.WSC_MASK_CHANNELSOUT,
                     nomodel=True,
                     intervalsout=False,
-                    field=targetindex,
                     weight=cfg.WSC_WEIGHT_HIGHRES,
                     mfweight=True,
                     tukeytaper=False,
@@ -413,7 +405,6 @@ def main():
                 step['step'] = n
                 step['comment'] = 'Apply primary beam correction to '+targetname+'(UNIFORM) image'
                 step['dependency'] = n - 1
-                step['dependency_on_prev_target'] = None
                 step['id'] = 'PBUNI'+code
                 syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
                 syscall += 'python3 '+TOOLS+'/pbcor_katbeam.py --band '+band[0]+' '+uniform_img_prefix+'-MFS-image.fits'
@@ -426,7 +417,6 @@ def main():
                 step['step'] = n
                 step['comment'] = 'Make Polarization Intensity Images'
                 step['dependency'] = n - 1
-                step['dependency_on_prev_target'] = None
                 step['id'] = 'MKLPI'+code
                 syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
                 syscall += f"python3 {cfg.TOOLS}/make_pol_images.py {cfg.IMAGES}"
@@ -469,8 +459,6 @@ def main():
                 dependency = steps[step['dependency']]['id']
             else:
                 dependency = None
-            if step['dependency_on_prev_target'] is not None:
-                dependency = step['dependency_on_prev_target']
             syscall = step['syscall']
             if 'slurm_config' in step.keys():
                 slurm_config = step['slurm_config']

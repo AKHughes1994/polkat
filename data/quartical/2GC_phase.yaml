@@ -22,6 +22,8 @@ input_model:
   source_chunks: 500
   apply_p_jones: true
 output:
+  gain_directory: ../DI_gains.qc
+  log_directory: ../DI_logs.qc
   log_to_terminal: true
   overwrite: true
   products: [corrected_data]
@@ -40,15 +42,19 @@ mad_flags:
 solver:
   terms:
   - K
-  - G
   iter_recipe:
-  - 50
   - 50
   propagate_flags: true
   robust: false
+  threads: 1  # Controls solver specific threads. See docs.
   convergence_fraction: 0.99
   convergence_criteria: 1e-06
   reference_antenna: 0
+dask:
+  threads: 6  # Controls dask threads i.e. number of chunks processed simultaneously. See docs.
+  workers: 1
+  address:
+  scheduler: threads
 K:
   type: delay_and_offset
   solve_per: antenna
@@ -57,18 +63,6 @@ K:
   - 0
   time_interval: '1'
   freq_interval: '0'
-  interp_mode: reim
-  interp_method: 2dlinear
-  respect_scan_boundaries: true
-  initial_estimate: false
-G:
-  type: complex
-  solve_per: antenna
-  direction_dependent: false
-  pinned_directions:
-  - 0
-  time_interval: '1'
-  freq_interval: '64'
   interp_mode: reim
   interp_method: 2dlinear
   respect_scan_boundaries: true

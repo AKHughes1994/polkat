@@ -432,6 +432,14 @@ def generate_syscall_cubical(parset,myms,extra_args=''):
 
     return syscall
 
+def generate_syscall_quartical(yaml,myms,extra_args=''):
+
+    syscall = 'goquartical '+yaml+' '
+    syscall += 'input_ms.path='+myms+' '
+    if extra_args != '':
+        syscall += extra_args
+
+    return syscall
 
 def generate_syscall_tricolour(myms = '',
                           config = '',

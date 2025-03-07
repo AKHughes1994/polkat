@@ -352,8 +352,10 @@ CAL_2GC_UVRANGE = '>150m'            # Selection for baselines to include during
 CAL_2GC_PSOLINT = '32s'              # Solution interval for phase-only selfcal
 CAL_2GC_APSOLINT = 'inf'             # Solution interval for amplitude and phase selfcal
 
-# CubiCal
-CAL_2GC_DELAYCAL_PARSET = DATA+'/cubical/2GC_delaycal.parset'
+# Quartical
+# CAL_2GC_YAML = DATA+'/quartical/2GC_fullpol.yaml'
+CAL_2GC_YAML = DATA+'/quartical/2GC_phase.yaml'
+# CAL_2GC_YAML = DATA+'/quartical/2GC_amppol.yaml'
 
 
 # ------------------------------------------------------------------------

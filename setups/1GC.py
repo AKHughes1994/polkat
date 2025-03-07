@@ -145,6 +145,17 @@ def main():
     syscall += 'python3 '+cfg.OXKAT+'/1GC_07_plot_visibilities.py'
     step['syscall'] = syscall
     steps.append(step)
+    n += 1
+
+    step = {}
+    step['step'] = n
+    step['comment'] = 'Split out the target MS files'
+    step['dependency'] = n - 1
+    step['id'] = 'SPTRG'+code
+    syscall = CONTAINER_RUNNER+SHADEMS_CONTAINER+' ' if USE_SINGULARITY else ''
+    syscall += gen.generate_syscall_casa(casascript=cfg.OXKAT+'/1GC_08_casa_split_targets.py')
+    step['syscall'] = syscall
+    steps.append(step)
     
     if cfg.CAL_1GC_DIAGNOSTICS:
 
