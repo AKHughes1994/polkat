@@ -342,7 +342,7 @@ def get_primary_tag(candidate_dirs,
 
     return primary_name,primary_id,primary_tag,primary_sep
 
-def target_cal_pairs(target_dirs,target_names,target_ids,
+def target_cal_pairs_old(target_dirs,target_names,target_ids,
                 secondary_dirs,secondary_names,secondary_ids):
 
     # The target_cal_map is a list of secondary field IDs of length target_ids
@@ -366,6 +366,65 @@ def target_cal_pairs(target_dirs,target_names,target_ids,
 
         target_cal_map.append(str(secondary_names[secondary_index]))
         target_cal_separations.append(round(separations[secondary_index],3))
+
+    return target_cal_map,target_cal_separations
+
+def target_cal_pairs(master_ms,target_dirs,target_names,target_ids,
+                secondary_dirs,secondary_names,secondary_ids):
+    """
+    Auto-match targets to secondaries based on temporal separations;
+    i.e., the secondary associated with the target should be closest in time
+    """
+
+    # The target_cal_map is a list of secondary field IDs of length target_ids
+    # It links a specific secondary to a specific target
+    target_cal_map = []
+    target_cal_separations = []
+
+    # Open master table to get time information
+    master_table = table(master_ms, ack = False)
+
+    # Iterate through targets finding secondary closest in time
+    for i in range(0,len(target_dirs)):
+        target_id = target_ids[i]
+        ra_target = target_dirs[i][0]
+        dec_target = target_dirs[i][1]
+        pos_separations = []
+        time_separations = []
+    
+        # Get the time associated with the target
+        target_table = master_table.query(query = f'FIELD_ID=={target_id}')
+        target_time  = target_table.getcol('TIME')[0]
+        target_table.close()
+
+        # Iterate through the secondaries and get the scan times
+        for j in range(0,len(secondary_dirs)):
+            
+            # Specify the secondary parameters
+            secondary_name = secondary_names[j]
+            secondary_id = secondary_ids[j]
+            ra_cal = secondary_dirs[j][0]
+            dec_cal = secondary_dirs[j][1]
+
+            # Load in the secondary times
+            secondary_table = master_table.query(query = f'FIELD_ID=={secondary_id}')
+            secondary_times = numpy.unique(secondary_table.getcol('TIME'))
+            secondary_table.close()
+
+            # Calculate (minimum) time and position separations
+            pos_separations.append(calcsep(ra_target,dec_target,ra_cal,dec_cal))
+            time_separations.append(numpy.amin(abs(secondary_times - target_time)))
+
+        # Match targets + secondaries through temporal separation
+        pos_separations = numpy.array(pos_separations)
+        time_separations = numpy.array(time_separations)
+        secondary_index = numpy.argmin(time_separations)
+
+        target_cal_map.append(str(secondary_names[secondary_index]))
+        target_cal_separations.append(round(pos_separations[secondary_index],3))
+
+    # Close the master table
+    master_table.close()
 
     return target_cal_map,target_cal_separations
 
@@ -545,13 +604,13 @@ def main():
     # MATCH TARGET-CAL PAIRS BASED ON SEPARATION
 
     if CAL_1GC_SECONDARIES == 'auto':
-        target_cal_map,target_cal_separations = target_cal_pairs(target_dirs,target_names,target_ids,
+        target_cal_map,target_cal_separations = target_cal_pairs(master_ms, target_dirs,target_names,target_ids,
                                                     secondary_dirs,secondary_names,secondary_ids)
     else:
         target_cal_map = [int(x) for x in CAL_1GC_SECONDARIES.split(',')]
         if len(target_cal_map) != len(target_dirs) and len(target_cal_map) > 1:
             mylogger.info('Target-secondary mapping is ambiguous, reverting to auto')
-            target_cal_map,target_cal_separations = target_cal_pairs(target_dirs,target_names,target_ids,
+            target_cal_map,target_cal_separations = target_cal_pairs(master_ms, target_dirs,target_names,target_ids,
                                                     secondary_dirs,secondary_names,secondary_ids)
         elif len(target_cal_map) == 1:
             mylogger.info('User requested field '+str(target_cal_map)+' as secondary calibrator for all targets')
