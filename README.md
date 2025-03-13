@@ -213,6 +213,24 @@ polkat is fundamentally a compilation of actual software; these packages are the
 
 ---
 
+If you make use of this software please cite: 
+
+```
+@software{2025ascl.soft02026H,
+       author = {{Hughes}, Andrew K. and {Cowie}, Fraser J. and {Heywood}, Ian and {Hugo}, Ben},
+        title = "{polkat: Semi-automate full polarization of MeerKAT observations}",
+ howpublished = {Astrophysics Source Code Library, record ascl:2502.026},
+         year = 2025,
+        month = feb,
+          eid = {ascl:2502.026},
+       adsurl = {https://ui.adsabs.harvard.edu/abs/2025ascl.soft02026H},
+      adsnote = {Provided by the SAO/NASA Astrophysics Data System}
+}
+
+```
+
+---
+
 ## TO DO LIST
 
 1. Further improve documentation and include a PDF with some examples
