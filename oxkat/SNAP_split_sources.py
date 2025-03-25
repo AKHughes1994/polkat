@@ -16,8 +16,21 @@ if len(sys.argv) == 1:
 else:
     targetname = sys.argv[-1]
 
-target_ms = myms.replace('.ms', f'_{targetname}_snapshot.ms')
+# Load in the target ms files
+target_ms_files = project_info['target_ms']
 
+# If this is a target split from the self-calibrated SPLIT ms file
+if any([targetname in target_ms for target_ms in target_ms_files]):
+    myms = target_ms_files[target_names.index(targetname)]
+    target_ms = myms.replace('.ms', '_snapshot.ms')
+else:
+    target_ms = myms.replace('.ms', f'_{targetname}_snapshot.ms')
+
+if not o.isdir(myms):
+    sys.exit('ERROR: The MS file you are trying to split from does not exist!')
+
+
+# This is to check if you've already done snapshot imaging
 dirs = glob.glob(target_ms.strip('.ms')+'*'+'.ms')
 n = len(dirs)
 
@@ -29,5 +42,4 @@ mstransform(vis = myms,
                         outputvis=target_ms, 
                         field=targetname,
                         datacolumn='corrected')
-    
 

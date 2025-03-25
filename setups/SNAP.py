@@ -90,13 +90,13 @@ def main():
 
     for tt in range(0,len(target_names)):
         
-        targetname  = target_names[tt]
+        targetname   = target_names[tt]
 
         if targetname not in project_info['working_names']:
 
             gen.print_spacer()
             print(gen.col('Snap Target')+targetname)
-            print(gen.col('MS')+'not found, skipping')
+            print('Target not in MS file, skipping')
 
         else:
 
@@ -219,7 +219,7 @@ def main():
 
                 step = {}
                 step['step'] = n
-                step['comment'] = 'Run wsclean, masked deconvolution of the DATA column of' + target_ms
+                step['comment'] = 'Run wsclean, masked deconvolution of the DATA column of ' + target_ms
                 step['dependency'] = dependency
                 step['id'] = 'WMSNA'+code
                 step['slurm_config'] = cfg.SLURM_WSCLEAN
@@ -319,7 +319,6 @@ def main():
             step['syscall'] = syscall
             steps.append(step)
             n += 1
-
 
             # More thought needs to go into the usefulness of Homogenizing + SNAPSHOT imaging
             #if cfg.WSC_MAX_CHANNELS < cfg.SNAP_CHANNELSOUT or cfg.WSC_HOMOGENIZEBEAM:
