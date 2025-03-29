@@ -87,7 +87,7 @@ SLURM_EXCLUDE = '' # Specify node(s) to exclude
 
 SLURM_DEFAULTS = {
 	'TIME': '12:00:00',
-	'PARTITION': 'Main',
+	'PARTITION': 'sapphire',
 	'NTASKS': '1',
 	'NODES': '1',
 	'CPUS': '8',
@@ -96,7 +96,7 @@ SLURM_DEFAULTS = {
 
 SLURM_TRICOLOUR = {
     'TIME': '06:00:00',
-    'PARTITION': 'Main',
+    'PARTITION': 'sapphire',
     'NTASKS': '1',
     'NODES': '1',
     'CPUS': '32',
@@ -105,7 +105,7 @@ SLURM_TRICOLOUR = {
 
 SLURM_RM = {
 	'TIME': '24:00:00',
-	'PARTITION': 'Main',
+	'PARTITION': 'sapphire',
 	'NTASKS': '1',
 	'NODES': '1',
 	'CPUS': '8',
@@ -114,7 +114,7 @@ SLURM_RM = {
 
 SLURM_WSCLEAN = {
     'TIME': '36:00:00',
-    'PARTITION': 'Main',
+    'PARTITION': 'sapphire',
     'NTASKS': '1',
     'NODES': '1',
     'CPUS': '32',
@@ -123,7 +123,7 @@ SLURM_WSCLEAN = {
 
 SLURM_PREDICT= {
     'TIME': '12:00:00',
-    'PARTITION': 'Main',
+    'PARTITION': 'sapphire',
     'NTASKS': '1',
     'NODES': '1',
     'CPUS': '32',
@@ -132,7 +132,7 @@ SLURM_PREDICT= {
 
 SLURM_EXTRALONG = {
     'TIME': '48:00:00',
-    'PARTITION': 'Main',
+    'PARTITION': 'sapphire',
     'NTASKS': '1',
     'NODES': '1',
     'CPUS': '32',

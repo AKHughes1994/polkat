@@ -16,7 +16,7 @@ def write_slurm(opfile,jobname,logfile,syscall):
         '#file: '+opfile+':\n',
         '#SBATCH --job-name='+jobname+'\n',
         '#SBATCH --time=03:00:00\n',
-        '#SBATCH --partition=Main\n'
+        '#SBATCH --partition=sapphire\n'
         '#SBATCH --ntasks=1\n',
         '#SBATCH --nodes=1\n',
         '#SBATCH --cpus-per-task=4\n',

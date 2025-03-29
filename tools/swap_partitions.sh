@@ -1,2 +1,2 @@
 #!/bin/bash
-find $PWD -name slurm\*sh -exec sed -i "s/Main/HighMem/g" {} \;
+find $PWD -name slurm\*sh -exec sed -i "s/sapphire/HighMem/g" {} \;
