@@ -283,19 +283,19 @@ def extract_polarization_properties(src_name,
     output_dictionary['CHAN'] = {}
 
     # Check if the MFS image exists for the suffix, if not, use homgenized one
-    og_src_im_suffix = src_im_suffix[:]
+    mfs_im_suffix = src_im_suffix[:]
     if glob.glob(f'{src_im_identifier}*-MFS*{src_im_suffix}') == []:
         msg(f'WARNING: {src_im_suffix} does not exist in MFS image due to channel splitting; Using: image.homogenized.fits')
-        src_im_suffix = 'image.homogenized.fits' # if this doesn't work you don't have the images required for this analysis
+        mfs_im_suffix = 'image.homogenized.fits' # if this doesn't work you don't have the images required for this analysis
     
     # Determine if there are multiple stokes parameters or if its strictly Stokes I (suffixes will be, e.g., MFS-image)
-    if glob.glob(f'{src_im_identifier}*-MFS-I-{src_im_suffix}') == []:
+    if glob.glob(f'{src_im_identifier}*-MFS-I-{mfs_im_suffix}') == []:
         only_intensity = True
     else:
         only_intensity = False
     
     # Get unique prefixes, this will now iterate in time (if applicable) if not it will just return arrays of length 1:
-    prefix_arr = glob.glob(f'{src_im_identifier}*-MFS*{src_im_suffix}')
+    prefix_arr = glob.glob(f'{src_im_identifier}*-MFS*{mfs_im_suffix}')
     prefix_arr = sorted(list(set([x.split('-MFS')[0] for x in prefix_arr])))
     
     for k, prefix in enumerate(prefix_arr):
@@ -305,10 +305,10 @@ def extract_polarization_properties(src_name,
         
         # This is to get the image into an array
         if only_intensity:
-            MFS_images = [f'{prefix}-MFS-{src_im_suffix}']
+            MFS_images = [f'{prefix}-MFS-{mfs_im_suffix}']
         else:
             # The sorted function will make order the images as I, P, Q, U, V
-            MFS_images = glob.glob(f'{prefix}-MFS-*-{src_im_suffix}')
+            MFS_images = glob.glob(f'{prefix}-MFS-*-{mfs_im_suffix}')
             if pol_flag:
                 MFS_images = sorted([im for im in MFS_images if '-Ptot-' not in im])
             else:
@@ -510,7 +510,6 @@ def extract_polarization_properties(src_name,
         # Extract the CHAN image parameters  #
         ###########################
 
-        src_im_suffix = og_src_im_suffix[:]
         msg(f'Fitting CHAN image(s) for prefix {k} with {src_im_suffix}: {prefix}')
 
         # Glob the images

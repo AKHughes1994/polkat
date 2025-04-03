@@ -59,9 +59,6 @@ def main():
     mask = False
     if cfg.SNAP_DECONVMASK:
         mask = cfg.SNAP_DECONVMASK  
-
-    #img_size = cfg.SNAP_SIZE
-    #snap_mask = cfg.SNAP_MASK_PATH
     
     if len(sys.argv) == 1:
         print('Please specify an MS file for interval imaging')
@@ -116,6 +113,7 @@ def main():
         # Fix channel naming (necessary when breaking up frequency images due to memory constraints)
         syscall = f'python3 {cfg.TOOLS}/fix_image_naming.py {chanout} {image_prefix}'
         subprocess.run([syscall], shell=True)
+
 
         # Fix 'scan' naming to obey the 't0...' wsclean naming convention -- again has to be a bettter way to do this but this'll work
         # Basic idea is to add the scan number to the t-label; e.g., if scan 0 has 100 integrations:

@@ -41,7 +41,7 @@ def main():
     with open('data/rmsynth/rmsynth_info.json', 'r') as j:
         rmsynth_info = json.load(j)
     for k, name in enumerate(rmsynth_info['image_directory']):
-        print(gen.col() + 'Trying to fit {} in directory {}'.format(rmsynth_info['image_directory'][k],rmsynth_info['source_name'][k]))
+        print(gen.col() + 'Trying to fit {} in directory {}'.format(rmsynth_info['source_name'][k], rmsynth_info['image_directory'][k]))
     gen.print_spacer()
 
     INFRASTRUCTURE, CONTAINER_PATH = gen.set_infrastructure(sys.argv)

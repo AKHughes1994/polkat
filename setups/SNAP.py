@@ -162,13 +162,11 @@ def main():
 
                 model_mask = cfg.SNAP_MODELMASK
                 model_image_prefix = IMAGES+'/img_'+target_ms+'_snapmask'
-                
+                blind_image_prefix = IMAGES+'/img_'+target_ms+'_snapbind'                
 
                 # If you don't have a mask you need a blind clean as well to make a mask
-                if  cfg.SNAP_MODELMASK == '':
+                if cfg.SNAP_MODELMASK == '' and not o.exists(f"{blind_image_prefix}-MFS-image.mask.fits"):
                     
-                    blind_image_prefix = IMAGES+'/img_'+target_ms+'_snapbind'
-
                     step = {}
                     step['step'] = n
                     step['comment'] = 'Shallow blind wsclean on DATA column of ' + target_ms
@@ -212,6 +210,10 @@ def main():
                 
                     model_mask = f"{blind_image_prefix}-MFS-image.mask.fits"
 
+                # If you do have the mask save it's name
+                if o.exists(f"{blind_image_prefix}-MFS-image.mask.fits"):
+                    model_mask = f"{blind_image_prefix}-MFS-image.mask.fits"
+
                 if n == 0:
                     dependency = last_split_code
                 else:
@@ -253,7 +255,7 @@ def main():
                     step['id'] = 'HOSNA'+code
                     prefix = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
                     syscall =  f'python3 {cfg.TOOLS}/fix_image_naming.py {cfg.SNAP_CHANNELSOUT} {model_image_prefix}'
-                    step['syscall'] += prefix + syscall 
+                    step['syscall'] = prefix + syscall 
                     steps.append(step)
                     n += 1
 
@@ -319,6 +321,21 @@ def main():
             step['syscall'] = syscall
             steps.append(step)
             n += 1
+
+            if cfg.SNAP_CHANNELSOUT > cfg.WSC_MAX_CHANNELS:
+                restored_image_prefix = cfg.INTERVALS+f'/img_{target_ms}_restored'
+                step = {}
+                step['step'] = n
+                step['comment'] = 'Max channels is less than total channels, making a (really rough) MFS image for '+targetname
+                step['dependency'] = n - 1
+                step['id'] = 'MFSNA'+code
+                step['slurm_config'] = cfg.SLURM_WSCLEAN
+                step['pbs_config'] = cfg.PBS_WSCLEAN
+                syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
+                syscall += 'python3 '+cfg.TOOLS+f'/make_rough_mfs.py {restored_image_prefix}'
+                step['syscall'] = syscall
+                steps.append(step)
+                n += 1
 
             # More thought needs to go into the usefulness of Homogenizing + SNAPSHOT imaging
             #if cfg.WSC_MAX_CHANNELS < cfg.SNAP_CHANNELSOUT or cfg.WSC_HOMOGENIZEBEAM:
