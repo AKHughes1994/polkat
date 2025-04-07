@@ -162,7 +162,7 @@ def main():
 
                 model_mask = cfg.SNAP_MODELMASK
                 model_image_prefix = IMAGES+'/img_'+target_ms+'_snapmask'
-                blind_image_prefix = IMAGES+'/img_'+target_ms+'_snapbind'                
+                blind_image_prefix = IMAGES+'/img_'+target_ms+'_snapblind'                
 
                 # If you don't have a mask you need a blind clean as well to make a mask
                 if cfg.SNAP_MODELMASK == '' and not o.exists(f"{blind_image_prefix}-MFS-image.mask.fits"):
