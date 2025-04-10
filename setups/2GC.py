@@ -112,8 +112,6 @@ def main():
                 code += '_'+str(ii)
                 ii += 1
             codes.append(code)
-
-            print(filename_targetname)
         
             # Define output parameters for 2GC steo
             gain_outdir_2GC = GAINTABLES+'/2GC_'+str(filename_targetname)+f'_{stamp}.qc/'
