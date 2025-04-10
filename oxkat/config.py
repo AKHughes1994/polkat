@@ -353,27 +353,22 @@ CAL_2GC_PSOLINT = '32s'              # Solution interval for phase-only selfcal
 CAL_2GC_APSOLINT = 'inf'             # Solution interval for amplitude and phase selfcal
 
 # Quartical
+CAL_2GC_YAML = DATA+'/quartical/2GC_phase.yaml' # Frequency-dependant phase-only self-calibration (diagonal entries only XX/YY)
+                                                                             # De-rotates/Re-rotates parallactic angle corrections
+                                                                             # WARNING: Will break if the casa-data LEAP table is out of date
+
+#CAL_2GC_YAML = DATA+'/quartical/2GC_phase.yaml' # Frequency-dependant phase-only self-calibration(diagonal entries only XX/YY)
+                                                                             # DOES NOT De-rotate/Re-rotate parallactic angle corrections
+                                                                             # WARNING: Because of Stokes Q dependency on XX/YY and parallactic angle
+                                                                             # abscence of parallactic angle correction may incorrectly modify the fluxes (USE WITH CAUTION)
+
+# These yaml files peform amplitude and phase self-calibration on the 2x2 Jones matrix XX,YY,XY,YX.
+# All of my testing seems to suggest that this significantly changes polarised fluxes and thus, should not be used
+# These effects are likely due to the significant instrumental polarisation from the primary beam response
+# Without a very good full polarisation model these SHOULD NOT BE USED!!!!! You have been warned
 # CAL_2GC_YAML = DATA+'/quartical/2GC_fullpol.yaml'
-CAL_2GC_YAML = DATA+'/quartical/2GC_phase.yaml'
 # CAL_2GC_YAML = DATA+'/quartical/2GC_amppol.yaml'
 
-
-# ------------------------------------------------------------------------
-#
-# 3GC peeling settings -- 3GC Doesn't work yet
-#
-
-CAL_3GC_PEEL_NCHAN = 32
-CAL_3GC_PEEL_BRIGGS = -0.6
-CAL_3GC_PEEL_DIR1COLNAME = 'DIR1_DATA'
-CAL_3GC_PEEL_REGION = ''  # Specify DS9 peeling region 
-                          # Leave blank to search for <fieldname>*peel*.reg in the current path
-CAL_3GC_PEEL_PARSET = DATA+'/cubical/3GC_peel.parset'
-CAL_3GC_FACET_REGION = '' # Specify DS9 region to define tessel centres
-                          # Leave blank to search for <fieldname>*facet*.reg in the current path
-                          # Regions specified here and above will apply to all fields, and so can
-                          # be used to e.g. peel the same source from a compact mosaic rather than
-                          # having to provide multiple copies of the same region on a per-field basis
 
 
 # ------------------------------------------------------------------------
@@ -445,7 +440,7 @@ WSC_NONEGATIVE = False
 WSC_STOPNEGATIVE = False
 WSC_CIRCULARBEAM = False
 WSC_POL = 'IQUV'
-WSC_SPLITPOL = True # Image V/I and Q/U separately (necessary for High RM and MFS fitting)
+WSC_SPLITPOL = False # Image V/I and Q/U separately (necessary for High RM and MFS fitting)
 WSC_JOINPOLARIZATIONS = True
 WSC_SQUAREPOLARIZATIONS = False
 # Masking
@@ -502,6 +497,35 @@ if BAND == 'S3':
 if BAND == 'S4':
     WSC_CELLSIZE = '0.5asec'
 
+
+# ------------------------------------------------------------------------
+#
+# 3GC peeling settings
+#
+
+CAL_3GC_PEEL_NCHAN = 32
+CAL_3GC_PEEL_MAXCHAN = WSC_MAX_CHANNELS
+CAL_3GC_PEEL_POL = WSC_POL
+CAL_3GC_PEEL_BRIGGS = 'briggs -0.6'
+CAL_3GC_PEEL_REGION = ''  # Specify DS9 peeling region 
+                          # Leave blank to search for <fieldname>*peel*.reg in the current path
+CAL_3GC_PEEL_YAML = DATA+'/quartical/3GC_peel.yaml' # Diagonol only entries for dE (direction dependant peeling solutions) + frequency-dependant phase for full field
+                                                                                   # With parallacic angle rotation (see 2GC warning)
+
+# CAL_3GC_PEEL_YAML = DATA+'/quartical/3GC_peel_noparr.yaml' # Diagonol only entries for dE (direction dependant peeling solutions) + frequency-dependant phase for full field
+                                                                                   # Without parallacic angle rotation (see 2GC warning)
+
+# CAL_3GC_PEEL_YAML = DATA+'/quartical/3GC_peel_G.yaml' # Full 2x2 entries for dE (direction dependant peeling solutions) + 2x2 Amplitude for full field
+                                                                                   # Will likely make you polarised fluxes inaccurate (see 2GC warning)
+# CAL_3GC_PEEL_YAML = DATA+'/quartical/3GC_peel_G.yaml' # Diag entries for dE (direction dependant peeling solutions) + Diag Amplltudes for full field
+                                                                                   # Will likely make you polarised fluxes inaccurate (see 2GC warning)
+
+
+CAL_3GC_FACET_REGION = '' # Specify DS9 region to define tessel centres
+                          # Leave blank to search for <fieldname>*facet*.reg in the current path
+                          # Regions specified here and above will apply to all fields, and so can
+                          # be used to e.g. peel the same source from a compact mosaic rather than
+                          # having to provide multiple copies of the same region on a per-field basis
 
 # ------------------------------------------------------------------------
 #

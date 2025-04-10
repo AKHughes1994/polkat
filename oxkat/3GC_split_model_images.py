@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 # andrew.hughes@physics.ox.ac.uk
-# fraser.cowie@physics.ox.ac.uk
-
+# fraser.cowie@physics.ox.a.uk
 
 import glob
 import numpy

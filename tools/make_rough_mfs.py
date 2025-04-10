@@ -96,18 +96,23 @@ def make_mfs(identifier):
             bpa = []
             images = sorted(glob.glob(f'{identifier}-[!MFS]*{stoke}-image.fits'))
             for k, im in enumerate(images[:]):
-                freq.append(fits.getheader(im)['CRVAL3'])
-                bmaj.append(fits.getheader(im)['BMAJ'])
-                bmin.append(fits.getheader(im)['BMIN'])
-                bpa.append(fits.getheader(im)['BPA'])
-                msg(im)
-                if z == 0:
-                    header = fits.getheader(im)
-                    z += 1
-                data.append(get_image(im))
+
+                if fits.getheader(im)['BMAJ'] > 1e-14:
+                    freq.append(fits.getheader(im)['CRVAL3'])
+                    bmaj.append(fits.getheader(im)['BMAJ'])
+                    bmin.append(fits.getheader(im)['BMIN'])
+                    bpa.append(fits.getheader(im)['BPA'])
+                    msg(im)
+                    if z == 0:
+                        header = fits.getheader(im)
+                        z += 1
+                    data.append(get_image(im))
 
             # Adopt median values for each pixel and output MFS image
-            data = np.median(data, axis = 0)
+            data = np.nanmedian(data, axis = 0)
+            for _ in range(4 - len(data.shape)): # Make (1, 1, N, N)-shaped
+                data = data[None, :]
+
             header['CRVAL3'] = np.nanmean(freq)
             header['BMAJ'] = np.nanmean(bmaj)
             header['BMIN'] = np.nanmean(bmin)

@@ -37,7 +37,7 @@ def main():
     GAINTABLES = cfg.GAINTABLES
     LOGS = cfg.LOGS
 
-
+    gen.setup_dir(GAINTABLES)
     gen.setup_dir(IMAGES)
     gen.setup_dir(cfg.LOGS)
     gen.setup_dir(cfg.SCRIPTS)
@@ -151,9 +151,9 @@ def main():
             n += 1
 
             
-            # Check for mask, if doesn't exist make one
-            mask = glob.glob(cfg.IMAGES+'/*'+targetname+'*.mask.fits')
-            if mask == []:
+            # Check for mask file, if doesn't exist make one
+            mask = cfg.WSC_MASK
+            if not mask:
 
                 step = {}
                 step['step'] = n
@@ -208,10 +208,6 @@ def main():
                 n += 1
                 mask = f"{img_prefix}-MFS-image.mask.fits"
                 print(gen.col('Mask')+ 'None')
-
-            else:
-                mask = mask[0]
-                print(gen.col('Mask')+mask)
 
             step = {}
             step['step'] = n
@@ -332,7 +328,6 @@ def main():
             step['syscall'] = syscall
             steps.append(step)
             n += 1
-            last_target_code = 'WSCMA'+code
 
             if cfg.WSC_MAX_CHANNELS < cfg.WSC_IMAGE_CHANNELSOUT or cfg.WSC_HOMOGENIZEBEAM:
                 step = {}
@@ -403,7 +398,6 @@ def main():
                 step['syscall'] = syscall
                 steps.append(step)
                 n += 1
-                last_target_code = 'WSUNI'+code
 
                 step = {}
                 step['step'] = n
@@ -427,7 +421,6 @@ def main():
                 step['syscall'] = syscall
                 steps.append(step)
                 n += 1
-                last_target_code = 'MKLPI'+code
 
             target_steps.append((steps,kill_file,targetname))
 

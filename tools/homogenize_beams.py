@@ -561,8 +561,6 @@ def homogenize_images(identifier, beam):
         # Make PSF images
         psf_size = 101
 
-
-
         # This will check if channel is flagged (WSCLEAN assigns the BMAJ as 0 for these channels)
         if psf_header['BMAJ'] > 1e-14:
 
@@ -618,6 +616,10 @@ def homogenize_images(identifier, beam):
                 image_rms = scipy.signal.fftconvolve(get_image(residual), get_image(kernel), mode='same')
                 image_new += image_rms
 
+                for _ in range(4 - len(image_new.shape)): # Make (1, 1, N, N)-shaped
+                    image_new = image_new[None, :]
+                    image_rms = image_rms[None, :]
+
                 # Save outputs
                 header = fits.getheader(im)
                 header['BMAJ'] = a / fwhm_to_sig
@@ -660,7 +662,10 @@ def homogenize_images(identifier, beam):
                 data.append(get_image(im))
 
             # Adopt median values for each pixel and output MFS image
-            data = np.median(data, axis = 0)
+            data = np.nanmedian(data, axis = 0)
+            for _ in range(4 - len(data.shape)): # Make (1, 1, N, N)-shaped
+                data = data[None, :]
+
             header['CRVAL3'] = np.nanmean(freq)
             mfs_name = f'{identifier}-MFS{stoke}-image.homogenized.fits'
             mfs_fits = fits.PrimaryHDU(data=data, header=header)
