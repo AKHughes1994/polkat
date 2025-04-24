@@ -15,6 +15,10 @@ from oxkat import config as cfg
 
 def main():
 
+    gen.print_spacer()
+    print(gen.col('MAKE SOME MOVIES'))
+    gen.print_spacer()
+
     USE_SINGULARITY = cfg.USE_SINGULARITY
     INFRASTRUCTURE, CONTAINER_PATH = gen.set_infrastructure(sys.argv)
     POLKAT_CONTAINER = gen.get_container(CONTAINER_PATH,cfg.MOVIE_PATTERN,True)
@@ -25,6 +29,10 @@ def main():
 
     intervals = sorted(glob.glob(cfg.INTERVALS+'*/'))
     rootdir = os.getcwd()
+
+    gen.print_spacer()
+    print(gen.col('Found INTERVALs '), intervals)
+    gen.print_spacer()    
 
 
     steps = []
