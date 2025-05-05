@@ -294,7 +294,7 @@ def main():
                 step['step'] = n + z
                 step['comment'] = f'Predict problem source DIR{k+1} visibilities into MODEL_DATA column of '+myms
                 step['dependency'] = n + z - 1
-                step['id'] = 'WSPR{k+1}'+code
+                step['id'] = f'WSPR{k+1}'+code
                 step['slurm_config'] = cfg.SLURM_WSCLEAN
                 step['pbs_config'] = cfg.PBS_WSCLEAN
                 absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
@@ -307,7 +307,7 @@ def main():
                 step['step'] = n + z + 1
                 step['comment'] = f'Copy MODEL_DATA to DIR{k+1}_DATA'
                 step['dependency'] = n + z
-                step['id'] = 'CPMO{k+1}'+code
+                step['id'] = f'CPMO{k+1}'+code
                 syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
                 syscall += 'python3 '+TOOLS+'/copy_MS_column.py '
                 syscall += '--fromcol MODEL_DATA '
