@@ -277,7 +277,7 @@ def main():
             prefix = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
             syscall = ''
             for k, region in enumerate(CAL_3GC_PEEL_REGION):
-                syscall += 'python3 '+TOOLS+'/add_MS_column.py '
+                syscall += prefix + 'python3 '+TOOLS+'/add_MS_column.py '
                 syscall += f'--colname DIR{k + 1}_DATA '
                 syscall += myms
                 syscall += '\n'
