@@ -215,7 +215,7 @@ def main():
                     intervalsout = False,
                     tukeytaper = False,
                     automask = 5.0,
-                    autothreshold = 3.0,
+                    autothreshold = 1.0,
                     minuvl = '',
                     nomodel = True,
                     sourcelist = False,
@@ -277,7 +277,9 @@ def main():
             prefix = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
             syscall = ''
             for k, region in enumerate(CAL_3GC_PEEL_REGION):
-                syscall += prefix + 'python3 '+TOOLS+'/add_MS_column.py '
+                syscall += prefix + .
+
+'python3 '+TOOLS+'/add_MS_column.py '
                 syscall += f'--colname DIR{k + 1}_DATA '
                 syscall += myms
                 syscall += '\n'
