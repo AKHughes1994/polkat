@@ -353,11 +353,11 @@ CAL_2GC_PSOLINT = '32s'              # Solution interval for phase-only selfcal
 CAL_2GC_APSOLINT = 'inf'             # Solution interval for amplitude and phase selfcal
 
 # Quartical
-CAL_2GC_YAML = DATA+'/quartical/2GC_phase.yaml' # Frequency-dependant phase-only self-calibration (diagonal entries only XX/YY)
+# CAL_2GC_YAML = DATA+'/quartical/2GC_phase.yaml' # Frequency-dependant phase-only self-calibration (diagonal entries only XX/YY)
                                                                              # De-rotates/Re-rotates parallactic angle corrections
                                                                              # WARNING: Will break if the casa-data LEAP table is out of date
 
-#CAL_2GC_YAML = DATA+'/quartical/2GC_phase.yaml' # Frequency-dependant phase-only self-calibration(diagonal entries only XX/YY)
+CAL_2GC_YAML = DATA+'/quartical/2GC_phase_noparr.yaml' # Frequency-dependant phase-only self-calibration(diagonal entries only XX/YY)
                                                                              # DOES NOT De-rotate/Re-rotate parallactic angle corrections
                                                                              # WARNING: Because of Stokes Q dependency on XX/YY and parallactic angle
                                                                              # abscence of parallactic angle correction may incorrectly modify the fluxes (USE WITH CAUTION)
