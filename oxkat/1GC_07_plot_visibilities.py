@@ -49,7 +49,7 @@ def main():
         '--xaxis BASELINE,BASELINE --yaxis CORRECTED_DATA:amp:XX,CORRECTED_DATA:amp:YY',
         '--xaxis FREQ,FREQ --yaxis CORRECTED_DATA:amp:YX,CORRECTED_DATA:amp:XY',
         '--xaxis BASELINE,BASELINE --yaxis CORRECTED_DATA:amp:YX,CORRECTED_DATA:amp:XY',
-        '--xaxis UV,UV,UV,UV --yaxis CORRECTED_DATA:amp:XX,CORRECTED_DATA:amp:YY,CORRECTED_DATA:phase:XX,CORRECTED_DATA:phase:YY']
+        '--xaxis uv,uv,uv,uv --yaxis CORRECTED_DATA:amp:XX,CORRECTED_DATA:amp:YY,CORRECTED_DATA:phase:XX,CORRECTED_DATA:phase:YY']
 
     colour_by = ['--colour-by ANTENNA1 --cnum 64']
 
