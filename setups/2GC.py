@@ -207,6 +207,9 @@ def main():
                 mask = f"{img_prefix}-MFS-image.mask.fits"
                 print(gen.col('Mask')+ 'None')
 
+            else:
+                print(gen.col('Mask')+mask)
+
             step = {}
             step['step'] = n
             step['comment'] = 'Run wsclean, masked deconvolution of the DATA column for source {}'.format(targetname)
