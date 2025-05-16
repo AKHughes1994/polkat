@@ -276,16 +276,19 @@ def main():
             step['id'] = 'PBDMA'+code
             syscall = ''
             images = []
-            for stoke in cfg.WSC_POL:
+            for stoke_i in cfg.WSC_POL:
+                stoke = f'-{stoke_i}'
+                if len(cfg.WSC_POL) == 1:
+                    stoke = ''
                 if cfg.WSC_INTERVALSOUT:
                     for t in range(cfg.WSC_INTERVALSOUT):
-                        images.append(f'{data_img_prefix}-t{t:04d}-MFS-{stoke}-image.fits')
+                        images.append(f'{data_img_prefix}-t{t:04d}-MFS{stoke}-image.fits')
                         if cfg.WSC_MAX_CHANNELS < cfg.WSC_IMAGE_CHANNELSOUT or cfg.WSC_HOMOGENIZEBEAM:
-                            images.append(f'{data_img_prefix}-t{t:04d}-MFS-{stoke}-image.homogenized.fits')
+                            images.append(f'{data_img_prefix}-t{t:04d}-MFS{stoke}-image.homogenized.fits')
                 else:
-                    images.append(f'{data_img_prefix}-MFS-{stoke}-image.fits')
+                    images.append(f'{data_img_prefix}-MFS{stoke}-image.fits')
                     if cfg.WSC_MAX_CHANNELS < cfg.WSC_IMAGE_CHANNELSOUT or cfg.WSC_HOMOGENIZEBEAM:
-                        images.append(f'{data_img_prefix}-MFS-{stoke}-image.homogenized.fits')
+                        images.append(f'{data_img_prefix}-MFS{stoke}-image.homogenized.fits')
             for image in images:
                 syscall += CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
                 syscall += 'python3 '+TOOLS+'/pbcor_katbeam.py --band '+band[0]+f' {image}\n\n'
@@ -352,16 +355,19 @@ def main():
             step['id'] = 'PBPCL'+code
             syscall = ''
             images = []
-            for stoke in cfg.WSC_POL:
+            for stoke_i in cfg.WSC_POL:
+                stoke = f'-{stoke_i}'
+                if len(cfg.WSC_POL) == 1:
+                    stoke = ''
                 if cfg.WSC_INTERVALSOUT:
                     for t in range(cfg.WSC_INTERVALSOUT):
-                        images.append(f'{pcal_img_prefix}-t{t:04d}-MFS-{stoke}-image.fits')
+                        images.append(f'{pcal_img_prefix}-t{t:04d}-MFS{stoke}-image.fits')
                         if cfg.WSC_MAX_CHANNELS < cfg.WSC_IMAGE_CHANNELSOUT or cfg.WSC_HOMOGENIZEBEAM:
-                            images.append(f'{pcal_img_prefix}-t{t:04d}-MFS-{stoke}-image.homogenized.fits')
+                            images.append(f'{pcal_img_prefix}-t{t:04d}-MFS{stoke}-image.homogenized.fits')
                 else:
-                    images.append(f'{pcal_img_prefix}-MFS-{stoke}-image.fits')
+                    images.append(f'{pcal_img_prefix}-MFS{stoke}-image.fits')
                     if cfg.WSC_MAX_CHANNELS < cfg.WSC_IMAGE_CHANNELSOUT or cfg.WSC_HOMOGENIZEBEAM:
-                        images.append(f'{pcal_img_prefix}-MFS-{stoke}-image.homogenized.fits')
+                        images.append(f'{pcal_img_prefix}-MFS{stoke}-image.homogenized.fits')
             for image in images:
                 syscall += CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
                 syscall += 'python3 '+TOOLS+'/pbcor_katbeam.py --band '+band[0]+f' {image}\n\n'

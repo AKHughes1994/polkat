@@ -173,7 +173,7 @@ def main():
 
                 # If not mask or masking capabilities, skip source
                 if img_prefix == []:
-                    print(gen.col()+targetname+' does not have  manual mask specified nor 2GC image to make mask')
+                    print(gen.col()+targetname+' does not have manual mask specified nor 2GC image to make mask')
                     print(gen.col()+'a mask is required for peeling, specify mask or the source will be skipped')
                     continue
                 else:
@@ -277,9 +277,7 @@ def main():
             prefix = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
             syscall = ''
             for k, region in enumerate(CAL_3GC_PEEL_REGION):
-                syscall += prefix + .
-
-'python3 '+TOOLS+'/add_MS_column.py '
+                syscall += prefix + 'python3 '+TOOLS+'/add_MS_column.py '
                 syscall += f'--colname DIR{k + 1}_DATA '
                 syscall += myms
                 syscall += '\n'
@@ -410,16 +408,19 @@ def main():
             step['id'] = 'PBPPE'+code
             syscall = ''
             images = []
-            for stoke in cfg.WSC_POL:
+            for stoke_i in cfg.WSC_POL:
+                stoke = f'-{stoke_i}'
+                if len(cfg.WSC_POL) == 1:
+                    stoke = ''
                 if cfg.WSC_INTERVALSOUT:
                     for t in range(cfg.WSC_INTERVALSOUT):
-                        images.append(f'{peel_img_prefix}-t{t:04d}-MFS-{stoke}-image.fits')
+                        images.append(f'{peel_img_prefix}-t{t:04d}-MFS{stoke}-image.fits')
                         if cfg.WSC_MAX_CHANNELS < cfg.WSC_IMAGE_CHANNELSOUT or cfg.WSC_HOMOGENIZEBEAM:
-                            images.append(f'{peel_img_prefix}-t{t:04d}-MFS-{stoke}-image.homogenized.fits')
+                            images.append(f'{peel_img_prefix}-t{t:04d}-MFS{stoke}-image.homogenized.fits')
                 else:
-                    images.append(f'{peel_img_prefix}-MFS-{stoke}-image.fits')
+                    images.append(f'{peel_img_prefix}-MFS{stoke}-image.fits')
                     if cfg.WSC_MAX_CHANNELS < cfg.WSC_IMAGE_CHANNELSOUT or cfg.WSC_HOMOGENIZEBEAM:
-                        images.append(f'{peel_img_prefix}-MFS-{stoke}-image.homogenized.fits')
+                        images.append(f'{peel_img_prefix}-MFS{stoke}-image.homogenized.fits')
             for image in images:
                 syscall += CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
                 syscall += 'python3 '+TOOLS+'/pbcor_katbeam.py --band '+band[0]+f' {image}\n\n'
