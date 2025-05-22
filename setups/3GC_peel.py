@@ -117,9 +117,9 @@ def main():
             print(gen.col()+'in this folder. Skipping.')
             skip = True
 
-        # Make array if string
+        # Make array if it is a string of regions
         if isinstance(CAL_3GC_PEEL_REGION, str):
-            CAL_3GC_PEEL_REGION = [CAL_3GC_PEEL_REGION]
+            CAL_3GC_PEEL_REGION = CAL_3GC_PEEL_REGION.split(',')
 
         if not skip:
 

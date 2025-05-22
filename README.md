@@ -23,8 +23,9 @@ If you make use of this software, please cite:
 
 ### What is this?
 
-This is a modified version of the MeerKAT semi-automated data processing routine [oxkat](https://github.com/IanHeywood/oxkat), enhanced to include full polarization calibration and Stokes I, Q, U, V imaging. We assume you are familiar with the oxkat workflow and its file system, and that data processing options are set by editing `oxkat/config.py`. This guide walks you through a standard use case, highlighting changes to `config.py` and new options.
+This repository contains a modified version of the MeerKAT semi-automated data processing routine [oxkat](https://github.com/IanHeywood/oxkat), enhanced to support full polarization calibration and Stokes I, Q, U, V imaging. It is assumed that you are already familiar with the oxkat workflow and file system, and that you configure data processing options by editing `oxkat/config.py`. This guide walks you through a standard use case, highlighting changes to `config.py` and introducing new options.
 
+This branch, `polkat_QC_selfcal`, is designed to closely mimic the main `oxkat` branch, with the primary change being the upgrade from Cubical to Quartical for self-calibration. Unlike the main `polkat` branch (which uses CASA for self-calibration and does not split out the target field), this version is a near one-to-one adaptation, but with additional features and the ability to handle full polarization observations. An added benefit is that this branch includes the capability to perform the 3GC peeling step.
 ---
 
 #### Before We Start
@@ -135,33 +136,81 @@ python3 setups/1GC.py idia
 
 **Note:** For linear feed instruments, the casa cross-hand phase solver only needs the angle quadrant approximately correct (see EVLA Memo 219). The polarization angle calibrator also acts as a polarization check source. All testing converges on the correct solution despite the input model, allowing you to estimate systematic errors by comparing measured and expected values.
 
-If 1GC is successful, check the visibility/gain solutions. Polarization can be finicky. You can now move on to 2GC (self-calibration and target imaging).
-
+If 1GC is successful, check the visibility/gain solutions. Polarization can be finicky. You can now move on to 2GC (self-calibration and target imaging), and the pipeline will split out inidvidual MS files for you target field(s). 
 ---
 
 #### 2GC
 
-After 1GC, final flagging, imaging (with WSCLEAN), and direction-independent phase self-calibration are performed. Image products include channelized images and a single MFS image (maximizing sensitivity, but may cause bandwidth depolarization):
+After completing 1GC, move on to the 2GC step. This stage performs final flagging, imaging (using WSCLEAN), and direction-independent phase self-calibration. The 2GC process produces both channelized images and a single MFS (multi-frequency synthesis) image. The MFS image maximizes sensitivity, but may be affected by bandwidth depolarization.
+
+**To run 2GC:**
 
 ```bash
 python setups/2GC.py idia
 ./submit_2GC_job.sh
 ```
 
-There are many options; here are some key ones:
+**Key configurable options for 2GC include:**
 
-- `WSC_WEIGHT  = briggs 0.0` — Imaging weighting (default: Briggs robustness 0.0). Maximizes sensitivity before the MeerKAT synthesized beam becomes non-Gaussian.
-- `WSC_UNIFORM_IMAGE = True` — Also makes a high-angular resolution image using `WSC_WEIGHT_HIGHRES`. Useful for weakly polarized point sources.
-- `WSC_POL = 'IQUV'` — Stokes parameters to image (leave as is).
-- `WSC_IMAGE_CHANNELSOUT = 8` — Number of frequency channels to image. Increase for sources with high rotation measure.
-- `WSC_MAX_CHANNELS = 16` — Maximum frequency channels imaged at once (memory limit). If `WSC_IMAGE_CHANNELSOUT > WSC_MAX_CHANNELS`, imaging is split into steps. In this case, the MFS image is made by stacking in the image plane (qualitative only; **do not report fluxes from this MFS image**).
-- `WSC_HOMOGENIZEBEAM = False` — Produces `.homogenized.fits` images with frequency-homogenized beam using the Welzl algorithm. Also homogenizes residuals using [pypher](https://pypher.readthedocs.io/en/latest/). **Experimental:** Residual homogenization reduces RMS in the upper-frequency band; interpret S/N with caution.
+- `WSC_WEIGHT = briggs 0.0` — Imaging weighting scheme (default: Briggs robustness 0.0). This maximizes sensitivity before the MeerKAT synthesized beam becomes non-Gaussian.
+- `WSC_UNIFORM_IMAGE = True` — Also generates a high-angular-resolution image using `WSC_WEIGHT_HIGHRES`. Useful for tracking proper motion.
+- `WSC_POL = 'IQUV'` — Stokes parameters to image. The pipeline is designed for either Stokes I or full IQUV imaging. Atypical subsets (e.g., QUV, UV) may work, but other parts of the pipeline (such as RMSYNTH) may fail.
+- `WSC_IMAGE_CHANNELSOUT = 8` — Number of frequency channels to image. Increase this value for sources with high rotation measure.
+- `WSC_MAX_CHANNELS = 16` — Maximum number of frequency channels imaged at once (memory limit). If `WSC_IMAGE_CHANNELSOUT > WSC_MAX_CHANNELS`, imaging is performed in steps. In this case, the MFS image is created by stacking in the image plane (qualitative only; **do not report fluxes from this MFS image**).
+- `WSC_HOMOGENIZEBEAM = False` — Produces `.homogenized.fits` images with a frequency-homogenized beam using the Welzl algorithm. Also homogenizes residuals using [pypher](https://pypher.readthedocs.io/en/latest/).  
+  **Experimental:** Residual homogenization can reduce RMS in the upper-frequency band, but interpret S/N with caution. In most cases, it is preferable to specify the maximum uvdist with `WSC_MAXUVL = ''` (automation for this may be added in the future).
 
-You can control the self-calibration solution interval with `CAL_2GC_PSOLINT=32s` (default: 32s). Decrease for bright targets.
+**Self-calibration control:**  
+You can adjust self-calibration solutions via the Quartical YAML files in `data/quartical`. The default file is phase-only self-calibration, which includes a frequency slope (e.g., `2GC_phase.yaml`).  
+Quartical parameter documentation can be found [here](https://quartical.readthedocs.io/en/latest/). The key parameter is `time_interval='4'`, which sets the number of integration times per solution interval. By default, this is 4 (matching `oxkat`), but you may decrease it to 1 for well-behaved fields with bright point sources.
 
-Most `config.py` imaging parameters are after the comment `# wsclean and 2GC defaults` and link to [wsclean](https://wsclean.readthedocs.io/en/latest/) options.
+**Warning:**  
+The QC routine does not account for parallactic angle rotation/de-rotation during self-calibration, since the DATA column has the parallactic angle rotation applied after 1GC. While there was initial concern this could reduce the fidelity of self-calibrated data (due to feed-frame vs. sky-frame calibration issues), in practice this effect appears to be minor—much smaller than measurement errors or other systematics. If you ever find a case where this makes a significant difference, please let me know.
 
-Final images will have suffixes like `pcalmask-MFS-I-image.fits` or `pcalmask-[CHAN_NUMBER]-I-image.fits` (`I` for Stokes I). 2GC also produces linear polarization intensity (`Plin`, $\sqrt{Q^2+U^2}$) and total polarization intensity (`Ptot`, $\sqrt{Q^2+U^2+V^2}$) images.
+Most imaging parameters for 2GC are found in `config.py` after the comment `# wsclean and 2GC defaults`, and correspond directly to [wsclean](https://wsclean.readthedocs.io/en/latest/) options.
+
+**Output:**  
+Final images will have suffixes such as `pcalmask-MFS-I-image.fits` or `pcalmask-[CHAN_NUMBER]-I-image.fits` (`I` for Stokes I). In addition to Stokes images, 2GC also produces linear polarization intensity (`Plin`, $\sqrt{Q^2+U^2}$) and total polarization intensity (`Ptot`, $\sqrt{Q^2+U^2+V^2}$) images.
+
+---
+
+#### 3GC (Peeling)
+
+The 3GC (Third Generation Calibration) "peeling" step is an advanced calibration and imaging process designed to further improve image fidelity by correcting for direction-dependent effects (DDEs) around bright sources in your field. Peeling is especially useful for fields with strong off-axis sources or complex extended emission, where standard direction-independent calibration is insufficient.
+
+**How does 3GC_peel work?**
+
+- Peeling directions are defined using DS9 region files (one region per source/direction). You can specify these manually by setting the `CAL_3GC_PEEL_REGION` variable in `config.py` to a comma-separated list of region file paths. Alternatively, you can place region files in your working directory using the naming convention `[SOURCE_NAME]_peel[PEEL_NUMBER].reg` (e.g., `CygX1_peel1.reg`, `CygX1_peel2.reg`, etc.).
+- The pipeline supports an arbitrary number of peel directions, but note that each direction adds a new data column to your MS file, which can rapidly increase its size.
+- Peeling involves amplitude and phase self-calibration in each direction and therefore may have weird interactions with instrumental, off-axis Leakage (which MeerKAT has a lot of). In my tests, peeling generally preserves source fidelity (including polarization fluxes), but if you notice significant changes in target flux densities—especially for polarization—please report these cases.
+
+**What does 3GC_peel do?**
+
+- Identifies and calibrates bright sources that may cause significant DDEs.
+- Iteratively subtracts these sources from the data (the "peeling" process).
+- Applies direction-dependent calibration solutions to improve the dynamic range and fidelity of the final images.
+- Produces both residual and "peeled" images for scientific analysis.
+
+**To run 3GC_peel:**
+
+```bash
+python setups/3GC_peel.py idia
+./submit_3GC_peel_job.sh
+```
+
+**Output:**
+
+- Peeled measurement sets and images for each direction/source.
+- Residual images with the peeled sources removed.
+- Diagnostic plots and logs for each peeling iteration.
+
+**Notes and Best Practices:**
+
+- Peeling is computationally intensive. Ensure you have sufficient resources, especially for large fields or many peel directions.
+- For most science cases, peeling is only necessary if you see strong artefacts around bright sources after 2GC.
+- All 3GC_peel parameters can be found and adjusted in `config.py` under the section labeled `# 3GC peeling defaults`.
+
+For more details on the theory and practice of peeling and direction-dependent calibration, see [arxiv:1101.1765](https://arxiv.org/abs/1101.1765) and the [oxkat documentation](https://github.com/IanHeywood/oxkat).
 
 ---
 
@@ -187,16 +236,16 @@ Other options are self-explanatory. Reach out if anything is unclear.
 
 #### RMSYNTH
 
-This step automates going from images to fluxes for arbitrary point sources. Please verify the fluxes make sense.
+The RMSYNTH step automates the process of extracting fluxes and polarization properties from images for arbitrary point sources. **Please verify that the resulting fluxes and measurements are physically reasonable for your science case.**
 
-**What it does:**
+**What this step does:**
 
-1. Fits target MFS/channelized/snapshot images with user-specified Gaussians using the casa task `imfit`.
+1. Fits target MFS, channelized, and/or snapshot images with user-specified Gaussians using the CASA task `imfit`.
 2. If `CAL_1GC_DIAGNOSTICS = True`, quantifies systematic calibration effects via image-plane analysis of calibrators.
-3. Runs RM Synthesis on every Gaussian component from every target, extracting polarization angles/rotation measures.
-4. Runs ALBUS to get ionospheric RM for post-processing corrections. ALBUS may fail randomly; rerun or change `RED_TYPE = RI_G03` to `RED_TYPE = RI_G01` in `config.py`.
+3. Runs RM Synthesis on every Gaussian component from every target, extracting polarization angles and rotation measures.
+4. Runs ALBUS to estimate the ionospheric RM for post-processing corrections. (Note: ALBUS may fail randomly; if so, rerun or change `RED_TYPE = RI_G03` to `RED_TYPE = RI_G01` in `config.py`.)
 
-Modify `data/rmsynth/rmsynth_info.json` as needed. Example:
+You may need to modify `data/rmsynth/rmsynth_info.json` to match your dataset. Example configuration:
 
 ```json
 {
@@ -205,24 +254,29 @@ Modify `data/rmsynth/rmsynth_info.json` as needed. Example:
     "image_suffix": ["image.fits", "image.fits"],
     "image_timing": [false, true],
     "source_name": ["SwiftJ1727", "SwiftJ1727"],
-    "source_ulim":[[false], [false]],
+    "source_ulim": [[false], [false]],
     "rms_region": [false, false],
     "source_pos": [["17:27:43.307,-16.12.17.619"], ["17:27:43.307,-16.12.17.619"]],
-    "pos_coeff":[[[]], [[]]],
-    "time0":[[], []]
+    "pos_coeff": [[[]], [[]]],
+    "time0": [[], []]
 }
 ```
 
-- `"image_directory"`: Directory for images to fit (`IMAGES` for 2GC, `INTERVALS` for snapshots).
+**Parameter explanations:**
+
+- `"image_directory"`: Directory containing images to fit (`IMAGES` for 2GC, `INTERVALS` for snapshots).
 - `"image_identifier"`: Identifier for images (`pcalmask` for 2GC, `restored` for snapshots).
-- `"image_suffix"`: Image type (`image.fits` standard; `image.homogenized.fits` for homogenized images).
-- `"image_timing"`: True if images are time-split (e.g., snapshots).
-- `"source_name"`: Source names.
-- `"source_ulim"`: Whether to fix component position to `"source_pos"`.
-- `"rms_region"`: Manual RMS region (CASA format); otherwise, calculated as an annulus.
+- `"image_suffix"`: Image file type (`image.fits` for standard, `image.homogenized.fits` for homogenized images).
+- `"image_timing"`: Set to `true` if images are time-split (e.g., snapshots).
+- `"source_name"`: Names of sources to fit.
+- `"source_ulim"`: Whether to fix the component position to `"source_pos"`.
+- `"rms_region"`: Manual RMS region (CASA format); otherwise, an annulus is used.
 - `"source_pos"`: List of component positions (CASA format). Add more entries for multiple components.
 
-You can ignore `"pos_coeff"` and `"time0"` for now. The default should work for most targeted point source observations; just change `"source_name"` and `"source_pos"`. If you didn't do snapshot imaging, remove the second entry from each list.
+You can ignore `"pos_coeff"` and `"time0"` for most use cases. The default configuration should work for typical targeted point source observations—just update `"source_name"` and `"source_pos"` as needed. If you did not perform snapshot imaging, remove the second entry from each list.
+
+**Warning:**  
+While this step streamlines the process, it is important to understand the underlying tools and concepts—especially Faraday Rotation and RM Synthesis. For more background, see [Brentjens & de Bruyn 2005](https://arxiv.org/abs/astro-ph/0507349).
 
 ---
 
