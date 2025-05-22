@@ -64,7 +64,7 @@ Assume a Linux-based OS (e.g., Ubuntu).
 
 ---
 
-#### INFO
+## INFO
 
 The first step, `INFO`, is run with:
 
@@ -118,7 +118,7 @@ At the end of the INFO step, you should have a working ms-file, typically named 
 
 ---
 
-#### 1GC
+## 1GC
 
 The second step, `1GC`, performs reference calibration (using calibrator fields to calibrate your target) with [casa](https://casa.nrao.edu/):
 
@@ -141,7 +141,7 @@ If 1GC is successful, check the visibility/gain solutions. Polarization can be f
 
 ---
 
-#### 2GC
+## 2GC
 
 After completing 1GC, move on to the 2GC step. This stage performs final flagging, imaging (using WSCLEAN), and direction-independent phase self-calibration. The 2GC process produces both channelized images and a single MFS (multi-frequency synthesis) image. The MFS image maximizes sensitivity, but may be affected by bandwidth depolarization.
 
@@ -176,7 +176,7 @@ Final images will have suffixes such as `pcalmask-MFS-I-image.fits` or `pcalmask
 
 ---
 
-#### 3GC (Peeling)
+## 3GC (Peeling)
 
 The 3GC (Third Generation Calibration) "peeling" step is an advanced calibration and imaging process designed to further improve image fidelity by correcting for direction-dependent effects (DDEs) around bright sources in your field. Peeling is especially useful for fields with strong off-axis sources or complex extended emission, where standard direction-independent calibration is insufficient.
 
@@ -216,7 +216,7 @@ For more details on the theory and practice of peeling and direction-dependent c
 
 ---
 
-#### SNAP
+## SNAP
 
 This step performs snapshot imaging following the Heywood-ian approach, efficiently making short-timescale images by subtracting a time-averaged model and searching for image-plane variability. Run with:
 
@@ -236,7 +236,7 @@ Other options are self-explanatory. Reach out if anything is unclear.
 
 ---
 
-#### RMSYNTH
+## RMSYNTH
 
 The RMSYNTH step automates the process of extracting fluxes and polarization properties from images for arbitrary point sources. **Please verify that the resulting fluxes and measurements are physically reasonable for your science case.**
 
