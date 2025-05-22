@@ -20,14 +20,16 @@ input_model:
   beam_m_axis: Y
   invert_uvw: true
   source_chunks: 500
-  apply_p_jones: true
+  apply_p_jones: false
 output:
+  gain_directory: ../DI_gains.qc
+  log_directory: ../DI_logs.qc
   log_to_terminal: true
   overwrite: true
   products: [corrected_data]
   columns: [CORRECTED_DATA]
   flags: true
-  apply_p_jones_inv: true
+  apply_p_jones_inv: false
   net_gains:
   compute_baseline_corrections: false
   apply_baseline_corrections: false
@@ -44,17 +46,23 @@ solver:
   - 50
   propagate_flags: true
   robust: false
+  threads: 1  # Controls solver specific threads. See docs.
   convergence_fraction: 0.99
   convergence_criteria: 1e-06
   reference_antenna: 0
+dask:
+  threads: 6  # Controls dask threads i.e. number of chunks processed simultaneously. See docs.
+  workers: 1
+  address:
+  scheduler: threads
 G:
-  type: complex
+  type: diag_complex
   solve_per: antenna
   direction_dependent: false
   pinned_directions:
   - 0
-  time_interval: '1'
-  freq_interval: '64'
+  time_interval: '4'
+  freq_interval: '32'
   interp_mode: reim
   interp_method: 2dlinear
   respect_scan_boundaries: true

@@ -22,7 +22,7 @@ input_model:
   beam_m_axis: Y
   invert_uvw: true
   source_chunks: 500
-  apply_p_jones: true
+  apply_p_jones: false
 output:
   gain_directory: gains.qc
   log_directory: logs.qc
@@ -31,7 +31,7 @@ output:
   products: [corrected_residual]
   columns: [CORRECTED_DATA]
   flags: true
-  apply_p_jones_inv: true
+  apply_p_jones_inv: false
   subtract_directions: [1]
   net_gains:
   compute_baseline_corrections: false
@@ -66,7 +66,7 @@ K:
   direction_dependent: false
   pinned_directions:
   - 0
-  time_interval: '1'
+  time_interval: '8'
   freq_interval: '0'
   interp_mode: reim
   interp_method: 2dlinear

@@ -353,22 +353,19 @@ CAL_2GC_PSOLINT = '32s'              # Solution interval for phase-only selfcal
 CAL_2GC_APSOLINT = 'inf'             # Solution interval for amplitude and phase selfcal
 
 # Quartical
-# CAL_2GC_YAML = DATA+'/quartical/2GC_phase.yaml' # Frequency-dependant phase-only self-calibration (diagonal entries only XX/YY)
-                                                                             # De-rotates/Re-rotates parallactic angle corrections
-                                                                             # WARNING: Will break if the casa-data LEAP table is out of date
+CAL_2GC_YAML = DATA+'/quartical/2GC_phase.yaml'  # Frequency-dependent, phase-only self-calibration (diagonal terms: XX/YY only)
+                                                 # NOTE: This does NOT de-rotate or re-apply parallactic angle corrections.
+                                                 # WARNING: Since Stokes Q depends on both XX/YY and parallactic angle,
+                                                 # omitting parallactic angle correction could, in principle, affect Q.
+                                                 # However, in practice, no significant impact on Stokes Q has been observed in tests.
 
-CAL_2GC_YAML = DATA+'/quartical/2GC_phase_noparr.yaml' # Frequency-dependant phase-only self-calibration(diagonal entries only XX/YY)
-                                                                             # DOES NOT De-rotate/Re-rotate parallactic angle corrections
-                                                                             # WARNING: Because of Stokes Q dependency on XX/YY and parallactic angle
-                                                                             # abscence of parallactic angle correction may incorrectly modify the fluxes (USE WITH CAUTION)
-
-# These yaml files peform amplitude and phase self-calibration on the 2x2 Jones matrix XX,YY,XY,YX.
-# All of my testing seems to suggest that this significantly changes polarised fluxes and thus, should not be used
-# These effects are likely due to the significant instrumental polarisation from the primary beam response
-# Without a very good full polarisation model these SHOULD NOT BE USED!!!!! You have been warned
+# These YAML files perform amplitude and phase self-calibration on the full 2x2 Jones matrix (XX, YY, XY, YX).
+# Extensive testing indicates that using these options can significantly alter the measured polarized fluxes,
+# likely due to strong instrumental polarization effects from the primary beam response.
+# Without an accurate, full polarization beam model, these options SHOULD NOT BE USED.
+# Proceed with extreme caution—you have been warned!
 # CAL_2GC_YAML = DATA+'/quartical/2GC_fullpol.yaml'
 # CAL_2GC_YAML = DATA+'/quartical/2GC_amppol.yaml'
-
 
 
 # ------------------------------------------------------------------------
@@ -510,15 +507,8 @@ CAL_3GC_PEEL_BRIGGS = 'briggs -0.6'
 CAL_3GC_PEEL_REGION = ''  # Specify DS9 peeling region 
                           # Leave blank to search for <fieldname>*peel*.reg in the current path
 CAL_3GC_PEEL_YAML = DATA+'/quartical/3GC_peel.yaml' # Diagonol only entries for dE (direction dependant peeling solutions) + frequency-dependant phase for full field
-                                                                                   # With parallacic angle rotation (see 2GC warning)
+                                                    # Note that this doesn't de-rotate the parallactic angle, may cause issues with Stokes Q (but I haven't seen any yet)
 
-# CAL_3GC_PEEL_YAML = DATA+'/quartical/3GC_peel_noparr.yaml' # Diagonol only entries for dE (direction dependant peeling solutions) + frequency-dependant phase for full field
-                                                                                   # Without parallacic angle rotation (see 2GC warning)
-
-# CAL_3GC_PEEL_YAML = DATA+'/quartical/3GC_peel_G.yaml' # Full 2x2 entries for dE (direction dependant peeling solutions) + 2x2 Amplitude for full field
-                                                                                   # Will likely make you polarised fluxes inaccurate (see 2GC warning)
-# CAL_3GC_PEEL_YAML = DATA+'/quartical/3GC_peel_G.yaml' # Diag entries for dE (direction dependant peeling solutions) + Diag Amplltudes for full field
-                                                                                   # Will likely make you polarised fluxes inaccurate (see 2GC warning)
 
 
 CAL_3GC_FACET_REGION = '' # Specify DS9 region to define tessel centres
