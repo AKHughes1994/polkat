@@ -26,6 +26,7 @@ If you make use of this software, please cite:
 This repository contains a modified version of the MeerKAT semi-automated data processing routine [oxkat](https://github.com/IanHeywood/oxkat), enhanced to support full polarization calibration and Stokes I, Q, U, V imaging. It is assumed that you are already familiar with the oxkat workflow and file system, and that you configure data processing options by editing `oxkat/config.py`. This guide walks you through a standard use case, highlighting changes to `config.py` and introducing new options.
 
 This branch, `polkat_QC_selfcal`, is designed to closely mimic the main `oxkat` branch, with the primary change being the upgrade from Cubical to Quartical for self-calibration. Unlike the main `polkat` branch (which uses CASA for self-calibration and does not split out the target field), this version is a near one-to-one adaptation, but with additional features and the ability to handle full polarization observations. An added benefit is that this branch includes the capability to perform the 3GC peeling step.
+
 ---
 
 #### Before We Start
