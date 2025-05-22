@@ -73,17 +73,46 @@ python3 setups/INFO.py idia
 
 If running locally, replace `idia` with `node` and ensure `NODE_CONTAINER_PATH` in `config.py` points to your `polkat-[version].sif`.
 
-This step extracts info for targets/calibrators from your ms-file, storing it in `project_info.json`. INFO also splits out your desired fields and averages your ms-file down to (by default) 1024 frequency channels (oxkat did this at the start of 1GC). The current version flags any short scans (<10 seconds) if the dump time is 2 seconds, due to a known META data bug that can mislabel pointing direction. For most use cases, this removal is desired unless you have target scans actually <10 seconds.
+This step extracts info for targets/calibrators from your ms-file, storing it in `project_info.json`. INFO also splits out your desired fields and averages your ms-file down to (by default) 1024 frequency channels (oxkat did this at the start of 1GC). 
 
 **Commonly customized `config.py` variables:**
 
-- `POLANG_NAME = 'J1331+3030'` — Name of the polarization angle calibrator as seen in the ms-file (default: J1331+3030/3C286). Leave blank for no polarization angle calibration.
+- `POLANG_NAME = 'J1331+3030'` — Name of the polarization angle calibrator as it appears in the ms-file (default: J1331+3030/3C286). Leave blank if you do not wish to perform polarization angle calibration.
 - `POLANG_DIR  = '13:31:08.2881,+30.30.32.959'` — Coordinates of the polarization angle calibrator (default: 3C286).
-- `PRE_FIELDS = ''` — Specify fields of interest. For multi-target ms-files, polkat will run on each target. To process only one target, specify the names of the target, phase calibrator, primary, and (if applicable) polarization angle calibrator.
+- `PRE_FIELDS = ''` — Specify fields of interest. For multi-target ms-files, polkat will process each target. To process only a specific target, provide the names of the target, phase calibrator, primary calibrator, and (if applicable) polarization angle calibrator. **If you use `PRE_FIELDS`, be sure to include the polarization calibrator in the string.**
 
-SARAO/MeerKAT provides two polarization angle calibrators: J1331+3030 (3C286, default) and J0521+1638 (3C138). Parameters for 3C138 are also included in the config file. Using a non-standard calibrator is possible, but is intended for expert users.
+SARAO/MeerKAT provides two polarization angle calibrators: J1331+3030 (3C286, default) and J0521+1638 (3C138). Parameters for 3C138 are also included in the config file. Using a non-standard calibrator is possible, but intended for expert users.
 
-At the end of INFO, you should have a working ms-file, typically named `[ms-file]_1024ch.ms`. You are now ready to proceed.
+A block of code has been added to `oxkat/PRE_casa_average_to_1k_add_wtspec.py` to address a known metadata issue:
+
+```
+# Remove short scans that arise from metadata error from 2s integration observations
+bad_scans = []
+good_scans = []
+
+tb.open(master_ms)
+scans = np.unique(tb.getcol('SCAN_NUMBER'))
+for scan in scans:
+    subtab = tb.query(query='SCAN_NUMBER=='+str(scan)) # scan info
+    scan_times = np.unique(subtab.getcol('TIME')) # scan integration times
+    scan_dt = scan_times[-1] - scan_times[0] # total scan length (s)
+    integration = scan_times[1] - scan_times[0] # integration length (s)
+    if scan_dt < 10.0 and integration < 2.5:
+        bad_scans.append(str(scan))
+    else:
+        good_scans.append(str(scan))
+tb.close()
+
+if myscans != '':
+    myscans = myscans.split(',')
+    myscans = ','.join([scan for scan in myscans if scan not in bad_scans])
+else:
+    myscans = ','.join(good_scans)
+```
+
+This code flags any short scans (less than 10 seconds) when the dump time is 2 seconds, due to a known metadata bug that can mislabel the pointing direction. For most users, this removal is desirable unless you have genuine target scans shorter than 10 seconds. If this behavior is not desired, you can manually comment out this code block—it will not affect the rest of the workflow.
+
+At the end of the INFO step, you should have a working ms-file, typically named `[ms-file]_1024ch.ms`. You are now ready to proceed to the next stage.
 
 ---
 
