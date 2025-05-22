@@ -138,6 +138,7 @@ python3 setups/1GC.py idia
 **Note:** For linear feed instruments, the casa cross-hand phase solver only needs the angle quadrant approximately correct (see EVLA Memo 219). The polarization angle calibrator also acts as a polarization check source. All testing converges on the correct solution despite the input model, allowing you to estimate systematic errors by comparing measured and expected values.
 
 If 1GC is successful, check the visibility/gain solutions. Polarization can be finicky. You can now move on to 2GC (self-calibration and target imaging), and the pipeline will split out inidvidual MS files for you target field(s). 
+
 ---
 
 #### 2GC
