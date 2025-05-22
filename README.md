@@ -234,6 +234,8 @@ Key `config.py` variables (see `Snapshot imaging defaults`):
 
 Other options are self-explanatory. Reach out if anything is unclear.
 
+Once snapshot finishing running there is an optional setup: `python3 waterhole/setup_movie.py idia` that should make mp4s in you `INTERVAL` directories to visually look for variables in your snapshot images
+
 ---
 
 ## RMSYNTH
