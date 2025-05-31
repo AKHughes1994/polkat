@@ -15,7 +15,7 @@ exec(open('oxkat/casa_read_project_info.py').read())
 
 if PRE_FIELDS != '':
     targets = user_targets
-    pcals = user_pcals
+    pcal_names = user_pcals
     target_cal_map = user_cal_map
 
 def stamp():
@@ -93,9 +93,9 @@ elif primary_tag == 'other':
         scalebychan=True,
         usescratch=True)
 
-for i in range(0,len(pcals)):
-    pcal = pcals[i]
-    if pcal != bpcal and pcal != bpcal_name:
+for i in range(0,len(pcal_names)):
+    pcal = pcal_names[i]
+    if pcal != bpcal_name:
         setjy(vis =myms,
             field = pcal,
             standard = 'manual',
@@ -391,12 +391,16 @@ if pacal_name != '':
 
 # ----- Loop over secondaries
 
-for i in range(0,len(pcals)):
+for i in range(0,len(pcal_names)):
 
-    pcal = pcals[i]
-    
+    pcal = pcal_names[i]
+
+    # ------- Check if pcal is the same as bpcal_name or pacal_name
+    if pcal == bpcal_name or pcal == pacal_name:
+        # If so, skip to the next iteration as it is already in the working tables
+        continue
+
     # ------- Gp0 (pcal; apply Bp, Df, K (primary))
-
 
     gaincal(vis = myms,
         field=pcal,
@@ -447,14 +451,20 @@ for i in range(0,len(pcals)):
         interp=['linear', 'linear', 'linear', 'nearest'],
         append=True)
 
-# --- Apply fluxscaling to Ga0
+# --- Apply fluxscaling to Ga0 but only if there are calibration fields other than the primary
+if len([pcal for pcal in pcal_names if pcal != bpcal_name]) > 0 or pacal_name != '':
+    
+    # --- Apply fluxscaling to Ga0
+    fluxscale(vis=myms,
+        caltable = gatab0,
+        fluxtable = ftab0,
+        reference = bpcal_name,
+        append = False,
+        transfer = '')
 
-fluxscale(vis=myms,
-    caltable = gatab0,
-    fluxtable = ftab0,
-    reference = bpcal_name,
-    append = False,
-    transfer = '')
+# If there is no need to apply flux scaling, we can set ftab0 to gatab0 as the only calibrator is the primary    
+else:
+    ftab0 = gatab0
 
 if pacal_name != '':
     # -------- Applycal (polcal; Bp, Df (primary), Ga0, K0, Gp0 (polcal)) and Flag
@@ -484,10 +494,14 @@ if pacal_name != '':
 
 # ----- Loop over secondaries
 
-for i in range(0,len(pcals)):
+for i in range(0,len(pcal_names)):
 
-    pcal = pcals[i]
+    pcal = pcal_names[i]
 
+    # ------- Check if pcal is the same as bpcal_name or pacal_name
+    if pcal == bpcal_name or pcal == pacal_name:
+        # If so, skip to the next iteration as it is already in the working tables
+        continue
 
     # -------- Applycal (pcal; Bp, Df (primary), Ga0, K0, Gp0 (polcal)) and Flag
 
@@ -614,9 +628,14 @@ if pacal_name != '':
         interp = ['nearest','nearest','linear','nearest','nearest', 'nearest'],
         append = False)
 
-for i in range(0,len(pcals)):
+for i in range(0,len(pcal_names)):
 
-    pcal = pcals[i]
+    pcal = pcal_names[i]
+
+    # ------- Check if pcal is the same as bpcal_name or pacal_name
+    if pcal == bpcal_name or pcal == pacal_name:
+        # If so, skip to the next iteration as it is already in the working tables
+        continue
 
     # ------- Gp0 (pcal; apply Bp, Df, K (primary))
 
@@ -669,13 +688,20 @@ for i in range(0,len(pcals)):
         interp=['linear', 'linear', 'linear', 'nearest'],
         append=True)
 
-# --- Apply fluxscaling to Ga
-fluxscale(vis=myms,
-    caltable = gatab,
-    fluxtable = ftab,
-    reference = bpcal_name,
-    append = False,
-    transfer = '')
+# --- Apply fluxscaling to Ga but only if there are calibration fields other than the primary
+if len([pcal for pcal in pcal_names if pcal != bpcal_name]) > 0 or pacal_name != '':
+    
+    # --- Apply fluxscaling to Ga0
+    fluxscale(vis=myms,
+        caltable = gatab,
+        fluxtable = ftab,
+        reference = bpcal_name,
+        append = False,
+        transfer = '')
+
+# If there is no need to apply flux scaling, we can set ftab0 to gatab0 as the only calibrator is the primary    
+else:
+    ftab = gatab
 
 # ------------------------------------------------------------------------------ #
 # ------------------------------------------------------------------------------ #
@@ -702,9 +728,14 @@ if pacal_name == '':
 
     # ------- Secondaries 
 
-    for i in range(0,len(pcals)):
+    for i in range(0,len(pcal_names)):
 
-        pcal = pcals[i]
+        pcal = pcal_names[i]
+
+        # ------- Check if pcal is the same as bpcal_name or pacal_name
+        if pcal == bpcal_name or pcal == pacal_name:
+            # If so, skip to the next iteration as it is already in the working tables
+            continue
     
         applycal(vis = myms,
             gaintable = [ktab,gptab,bptab,ftab,dftab],
@@ -771,9 +802,14 @@ applycal(vis = myms,
 
 # ------- Secondaries
 
-for i in range(0,len(pcals)):
+for i in range(0,len(pcal_names)):
 
-    pcal = pcals[i]
+    pcal = pcal_names[i]
+
+    # ------- Check if pcal is the same as bpcal_name or pacal_name
+    if pcal == bpcal_name or pcal == pacal_name:
+        # If so, skip to the next iteration as it is already in the working tables
+        continue
 
     applycal(vis = myms,
         gaintable = [ktab,gptab,bptab,ftab,dftab, kcross, xftab],
