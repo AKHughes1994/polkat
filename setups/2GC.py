@@ -152,61 +152,69 @@ def main():
             steps.append(step)
             n += 1
 
-            step = {}
-            step['step'] = n
-            step['comment'] = 'Shallow blind wsclean on CORRECTED_DATA column for source {}'.format(targetname)
-            step['dependency'] = n - 1
-            step['dependency_on_prev_target'] = None
-            step['id'] = 'WSDBL'+code
-            step['slurm_config'] = cfg.SLURM_WSCLEAN
-            step['pbs_config'] = cfg.PBS_WSCLEAN
-            absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
-            syscall = ''
-            prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
-            imcall = gen.generate_syscall_wsclean(mslist = [myms],
-                        imgname = img_prefix,
-                        datacol = 'CORRECTED_DATA',
-                        chanout = cfg.WSC_MASK_CHANNELSOUT,
-                        nomodel = True,
-                        pol = 'I',
-                        intervalsout = False,
-                        mfweight = True,
-                        localrms = False,
-                        automask = 10.0,
-                        autothreshold = 3.0,
-                        tukeytaper=tukeytaper,
-                        minuvl = minuvl,
-                        field=targetindex,
-                        absmem = absmem)
-            for call in imcall: 
-                syscall += prefix + call + '\n\n'
-            step['syscall'] = syscall
-            steps.append(step)
-            n += 1
+            # Check for mask file, if doesn't exist make one
+            mask = cfg.WSC_MASK
+            if not mask:
+                step = {}
+                step['step'] = n
+                step['comment'] = 'Shallow blind wsclean on CORRECTED_DATA column for source {}'.format(targetname)
+                step['dependency'] = n - 1
+                step['dependency_on_prev_target'] = None
+                step['id'] = 'WSDBL'+code
+                step['slurm_config'] = cfg.SLURM_WSCLEAN
+                step['pbs_config'] = cfg.PBS_WSCLEAN
+                absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
+                syscall = ''
+                prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
+                imcall = gen.generate_syscall_wsclean(mslist = [myms],
+                            imgname = img_prefix,
+                            datacol = 'CORRECTED_DATA',
+                            chanout = cfg.WSC_MASK_CHANNELSOUT,
+                            nomodel = True,
+                            pol = 'I',
+                            intervalsout = False,
+                            mfweight = True,
+                            localrms = False,
+                            automask = 10.0,
+                            autothreshold = 3.0,
+                            tukeytaper=tukeytaper,
+                            minuvl = minuvl,
+                            field=targetindex,
+                            absmem = absmem)
+                for call in imcall: 
+                    syscall += prefix + call + '\n\n'
+                step['syscall'] = syscall
+                steps.append(step)
+                n += 1
 
-            step = {}
-            step['step'] = n
-            step['comment'] = 'Make cleaning mask for ' + targetname
-            step['dependency'] = n - 1
-            step['dependency_on_prev_target'] = None
-            step['id'] = 'MASK0'+code
-            syscall  = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
-            syscall += gen.generate_syscall_breizorro(restoredimage = f"{img_prefix}-MFS-image.fits", outfile = f"{img_prefix}-MFS-image.mask.fits")[0]
-            step['syscall'] = syscall
-            steps.append(step)
-            n += 1
-
-            step = {}
-            step['step'] = n
-            step['comment'] = 'Apply primary beam correction to '+targetname+' (BLIND) image'
-            step['dependency'] = n - 2
-            step['dependency_on_prev_target'] = None
-            step['id'] = 'PBDBL'+code
-            syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
-            syscall += 'python3 '+TOOLS+'/pbcor_katbeam.py --band '+band[0]+' '+img_prefix+'-MFS-image.fits'
-            step['syscall'] = syscall
-            steps.append(step)
-            n += 1
+                step = {}
+                step['step'] = n
+                step['comment'] = 'Make cleaning mask for ' + targetname
+                step['dependency'] = n - 1
+                step['dependency_on_prev_target'] = None
+                step['id'] = 'MASK0'+code
+                syscall  = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
+                syscall += gen.generate_syscall_breizorro(restoredimage = f"{img_prefix}-MFS-image.fits", outfile = f"{img_prefix}-MFS-image.mask.fits")[0]
+                step['syscall'] = syscall
+                steps.append(step)
+                n += 1
+    
+                step = {}
+                step['step'] = n
+                step['comment'] = 'Apply primary beam correction to '+targetname+' (BLIND) image'
+                step['dependency'] = n - 2
+                step['dependency_on_prev_target'] = None
+                step['id'] = 'PBDBL'+code
+                syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
+                syscall += 'python3 '+TOOLS+'/pbcor_katbeam.py --band '+band[0]+' '+img_prefix+'-MFS-image.fits'
+                step['syscall'] = syscall
+                steps.append(step)
+                n += 1
+                mask = f"{img_prefix}-MFS-image.mask.fits"
+                print(gen.col('Mask')+ 'None')
+                
+            else:
+                print(gen.col('Mask')+mask)
 
             step = {}
             step['step'] = n
@@ -280,16 +288,19 @@ def main():
             step['id'] = 'PBDMA'+code
             syscall = ''
             images = []
-            for stoke in cfg.WSC_POL:
+            for stoke_i in cfg.WSC_POL:
+                stoke = f'-{stoke_i}'
+                if len(cfg.WSC_POL) == 1:
+                    stoke = ''
                 if cfg.WSC_INTERVALSOUT:
                     for t in range(cfg.WSC_INTERVALSOUT):
-                        images.append(f'{data_img_prefix}-t{t:04d}-MFS-{stoke}-image.fits')
+                        images.append(f'{data_img_prefix}-t{t:04d}-MFS{stoke}-image.fits')
                         if cfg.WSC_MAX_CHANNELS < cfg.WSC_IMAGE_CHANNELSOUT or cfg.WSC_HOMOGENIZEBEAM:
-                            images.append(f'{data_img_prefix}-t{t:04d}-MFS-{stoke}-image.homogenized.fits')
+                            images.append(f'{data_img_prefix}-t{t:04d}-MFS{stoke}-image.homogenized.fits')
                 else:
-                    images.append(f'{data_img_prefix}-MFS-{stoke}-image.fits')
+                    images.append(f'{data_img_prefix}-MFS{stoke}-image.fits')
                     if cfg.WSC_MAX_CHANNELS < cfg.WSC_IMAGE_CHANNELSOUT or cfg.WSC_HOMOGENIZEBEAM:
-                        images.append(f'{data_img_prefix}-MFS-{stoke}-image.homogenized.fits')
+                        images.append(f'{data_img_prefix}-MFS{stoke}-image.homogenized.fits')
             for image in images:
                 syscall += CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
                 syscall += 'python3 '+TOOLS+'/pbcor_katbeam.py --band '+band[0]+f' {image}\n\n'
@@ -362,16 +373,19 @@ def main():
             step['id'] = 'PBPCL'+code
             syscall = ''
             images = []
-            for stoke in cfg.WSC_POL:
+            for stoke_i in cfg.WSC_POL:
+                stoke = f'-{stoke_i}'
+                if len(cfg.WSC_POL) == 1:
+                    stoke = ''
                 if cfg.WSC_INTERVALSOUT:
                     for t in range(cfg.WSC_INTERVALSOUT):
-                        images.append(f'{pcal_img_prefix}-t{t:04d}-MFS-{stoke}-image.fits')
+                        images.append(f'{pcal_img_prefix}-t{t:04d}-MFS{stoke}-image.fits')
                         if cfg.WSC_MAX_CHANNELS < cfg.WSC_IMAGE_CHANNELSOUT or cfg.WSC_HOMOGENIZEBEAM:
-                            images.append(f'{pcal_img_prefix}-t{t:04d}-MFS-{stoke}-image.homogenized.fits')
+                            images.append(f'{pcal_img_prefix}-t{t:04d}-MFS{stoke}-image.homogenized.fits')
                 else:
-                    images.append(f'{pcal_img_prefix}-MFS-{stoke}-image.fits')
+                    images.append(f'{pcal_img_prefix}-MFS{stoke}-image.fits')
                     if cfg.WSC_MAX_CHANNELS < cfg.WSC_IMAGE_CHANNELSOUT or cfg.WSC_HOMOGENIZEBEAM:
-                        images.append(f'{pcal_img_prefix}-MFS-{stoke}-image.homogenized.fits')
+                        images.append(f'{pcal_img_prefix}-MFS{stoke}-image.homogenized.fits')
             for image in images:
                 syscall += CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
                 syscall += 'python3 '+TOOLS+'/pbcor_katbeam.py --band '+band[0]+f' {image}\n\n'
