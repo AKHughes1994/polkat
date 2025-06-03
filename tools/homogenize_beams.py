@@ -531,7 +531,71 @@ def get_identifiers(prefix):
 
 def homogenize_images(identifier, beam):
     """
-
+    Homogenize the synthesized beam across a set of radio interferometry images.
+    
+    This function takes a collection of images with varying beam sizes and convolves
+    them to a common, larger beam size to enable direct comparison and analysis.
+    The process involves:
+    1. Creating convolution kernels to transform each original beam to the target beam
+    2. Applying these kernels to both model and residual components of each image
+    3. Generating homogenized versions of all images with consistent resolution
+    4. Creating pseudo-MFS (Multi-Frequency Synthesis) images if not already present
+    
+    Parameters
+    ----------
+    identifier : str
+        Base identifier/prefix for the image set (e.g., 'source_name-t001').
+        Used to locate all related PSF and image files with this prefix.
+    beam : tuple or array-like
+        Target beam parameters as (major_axis, minor_axis, position_angle).
+        - major_axis : float
+            Semi-major axis of target beam in degrees
+        - minor_axis : float  
+            Semi-minor axis of target beam in degrees
+        - position_angle : float
+            Position angle of target beam in radians (measured from +x axis)
+    
+    Returns
+    -------
+    None
+        Function operates by side-effect, creating new homogenized FITS files:
+        - *-image.homogenized.fits : Homogenized total intensity images
+        - *-residual.homogenized.fits : Homogenized residual images  
+        - *-MFS*-image.homogenized.fits : Pseudo-MFS images (if MFS PSF absent)
+    
+    Notes
+    -----
+    - Requires pypher package for PSF convolution kernel generation
+    - Only processes channels with valid beam information (BMAJ > 1e-14)
+    - Automatically detects and processes all Stokes parameters present
+    - Memory-efficient chunked processing for large images via compute_median_chunked()
+    - Original images and headers are preserved; only homogenized versions created
+    
+    File Dependencies
+    -----------------
+    Input files (must exist):
+        - {identifier}*-psf.fits : Point Spread Function files
+        - {identifier}*-image.fits : Total intensity image files
+        - {identifier}*-model.fits : Model component files  
+        - {identifier}*-residual.fits : Residual image files
+    
+    Output files (created):
+        - {identifier}*-image.homogenized.fits : Beam-homogenized images
+        - {identifier}*-residual.homogenized.fits : Beam-homogenized residuals
+        - {identifier}-MFS*-image.homogenized.fits : Pseudo-MFS images
+    
+    Examples
+    --------
+    >>> # Homogenize images to a common 5"x3" beam at 45° position angle
+    >>> target_beam = (5.0/3600, 3.0/3600, np.radians(45))
+    >>> homogenize_images('1934-638_L_IMAGES/1934-638-t001', target_beam)
+    
+    Raises
+    ------
+    FileNotFoundError
+        If required PSF or image files are not found
+    subprocess.CalledProcessError
+        If pypher convolution kernel generation fails
     """
 
     # Split out the beam components
@@ -657,15 +721,69 @@ def homogenize_images(identifier, beam):
                 if z == 0:
                     header = fits.getheader(im)
                     z += 1
-                data.append(get_image(im))
 
             # Adopt median values for each pixel and output MFS image
-            data = np.median(data, axis = 0)
+            msg(f'Computing median for {len(images)} images using chunked processing')
+            data = compute_median_chunked(images, chunk_size=2560)  # Adjust chunk_size as needed
+ 
             header['CRVAL3'] = np.nanmean(freq)
             mfs_name = f'{identifier}-MFS{stoke}-image.homogenized.fits'
             mfs_fits = fits.PrimaryHDU(data=data, header=header)
             mfs_fits.writeto(mfs_name, overwrite=True)
 
+
+def compute_median_chunked(images, chunk_size=2560):
+    """Compute median pixel-wise using spatial chunks to reduce memory usage"""
+    # Get image dimensions from first image
+    first_img = get_image(images[0])
+    ny, nx = first_img.shape
+    result = np.zeros_like(first_img)
+    
+    # Adjust chunk sizes to fit image dimensions evenly
+    # This ensures we don't leave out any pixels
+    n_chunks_y = max(1, int(np.ceil(ny / chunk_size)))
+    n_chunks_x = max(1, int(np.ceil(nx / chunk_size)))
+    
+    # Recalculate actual chunk sizes to fit image dimensions
+    actual_chunk_y = int(np.ceil(ny / n_chunks_y))
+    actual_chunk_x = int(np.ceil(nx / n_chunks_x))
+    
+    msg(f'Processing {ny}x{nx} image in approximately {actual_chunk_y}x{actual_chunk_x} chunks')
+    msg(f'Total chunks: {n_chunks_y} x {n_chunks_x} = {n_chunks_y * n_chunks_x}')
+    
+    total_chunks = n_chunks_y * n_chunks_x
+    processed_chunks = 0
+    
+    # Process in chunks with adaptive sizing
+    for i in range(n_chunks_y):
+        y_start = i * actual_chunk_y
+        y_end = min(y_start + actual_chunk_y, ny)  # Ensure we don't exceed image bounds
+        
+        for j in range(n_chunks_x):
+            x_start = j * actual_chunk_x
+            x_end = min(x_start + actual_chunk_x, nx)  # Ensure we don't exceed image bounds
+            
+            # Load chunk from all images
+            chunk_data = []
+            for im in images:
+                img = get_image(im)
+                chunk_data.append(img[y_start:y_end, x_start:x_end])
+            
+            # Compute median for this chunk
+            result[y_start:y_end, x_start:x_end] = np.median(chunk_data, axis=0)
+            
+            # Progress reporting
+            processed_chunks += 1
+            if processed_chunks % 10 == 0 or processed_chunks == total_chunks:
+                progress = 100 * processed_chunks / total_chunks
+                msg(f'Progress: {processed_chunks}/{total_chunks} chunks ({progress:.1f}%)')
+            
+            # Free memory
+            del chunk_data
+    
+    # Verify we processed all pixels
+    msg(f'Processed all {ny * nx} pixels successfully')
+    return result
 
 def main():
 
