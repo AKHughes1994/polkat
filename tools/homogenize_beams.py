@@ -728,8 +728,7 @@ def homogenize_images(identifier, beam):
  
             header['CRVAL3'] = np.nanmean(freq)
             mfs_name = f'{identifier}-MFS{stoke}-image.homogenized.fits'
-            mfs_fits = fits.PrimaryHDU(data=data, header=header)
-            mfs_fits.writeto(mfs_name, overwrite=True)
+            flush_fits(mfs_name, data, header)
 
 
 def compute_median_chunked(images, chunk_size=2560):
