@@ -707,7 +707,7 @@ def generate_syscall_wsclean(mslist,
             sys.exit()
 
         for k in range(nint):
-            syscall_arr.append(wsclean_syscall_base + f'-channels-out {maxchan} -channel-range {k * intchans} {(k + 1) * intchans - 1} -name {imgname}_part{k:04d} ') 
+            syscall_arr.append(wsclean_syscall_base + f'-channels-out {maxchan} -channel-range {k * intchans} {(k + 1) * intchans} -name {imgname}_part{k:04d} ') 
 
     else:
         syscall_arr.append(wsclean_syscall_base + f'-channels-out {chanout} -name {imgname} ')
