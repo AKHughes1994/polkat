@@ -1,3 +1,17 @@
+```
+@software{2025ascl.soft02026H,
+       author = {{Hughes}, Andrew K. and {Cowie}, Fraser J. and {Heywood}, Ian and {Hugo}, Ben},
+        title = "{polkat: Semi-automate full polarization of MeerKAT observations}",
+ howpublished = {Astrophysics Source Code Library, record ascl:2502.026},
+         year = 2025,
+        month = feb,
+          eid = {ascl:2502.026},
+       adsurl = {https://ui.adsabs.harvard.edu/abs/2025ascl.soft02026H},
+      adsnote = {Provided by the SAO/NASA Astrophysics Data System}
+}
+
+```
+
 ### Caution
 
 Currently, this routine has been extensively tested for MeerKATs L- and S-bands. We are looking into UHF band, and while the current version seems to get the correct polarisation degrees, the polarization angle < 800 MHz is providing problems. As a result, you should be careful (and check your data) for UHF band. We will update this documentation as we figure out what is going on.
