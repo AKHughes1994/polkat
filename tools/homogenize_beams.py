@@ -6,6 +6,7 @@ import os
 import sys
 import glob
 import subprocess
+import gc
 import time
 import scipy
 import matplotlib.pyplot as plt
@@ -13,6 +14,7 @@ import numpy as np
 from astropy.io import fits
 from astropy.convolution import Gaussian2DKernel
 from scipy.spatial import ConvexHull
+import psutil
 
 import os.path as o
 sys.path.append(o.abspath(o.join(o.dirname(sys.modules[__name__].__file__), "..")))
@@ -22,7 +24,7 @@ from oxkat import config as cfg
 # Helper functions
 def msg(txt):
     stamp = time.strftime(' %Y-%m-%d %H:%M:%S | ')
-    print(stamp+txt)
+    print(stamp+txt, flush=True)
 
 # Fits manipulation functions
 def flush_fits(newimage,newheader, fitsfile):
@@ -36,6 +38,44 @@ def flush_fits(newimage,newheader, fitsfile):
     else:
             input_hdu.data[0,0,:,:] = newimage
     f.flush()
+
+def create_fits(newimage, newheader, fitsfile):
+    """
+    Create a new FITS file with the provided image data and header.
+    
+    Parameters
+    ----------
+    newimage : numpy.ndarray
+        Image data to write to the FITS file
+    newheader : astropy.io.fits.Header
+        FITS header to use for the new file
+    fitsfile : str
+        Path for the new FITS file to create
+        
+    Notes
+    -----
+    This function creates a brand new FITS file, unlike flush_fits which 
+    updates an existing file. The output is always 4D to maintain proper
+    radio astronomy FITS coordinate structure.
+    """
+    # Always create 4D data structure for radio astronomy FITS
+    if len(newimage.shape) == 2:
+        # 2D image - add Stokes and frequency axes
+        data_to_write = newimage.reshape(1, 1, newimage.shape[0], newimage.shape[1])
+    elif len(newimage.shape) == 3:
+        # 3D image - add Stokes axis
+        data_to_write = newimage.reshape(1, newimage.shape[0], newimage.shape[1], newimage.shape[2])
+    else:
+        # 4D image - use as is
+        data_to_write = newimage
+    
+    # Create the HDU with data and header
+    hdu = fits.PrimaryHDU(data=data_to_write, header=newheader)
+    
+    # Write to file
+    hdu.writeto(fitsfile, overwrite=True)
+    
+    msg(f'Created FITS file: {fitsfile}')
 
 def get_image(fitsfile):
     input_hdu = fits.open(fitsfile)[0]
@@ -614,18 +654,17 @@ def homogenize_images(identifier, beam):
         psf_new   = psf.replace('psf.fits', 'psf.new.fits') 
         kernel     = psf.replace('psf.fits', 'psf.kernel.fits') 
 
-        # If kernel exists delete is
+        # If kernel exists skip this psf
         if os.path.exists(kernel):
-            os.remove(kernel)
-
+            msg(f'Skipping {psf} as homogenization kernel already exists; delete {kernel} to re-run')
+            continue
+        
         # Get sky to pixel and FWHM to SIGMA conversions
         sky_to_pix    = (abs(psf_header.get('CDELT1'))) ** (-1)
         fwhm_to_sig = (8 * np.log(2)) ** (-0.5)
 
         # Make PSF images
-        psf_size = 101
-
-
+        psf_size = 101      
 
         # This will check if channel is flagged (WSCLEAN assigns the BMAJ as 0 for these channels)
         if psf_header['BMAJ'] > 1e-14:
@@ -717,69 +756,267 @@ def homogenize_images(identifier, beam):
             images = sorted(glob.glob(f'{identifier}-[!MFS]*{stoke}-image.homogenized.fits'))
             for k, im in enumerate(images[:]):
                 freq.append(fits.getheader(im)['CRVAL3'])
-                msg(im)
                 if z == 0:
                     header = fits.getheader(im)
                     z += 1
 
             # Adopt median values for each pixel and output MFS image
             msg(f'Computing median for {len(images)} images using chunked processing')
-            data = compute_median_chunked(images, chunk_size=2560)  # Adjust chunk_size as needed
+            data = compute_median_chunked(images)  # Will auto-calculate optimal chunk size
  
             header['CRVAL3'] = np.nanmean(freq)
             mfs_name = f'{identifier}-MFS{stoke}-image.homogenized.fits'
-            flush_fits(mfs_name, data, header)
+            create_fits(data, header, mfs_name)
 
+def calculate_optimal_chunk_size(ny, nx, num_images, max_memory_pixels=10240*10240*32):
+    """
+    Calculate optimal chunk size for memory-efficient median computation.
+    
+    This function determines chunk sizes that are clean divisors of the image 
+    dimensions while staying within memory constraints. The chunk size is 
+    calculated to ensure total memory usage doesn't exceed the equivalent of
+    processing 10240x10240x32 images simultaneously.
+    
+    Parameters
+    ----------948
+    ny : int
+        Image height in pixels
+    nx : int
+        Image width in pixels  
+    num_images : int
+        Number of images to process simultaneously
+    max_memory_pixels : int, optional
+        Maximum memory usage in pixel equivalents. Default is 10240*10240*16
+        
+    Returns
+    -------
+    chunk_y : int
+        Optimal chunk height (clean divisor of ny)
+    chunk_x : int
+        Optimal chunk width (clean divisor of nx)
+    estimated_memory_pixels : int
+        Estimated memory usage in pixel equivalents
+    """
+    
+    # Include overhead factor for median computation and temporary arrays
+    overhead_factor = 1.5
+    
+    # Calculate maximum chunk area we can afford
+    max_chunk_pixels = max_memory_pixels / (overhead_factor * (num_images + 1))
+    
+    msg(f'Target max chunk area: {max_chunk_pixels:.0f} pixels')
+    msg(f'Image dimensions: {ny}x{nx}, Number of images: {num_images}')
+    
+    # Generate possible divisors for each dimension
+    def get_divisors(n):
+        """Get all divisors of n in descending order"""
+        divisors = []
+        for i in range(1, int(np.sqrt(n)) + 1):
+            if n % i == 0:
+                divisors.append(n // i)  # Larger divisor first
+                if i != n // i:
+                    divisors.append(i)
+        return sorted(divisors, reverse=True)
+    
+    y_divisors = get_divisors(ny)
+    x_divisors = get_divisors(nx)
+    
+    msg(f'Y divisors: {y_divisors[:10]}...' if len(y_divisors) > 10 else f'Y divisors: {y_divisors}')
+    msg(f'X divisors: {x_divisors[:10]}...' if len(x_divisors) > 10 else f'X divisors: {x_divisors}')
+    
+    # Find the best chunk size combination, favoring square chunks
+    best_chunk_y, best_chunk_x = 64, 64  # Minimum chunk size
+    best_chunk_area = best_chunk_y * best_chunk_x
+    best_square_score = float('inf')  # Lower is better for square-ness
+    
+    for chunk_y in y_divisors:
+        for chunk_x in x_divisors:
+            chunk_area = chunk_y * chunk_x
+            
+            # Skip if chunk is too small (inefficient) or too large (memory)
+            if chunk_area < 64*64 or chunk_area > max_chunk_pixels:
+                continue
+            
+            # Calculate "square score" - how close to square the chunk is
+            # Perfect square has score = 1.0
+            aspect_ratio = max(chunk_y, chunk_x) / min(chunk_y, chunk_x)
+            square_score = aspect_ratio
+            
+            # Prioritize chunks that are:
+            # 1. Large enough to be efficient
+            # 2. More square-like (lower aspect ratio)
+            # 3. Fit within memory constraints
+            
+            is_better = False
+            
+            # If this chunk is significantly more square, prefer it
+            if square_score < best_square_score * 0.8:  # 20% better square-ness
+                is_better = True
+            # If square-ness is similar, prefer larger area
+            elif abs(square_score - best_square_score) / best_square_score < 0.2:  # Within 20%
+                if chunk_area > best_chunk_area:
+                    is_better = True
+            
+            if is_better:
+                best_chunk_y = chunk_y
+                best_chunk_x = chunk_x
+                best_chunk_area = chunk_area
+                best_square_score = square_score
+    
+    # Ensure we don't exceed image dimensions
+    best_chunk_y = min(best_chunk_y, ny)
+    best_chunk_x = min(best_chunk_x, nx)
+    
+    # Calculate actual memory usage
+    estimated_memory_pixels = int(overhead_factor * (num_images + 1) * best_chunk_y * best_chunk_x)
+    
+    # Calculate number of chunks needed
+    n_chunks_y = ny // best_chunk_y
+    n_chunks_x = nx // best_chunk_x
+    total_chunks = n_chunks_y * n_chunks_x
+    
+    msg(f'Optimal chunk size: {best_chunk_y}x{best_chunk_x} pixels')
+    msg(f'Chunk area: {best_chunk_area} pixels')
+    msg(f'Aspect ratio: {max(best_chunk_y, best_chunk_x)/min(best_chunk_y, best_chunk_x):.2f} (1.0 = perfect square)')
+    msg(f'Number of chunks: {n_chunks_y}x{n_chunks_x} = {total_chunks} total')
+    msg(f'Estimated memory usage: {estimated_memory_pixels} pixel equivalents')
+    msg(f'Memory efficiency: {estimated_memory_pixels/max_memory_pixels*100:.1f}% of maximum')
+    
+    # Verify the chunks divide evenly
+    assert ny % best_chunk_y == 0, f"Chunk height {best_chunk_y} doesn't divide image height {ny}"
+    assert nx % best_chunk_x == 0, f"Chunk width {best_chunk_x} doesn't divide image width {nx}"
+    
+    return best_chunk_y, best_chunk_x, estimated_memory_pixels
 
-def compute_median_chunked(images, chunk_size=2560):
+def compute_median_chunked(images, chunk_size=None, max_images=256):
     """Compute median pixel-wise using spatial chunks to reduce memory usage"""
+    
+    # Subsample images if we have too many - include first/last + evenly spaced
+    num_total_images = len(images)
+    if num_total_images > max_images:
+        if num_total_images == 2:
+            # Special case: only 2 images, use both
+            selected_images = images
+        else:
+            # Always include first and last
+            selected_indices = [0]  # First image
+            
+            # Calculate how many middle images we can take
+            remaining_slots = max_images - 2  # Reserve slots for first and last
+            
+            if remaining_slots > 0 and num_total_images > 2:
+                # Space middle images evenly between first and last
+                middle_start = 1
+                middle_end = num_total_images - 1
+                middle_span = middle_end - middle_start
+                
+                if remaining_slots >= middle_span:
+                    # Can take all middle images
+                    middle_indices = list(range(middle_start, middle_end))
+                else:
+                    # Need to subsample middle images
+                    step = middle_span / remaining_slots
+                    middle_indices = [int(middle_start + i * step) for i in range(remaining_slots)]
+                
+                selected_indices.extend(middle_indices)
+            
+            # Always include last image
+            selected_indices.append(num_total_images - 1)
+            
+            # Remove duplicates and sort
+            selected_indices = sorted(list(set(selected_indices)))
+            
+            selected_images = [images[i] for i in selected_indices]
+        
+        msg(f'Subsampled from {num_total_images} to {len(selected_images)} images')
+        msg(f'Using images at indices: {selected_indices[:5]}...{selected_indices[-5:] if len(selected_indices) > 10 else selected_indices[5:]}')
+        images = selected_images
+    else:
+        msg(f'Using all {num_total_images} images')
+        
     # Get image dimensions from first image
     first_img = get_image(images[0])
     ny, nx = first_img.shape
+    num_images = len(images)
     result = np.zeros_like(first_img)
     
-    # Adjust chunk sizes to fit image dimensions evenly
-    # This ensures we don't leave out any pixels
-    n_chunks_y = max(1, int(np.ceil(ny / chunk_size)))
-    n_chunks_x = max(1, int(np.ceil(nx / chunk_size)))
+    # Calculate optimal chunk size if not provided
+    if chunk_size is None:
+        chunk_y, chunk_x, estimated_memory = calculate_optimal_chunk_size(ny, nx, num_images)
+        msg(f'Using optimal chunk size: {chunk_y}x{chunk_x}')
+    else:
+        # Use provided square chunk size with safety checks
+        msg(f'Using provided chunk size: {chunk_size}x{chunk_size}')
+        
+        # Adjust chunk sizes to fit image dimensions evenly
+        # This ensures we don't leave out any pixels
+        n_chunks_y = max(1, int(np.ceil(ny / chunk_size)))
+        n_chunks_x = max(1, int(np.ceil(nx / chunk_size)))
+        
+        # Recalculate actual chunk sizes to fit image dimensions
+        chunk_y = int(np.ceil(ny / n_chunks_y))
+        chunk_x = int(np.ceil(nx / n_chunks_x))
+        
+        msg(f'Adjusted chunk size to fit image: {chunk_y}x{chunk_x}')
     
-    # Recalculate actual chunk sizes to fit image dimensions
-    actual_chunk_y = int(np.ceil(ny / n_chunks_y))
-    actual_chunk_x = int(np.ceil(nx / n_chunks_x))
+    # Calculate number of chunks (should divide evenly with optimal sizing)
+    n_chunks_y = ny // chunk_y if chunk_size is None else max(1, int(np.ceil(ny / chunk_y)))
+    n_chunks_x = nx // chunk_x if chunk_size is None else max(1, int(np.ceil(nx / chunk_x)))
     
-    msg(f'Processing {ny}x{nx} image in approximately {actual_chunk_y}x{actual_chunk_x} chunks')
+    msg(f'Processing {ny}x{nx} image in {chunk_y}x{chunk_x} chunks')
     msg(f'Total chunks: {n_chunks_y} x {n_chunks_x} = {n_chunks_y * n_chunks_x}')
     
     total_chunks = n_chunks_y * n_chunks_x
     processed_chunks = 0
     
-    # Process in chunks with adaptive sizing
+    # Process in chunks with safety checks for pixel coverage
     for i in range(n_chunks_y):
-        y_start = i * actual_chunk_y
-        y_end = min(y_start + actual_chunk_y, ny)  # Ensure we don't exceed image bounds
+        if chunk_size is None:
+            # Optimal sizing - exact division
+            y_start = i * chunk_y
+            y_end = y_start + chunk_y
+        else:
+            # Provided sizing - adaptive with bounds checking
+            y_start = i * chunk_y
+            y_end = min(y_start + chunk_y, ny)  # Ensure we don't exceed image bounds
         
         for j in range(n_chunks_x):
-            x_start = j * actual_chunk_x
-            x_end = min(x_start + actual_chunk_x, nx)  # Ensure we don't exceed image bounds
+            if chunk_size is None:
+                # Optimal sizing - exact division
+                x_start = j * chunk_x
+                x_end = x_start + chunk_x
+            else:
+                # Provided sizing - adaptive with bounds checking
+                x_start = j * chunk_x
+                x_end = min(x_start + chunk_x, nx)  # Ensure we don't exceed image bounds
             
-            # Load chunk from all images
-            chunk_data = []
-            for im in images:
+            # Pre-allocate numpy array for chunk data - FIXED FOR MEMORY EFFICIENCY
+            chunk_height = y_end - y_start
+            chunk_width = x_end - x_start
+            chunk_data = np.zeros((num_images, chunk_height, chunk_width), dtype=np.float32)
+            
+            # Load chunk from all images directly into pre-allocated array
+            for img_idx, im in enumerate(images[:]):
                 img = get_image(im)
-                chunk_data.append(img[y_start:y_end, x_start:x_end])
+                chunk_data[img_idx] = img[y_start:y_end, x_start:x_end]
             
-            # Compute median for this chunk
+            # Compute median for this chunk along axis 0 (image dimension)
             result[y_start:y_end, x_start:x_end] = np.median(chunk_data, axis=0)
             
             # Progress reporting
             processed_chunks += 1
-            if processed_chunks % 10 == 0 or processed_chunks == total_chunks:
+            if processed_chunks % 1 == 0 or processed_chunks == total_chunks:
                 progress = 100 * processed_chunks / total_chunks
-                msg(f'Progress: {processed_chunks}/{total_chunks} chunks ({progress:.1f}%)')
+                memory_info = psutil.virtual_memory()
+                msg(f'Progress: {processed_chunks}/{total_chunks} chunks ({progress:.1f}%) | '
+                    f'Memory: {memory_info.percent:.1f}% used')
             
-            # Free memory
+            # Free memory immediately after processing each chunk
             del chunk_data
-    
+            
+            # Force garbage collection every few chunks
+            if processed_chunks % 5 == 0:
+                gc.collect()    
     # Verify we processed all pixels
     msg(f'Processed all {ny * nx} pixels successfully')
     return result
@@ -801,6 +1038,7 @@ def main():
         msg(f'Solving for smallest enclosing ellipse for image set given by: {identifier}')
         beams.append(get_homogenized_beam(identifier))
 
+    msg('Extracted homogenized beam')
     for k, identifier in enumerate(image_identifiers[:]):    
         msg(f'Homogenizing beam of image set given by: {identifier}')
         if len(beams) == 1:
@@ -808,7 +1046,6 @@ def main():
         else:
             beam = beams[k]
         homogenize_images(identifier, beam)
-
 
             
 if __name__ in '__main__':
