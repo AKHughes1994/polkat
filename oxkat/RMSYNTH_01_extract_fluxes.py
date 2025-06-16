@@ -18,7 +18,7 @@ from oxkat import config as cfg
 
 def msg(txt):
     stamp = time.strftime(' %Y-%m-%d %H:%M:%S | ')
-    print(stamp+txt)
+    print(stamp+txt, flush=True)
 
 
 def get_imfit_values(fname, image, xpix, ypix):
@@ -707,8 +707,8 @@ def extract_polarization_properties(src_name,
                             output_dictionary['CHAN'][component]['LP_EVPA'][k].append(LP_EVPA)
                             output_dictionary['CHAN'][component]['LP_EVPA_err'][k].append(LP_EVPA_err)     
 
-            except RuntimeError:
-                msg('Fitting Failed: Channel is likely flagged')
+            except Exception as e:
+                msg(f"Error occurred: {e}: Channel likely flagged")
 
 
         # Write RM Synthesis files (freq, I, Q, U, dI, dQ, dU)
