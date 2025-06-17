@@ -156,8 +156,12 @@ if __name__ == '__main__':
             # Finally -- Restore images
 
             # Check channel is flagged (i.e., BEAM information is 0.0)
-            if psf[0] > 1.0e-14:
+            bmaj = psf[0]
+            if bmaj == None:
+                bmaj = 0.0
 
+            if bmaj > 1.0e-14:
+                
                 # Copy psf naming for restored image -- necessary for beam homogenizing routine
                 subprocess.run([f'cp {psf_image} {psf_image.replace("modelsub", "restored")}'], shell = True)
 
