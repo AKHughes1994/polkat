@@ -15,6 +15,10 @@ from astropy.io import fits
 from astropy.convolution import Gaussian2DKernel
 from scipy.spatial import ConvexHull
 import psutil
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
+import threading
 
 import os.path as o
 sys.path.append(o.abspath(o.join(o.dirname(sys.modules[__name__].__file__), "..")))
@@ -22,6 +26,16 @@ sys.path.append(o.abspath(o.join(o.dirname(sys.modules[__name__].__file__), ".."
 from oxkat import config as cfg
 
 # Helper functions
+def get_divisors(n):
+    """Get all divisors of n in descending order"""
+    divisors = []
+    for i in range(1, int(np.sqrt(n)) + 1):
+        if n % i == 0:
+            divisors.append(n // i)  # Larger divisor first
+            if i != n // i:
+                divisors.append(i)
+    return sorted(divisors, reverse=True)
+
 def msg(txt):
     stamp = time.strftime(' %Y-%m-%d %H:%M:%S | ')
     print(stamp+txt, flush=True)
@@ -807,17 +821,6 @@ def calculate_optimal_chunk_size(ny, nx, num_images, max_memory_pixels=10240*102
     msg(f'Target max chunk area: {max_chunk_pixels:.0f} pixels')
     msg(f'Image dimensions: {ny}x{nx}, Number of images: {num_images}')
     
-    # Generate possible divisors for each dimension
-    def get_divisors(n):
-        """Get all divisors of n in descending order"""
-        divisors = []
-        for i in range(1, int(np.sqrt(n)) + 1):
-            if n % i == 0:
-                divisors.append(n // i)  # Larger divisor first
-                if i != n // i:
-                    divisors.append(i)
-        return sorted(divisors, reverse=True)
-    
     y_divisors = get_divisors(ny)
     x_divisors = get_divisors(nx)
     
@@ -888,14 +891,124 @@ def calculate_optimal_chunk_size(ny, nx, num_images, max_memory_pixels=10240*102
     
     return best_chunk_y, best_chunk_x, estimated_memory_pixels
 
-def compute_median_chunked(images, chunk_size=None, max_images=512):
-    """Compute median pixel-wise using spatial chunks to reduce memory usage"""
+def get_system_resources():
+    """
+    Get available system resources for optimal processing.
+    
+    Returns
+    -------
+    dict
+        Dictionary containing system resource information
+    """
+    # Get CPU information
+    cpu_count = psutil.cpu_count(logical=False)  # Physical cores
+    cpu_count_logical = psutil.cpu_count(logical=True)  # Logical cores (with hyperthreading)
+    
+    # Get memory information
+    memory = psutil.virtual_memory()
+    total_memory_gb = memory.total / (1024**3)
+    available_memory_gb = memory.available / (1024**3)
+    
+    # Calculate optimal number of processes (leave some headroom)
+    optimal_processes = max(1, min(cpu_count, int(available_memory_gb / 2)))  # 2GB per process
+    
+    msg(f"System Resources:")
+    msg(f"  Physical CPU cores: {cpu_count}")
+    msg(f"  Logical CPU cores: {cpu_count_logical}")
+    msg(f"  Total memory: {total_memory_gb:.1f} GB")
+    msg(f"  Available memory: {available_memory_gb:.1f} GB")
+    msg(f"  Recommended processes: {optimal_processes}")
+    
+    return {
+        'cpu_physical': cpu_count,
+        'cpu_logical': cpu_count_logical,
+        'memory_total_gb': total_memory_gb,
+        'memory_available_gb': available_memory_gb,
+        'recommended_processes': optimal_processes
+    }
+
+def process_chunk_worker(chunk_info):
+    """
+    Worker function to process a single chunk in parallel.
+    
+    Parameters
+    ----------
+    chunk_info : dict
+        Dictionary containing chunk processing information
+        
+    Returns
+    -------
+    tuple
+        (chunk_id, median_result, y_start, y_end, x_start, x_end)
+    """
+    chunk_id = chunk_info['chunk_id']
+    images = chunk_info['images']
+    y_start = chunk_info['y_start']
+    y_end = chunk_info['y_end']
+    x_start = chunk_info['x_start']
+    x_end = chunk_info['x_end']
+    
+    try:
+        # Pre-allocate chunk data
+        chunk_height = y_end - y_start
+        chunk_width = x_end - x_start
+        num_images = len(images)
+        chunk_data = np.zeros((num_images, chunk_height, chunk_width), dtype=np.float32)
+        
+        # Load chunk from all images
+        for img_idx, im in enumerate(images):
+            img = get_image(im)
+            chunk_data[img_idx] = img[y_start:y_end, x_start:x_end]
+            del img  # Free memory immediately
+        
+        # Compute median
+        result_chunk = np.median(chunk_data, axis=0)
+        
+        # Clean up
+        del chunk_data
+        
+        return (chunk_id, result_chunk, y_start, y_end, x_start, x_end)
+        
+    except Exception as e:
+        msg(f"Error processing chunk {chunk_id}: {e}")
+        return (chunk_id, None, y_start, y_end, x_start, x_end)
+
+def compute_median_chunked_parallel(images, chunk_size=None, max_images=512, n_processes=None):
+    """
+    Compute median pixel-wise using parallel spatial chunks to reduce memory usage.
+    
+    Parameters
+    ----------
+    images : list
+        List of image file paths
+    chunk_size : int, optional
+        Manual chunk size (will be adjusted to fit image dimensions)
+    max_images : int, optional
+        Maximum number of images to use (default: 256)
+    n_processes : int, optional
+        Number of parallel processes. If None, auto-detect optimal number
+        
+    Returns
+    -------
+    numpy.ndarray
+        Median image
+    """
+    
+    # Get system resources
+    system_info = get_system_resources()
+    
+    # Determine number of processes
+    if n_processes is None:
+        n_processes = system_info['recommended_processes']
+    else:
+        n_processes = min(n_processes, system_info['cpu_physical'])
+    
+    msg(f"Using {n_processes} parallel processes")
     
     # Subsample images if we have too many - include first/last + evenly spaced
     num_total_images = len(images)
     if num_total_images > max_images:
         if num_total_images == 2:
-            # Special case: only 2 images, use both
             selected_images = images
         else:
             # Always include first and last
@@ -929,7 +1042,6 @@ def compute_median_chunked(images, chunk_size=None, max_images=512):
             selected_images = [images[i] for i in selected_indices]
         
         msg(f'Subsampled from {num_total_images} to {len(selected_images)} images')
-        msg(f'Using images at indices: {selected_indices[:5]}...{selected_indices[-5:] if len(selected_indices) > 10 else selected_indices[5:]}')
         images = selected_images
     else:
         msg(f'Using all {num_total_images} images')
@@ -940,16 +1052,52 @@ def compute_median_chunked(images, chunk_size=None, max_images=512):
     num_images = len(images)
     result = np.zeros_like(first_img)
     
+    # FIX: Don't divide memory by processes - use total available memory
+    # The parallelization happens at the chunk level, not the memory level
+    available_memory_gb = system_info['memory_available_gb'] * 0.8  # 80% safety margin
+    max_memory_pixels_total = int(available_memory_gb * 1024**3 / (4 * num_images))  # 4 bytes per float32 pixel
+    
     # Calculate optimal chunk size if not provided
     if chunk_size is None:
-        chunk_y, chunk_x, estimated_memory = calculate_optimal_chunk_size(ny, nx, num_images)
+        chunk_y, chunk_x, estimated_memory = calculate_optimal_chunk_size(
+            ny, nx, num_images, max_memory_pixels=max_memory_pixels_total  # Use total memory, not per-process
+        )
         msg(f'Using optimal chunk size: {chunk_y}x{chunk_x}')
+        
+        # Ensure we have enough chunks to keep all processes busy
+        n_chunks_y = ny // chunk_y
+        n_chunks_x = nx // chunk_x
+        total_chunks = n_chunks_y * n_chunks_x
+        
+        # If we have too few chunks relative to processes, reduce chunk size
+        min_chunks_needed = n_processes * 4  # At least 4 chunks per process
+        if total_chunks < min_chunks_needed:
+            msg(f"Reducing chunk size to ensure {min_chunks_needed} chunks for {n_processes} processes")
+            
+            # Calculate new chunk size to get desired number of chunks
+            target_chunks_per_dim = int(np.sqrt(min_chunks_needed))
+            new_chunk_y = ny // target_chunks_per_dim
+            new_chunk_x = nx // target_chunks_per_dim
+            
+            # Find the largest divisors that are smaller than or equal to our targets
+            y_divisors = [d for d in get_divisors(ny) if d <= new_chunk_y]
+            x_divisors = [d for d in get_divisors(nx) if d <= new_chunk_x]
+            
+            if y_divisors and x_divisors:
+                chunk_y = y_divisors[0]  # Largest valid divisor
+                chunk_x = x_divisors[0]  # Largest valid divisor
+                msg(f'Adjusted chunk size to: {chunk_y}x{chunk_x}')
+                
+                # Recalculate total chunks
+                n_chunks_y = ny // chunk_y
+                n_chunks_x = nx // chunk_x
+                total_chunks = n_chunks_y * n_chunks_x
+                msg(f'New total chunks: {n_chunks_y}x{n_chunks_x} = {total_chunks}')
     else:
         # Use provided square chunk size with safety checks
         msg(f'Using provided chunk size: {chunk_size}x{chunk_size}')
         
         # Adjust chunk sizes to fit image dimensions evenly
-        # This ensures we don't leave out any pixels
         n_chunks_y = max(1, int(np.ceil(ny / chunk_size)))
         n_chunks_x = max(1, int(np.ceil(nx / chunk_size)))
         
@@ -959,75 +1107,129 @@ def compute_median_chunked(images, chunk_size=None, max_images=512):
         
         msg(f'Adjusted chunk size to fit image: {chunk_y}x{chunk_x}')
     
-    # Calculate number of chunks (should divide evenly with optimal sizing)
+    # Calculate number of chunks (final calculation)
     n_chunks_y = ny // chunk_y if chunk_size is None else max(1, int(np.ceil(ny / chunk_y)))
     n_chunks_x = nx // chunk_x if chunk_size is None else max(1, int(np.ceil(nx / chunk_x)))
     
     msg(f'Processing {ny}x{nx} image in {chunk_y}x{chunk_x} chunks')
     msg(f'Total chunks: {n_chunks_y} x {n_chunks_x} = {n_chunks_y * n_chunks_x}')
     
-    total_chunks = n_chunks_y * n_chunks_x
-    processed_chunks = 0
+    # Prepare chunk information for parallel processing
+    chunk_tasks = []
+    chunk_id = 0
     
-    # Process in chunks with safety checks for pixel coverage
     for i in range(n_chunks_y):
         if chunk_size is None:
-            # Optimal sizing - exact division
             y_start = i * chunk_y
             y_end = y_start + chunk_y
         else:
-            # Provided sizing - adaptive with bounds checking
             y_start = i * chunk_y
-            y_end = min(y_start + chunk_y, ny)  # Ensure we don't exceed image bounds
+            y_end = min(y_start + chunk_y, ny)
         
         for j in range(n_chunks_x):
             if chunk_size is None:
-                # Optimal sizing - exact division
                 x_start = j * chunk_x
                 x_end = x_start + chunk_x
             else:
-                # Provided sizing - adaptive with bounds checking
                 x_start = j * chunk_x
-                x_end = min(x_start + chunk_x, nx)  # Ensure we don't exceed image bounds
+                x_end = min(x_start + chunk_x, nx)
             
-            # Pre-allocate numpy array for chunk data - FIXED FOR MEMORY EFFICIENCY
-            chunk_height = y_end - y_start
-            chunk_width = x_end - x_start
-            chunk_data = np.zeros((num_images, chunk_height, chunk_width), dtype=np.float32)
-            
-            # Load chunk from all images directly into pre-allocated array
-            for img_idx, im in enumerate(images[:]):
-                img = get_image(im)
-                chunk_data[img_idx] = img[y_start:y_end, x_start:x_end]
-            
-            # Compute median for this chunk along axis 0 (image dimension)
-            result[y_start:y_end, x_start:x_end] = np.median(chunk_data, axis=0)
-            
-            # Progress reporting
-            processed_chunks += 1
-            if processed_chunks % 1 == 0 or processed_chunks == total_chunks:
-                progress = 100 * processed_chunks / total_chunks
-                memory_info = psutil.virtual_memory()
-                msg(f'Progress: {processed_chunks}/{total_chunks} chunks ({progress:.1f}%) | '
-                    f'Memory: {memory_info.percent:.1f}% used')
-            
-            # Free memory immediately after processing each chunk
-            del chunk_data
-            
-            # Force garbage collection every few chunks
-            if processed_chunks % 5 == 0:
-                gc.collect()    
-    # Verify we processed all pixels
+            chunk_info = {
+                'chunk_id': chunk_id,
+                'images': images,
+                'y_start': y_start,
+                'y_end': y_end,
+                'x_start': x_start,
+                'x_end': x_end
+            }
+            chunk_tasks.append(chunk_info)
+            chunk_id += 1
+    
+    total_chunks = len(chunk_tasks)
+    msg(f"Submitting {total_chunks} chunks to {n_processes} processes")
+    
+    # Process chunks in parallel
+    processed_chunks = 0
+    start_time = time.time()
+    
+    with ProcessPoolExecutor(max_workers=n_processes) as executor:
+        # Submit all chunk tasks
+        future_to_chunk = {executor.submit(process_chunk_worker, chunk_info): chunk_info 
+                          for chunk_info in chunk_tasks}
+        
+        # Process completed chunks as they finish
+        for future in as_completed(future_to_chunk):
+            chunk_info = future_to_chunk[future]
+            try:
+                chunk_id, result_chunk, y_start, y_end, x_start, x_end = future.result()
+                
+                if result_chunk is not None:
+                    # Insert result into final image
+                    result[y_start:y_end, x_start:x_end] = result_chunk
+                    processed_chunks += 1
+                    
+                    # Progress reporting
+                    if processed_chunks % max(1, total_chunks // 20) == 0 or processed_chunks == total_chunks:
+                        elapsed_time = time.time() - start_time
+                        progress = 100 * processed_chunks / total_chunks
+                        rate = processed_chunks / elapsed_time if elapsed_time > 0 else 0
+                        eta = (total_chunks - processed_chunks) / rate if rate > 0 else 0
+                        
+                        memory_info = psutil.virtual_memory()
+                        msg(f'Progress: {processed_chunks}/{total_chunks} chunks ({progress:.1f}%) | '
+                            f'Rate: {rate:.1f} chunks/s | ETA: {eta:.0f}s | '
+                            f'Memory: {memory_info.percent:.1f}% used')
+                else:
+                    msg(f"Failed to process chunk {chunk_id}")
+                    
+            except Exception as e:
+                msg(f"Error retrieving result for chunk {chunk_info['chunk_id']}: {e}")
+    
+    # Final cleanup
+    elapsed_time = time.time() - start_time
+    msg(f'Parallel processing complete in {elapsed_time:.1f}s')
+    msg(f'Processing rate: {total_chunks/elapsed_time:.1f} chunks/s')
     msg(f'Processed all {ny * nx} pixels successfully')
+    
     return result
 
-def main():
 
+
+def main():
+    """Main function with resource detection"""
+    
+    # Display system information at startup
+    system_info = get_system_resources()
+    
     # Read in prefix return error if missing it
-    if len(sys.argv) != 2:
-        msg('ERROR: Missing image prefix')
+    if len(sys.argv) not in [2, 3, 4]:
+        msg('ERROR: Usage: python homogenize_beams.py <prefix> [n_processes] [max_images]')
+        msg('  prefix: Image prefix (required)')
+        msg('  n_processes: Number of parallel processes (optional, auto-detect if not provided)')
+        msg('  max_images: Maximum number of images to use (optional, default: 512)')
         sys.exit()
-    prefix = sys.argv[-1]
+    
+    prefix = sys.argv[1]
+    
+    # Optional arguments
+    n_processes = None
+    max_images = 512
+    
+    if len(sys.argv) >= 3:
+        try:
+            n_processes = int(sys.argv[2])
+            msg(f"Using {n_processes} processes (user specified)")
+        except ValueError:
+            msg("Warning: Invalid n_processes, using auto-detection")
+            n_processes = None
+    
+    if len(sys.argv) >= 4:
+        try:
+            max_images = int(sys.argv[3])
+            msg(f"Using maximum {max_images} images (user specified)")
+        except ValueError:
+            msg("Warning: Invalid max_images, using default 256")
+            max_images = 256
 
     # Correct naming conventions
     beam_identifiers, image_identifiers = get_identifiers(prefix)
@@ -1046,7 +1248,6 @@ def main():
         else:
             beam = beams[k]
         homogenize_images(identifier, beam)
-
             
 if __name__ in '__main__':
     main()
