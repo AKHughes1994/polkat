@@ -984,7 +984,7 @@ def compute_median_chunked_parallel(images, chunk_size=None, max_images=512, n_p
     chunk_size : int, optional
         Manual chunk size (will be adjusted to fit image dimensions)
     max_images : int, optional
-        Maximum number of images to use (default: 256)
+        Maximum number of images to use (default: 512)
     n_processes : int, optional
         Number of parallel processes. If None, auto-detect optimal number
         
@@ -1228,8 +1228,8 @@ def main():
             max_images = int(sys.argv[3])
             msg(f"Using maximum {max_images} images (user specified)")
         except ValueError:
-            msg("Warning: Invalid max_images, using default 256")
-            max_images = 256
+            msg("Warning: Invalid max_images, using default 512")
+            max_images = 512
 
     # Correct naming conventions
     beam_identifiers, image_identifiers = get_identifiers(prefix)
