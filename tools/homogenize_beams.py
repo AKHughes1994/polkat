@@ -786,7 +786,7 @@ def calculate_optimal_chunk_size(ny, nx, num_images, max_memory_pixels=10240*102
     num_images : int
         Number of images to process simultaneously
     max_memory_pixels : int, optional
-        Maximum memory usage in pixel equivalents. Default is 10240*10240*16
+        Maximum memory usage in pixel equivalents. Default is 10240*10240*32
         
     Returns
     -------
