@@ -34,7 +34,7 @@ This branch, `polkat_QC_selfcal`, is designed to closely mimic the main `oxkat` 
 This routine is designed primarily for use on the ILIFU clusters operated by The Inter-university Institute for Data Intensive Astronomy (IDIA), but you can run it locally if you have the required software. The necessary software is bundled into containers using [apptainer](https://apptainer.org/) (formerly singularity). Containers are available in `/software/containers` on ILIFU and follow the naming convention `polkat-[version].sif`. If you do not have ILIFU access but want to use polkat, you can get container access via pulling from dockerhub:
 
 ```
-# The main container -- CURRENTLY DOESN'T WORK 
+# The main container 
 singularity pull polkat-0.1.2.sif docker://hughesakh/polkat:0.1.2
 
 # ALBUS container for ionospheric corrections
