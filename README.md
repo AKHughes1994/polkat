@@ -28,7 +28,15 @@ This modified version of the MeerKAT semi-automated data processing routine [oxk
 ---
 ##### Before We Start 
 
-This routine has been designed primarily for use on the ILIFU clusters operated by The Inter-university Institute for Data Intensive Astronomy (IDIA); however, you can run it locally if you have the comprising software. The necessary software has been combined into containers using [apptainer](https://apptainer.org/) (previously known as singularity). The containers can be found in the `/software/containers` directory on ILIFU and follow the naming convention of `polkat-[version].sif`. If you do not have access to ILIFU but still want to use polkat and thus require the container, please email 'hughesakh [at] gmail [dot] com', and a download link can be made available.
+This routine has been designed primarily for use on the ILIFU clusters operated by The Inter-university Institute for Data Intensive Astronomy (IDIA); however, you can run it locally if you have the comprising software. The necessary software has been combined into containers using [apptainer](https://apptainer.org/) (previously known as singularity). The containers can be found in the `/software/containers` directory on ILIFU and follow the naming convention of `polkat-[version].sif`. If you do not have access to ILIFU but still want to use polkat and thus require the container, you can pull them from dockerhub:
+
+```
+# The main container
+singularity pull polkat-0.1.2.sif docker://hughesakh/polkat:0.1.2
+
+# ALBUS container for ionospheric corrections
+singularity pull polkat-albus.sif docker://hughesakh/polkat_albus:latest
+```
 
 ---
 #### Standard Workflow
