@@ -35,7 +35,7 @@ This routine has been designed primarily for use on the ILIFU clusters operated 
 singularity pull polkat-0.1.2.sif docker://hughesakh/polkat:0.1.2
 
 # ALBUS container for ionospheric corrections
-singularity pull polkat-albus.sif docker://hughesakh/polkat_albus:latest
+singularity pull polkat-albus.sif docker://hughesakh/polkat_albus:fixed
 ```
 
 ---
