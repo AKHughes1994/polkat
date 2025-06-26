@@ -84,7 +84,7 @@ Key `config.py` options:
 
 ### Note: No Polarization Angle Calibrator?
 
-If no polang calibrator is available, leave `POLANG_NAME = ''`. The primary (e.g., J1939) must be unpolarized. You can recover total polarization (but not separate linear from circular).
+If no polang calibrator is available, make sure `POLANG_NAME = ''`. The primary (e.g., J1939) must be unpolarized. You can recover total polarization (but not separate linear from circular).
 
 ---
 
