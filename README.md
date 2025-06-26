@@ -85,11 +85,16 @@ If running locally, replace `idia` with `node` and ensure `NODE_CONTAINER_PATH` 
 
 This step extracts info for targets/calibrators from your ms-file, storing it in `project_info.json`. INFO also splits out your desired fields and averages your ms-file down to (by default) 1024 frequency channels (oxkat did this at the start of 1GC). 
 
+
 **Commonly customized `config.py` variables:**
 
 - `POLANG_NAME = 'J1331+3030'` — Name of the polarization angle calibrator as it appears in the ms-file (default: J1331+3030/3C286). Leave blank if you do not wish to perform polarization angle calibration.
 - `POLANG_DIR  = '13:31:08.2881,+30.30.32.959'` — Coordinates of the polarization angle calibrator (default: 3C286).
 - `PRE_FIELDS = ''` — Specify fields of interest. For multi-target ms-files, polkat will process each target. To process only a specific target, provide the names of the target, phase calibrator, primary calibrator, and (if applicable) polarization angle calibrator. **If you use `PRE_FIELDS`, be sure to include the polarization calibrator in the string.**
+
+- ### Note: No Polarization Angle Calibrator?
+
+If no polang calibrator is available, make sure `POLANG_NAME = ''`. The primary (e.g., J1939) must be unpolarized. You can recover total polarization (but not separate linear from circular).
 
 SARAO/MeerKAT provides two polarization angle calibrators: J1331+3030 (3C286, default) and J0521+1638 (3C138). Parameters for 3C138 are also included in the config file. Using a non-standard calibrator is possible, but intended for expert users.
 
@@ -289,12 +294,6 @@ You can ignore `"pos_coeff"` and `"time0"` for most use cases. The default confi
 
 **Warning:**  
 While this step streamlines the process, it is important to understand the underlying tools and concepts—especially Faraday Rotation and RM Synthesis. For more background, see [Brentjens & de Bruyn 2005](https://arxiv.org/abs/astro-ph/0507349).
-
----
-
-#### Note: No Polarization Angle Calibrator
-
-polkat works without a polarization angle calibrator. As long as the primary can serve as an unpolarized leakage calibrator, you can measure total polarization, but cannot distinguish between circular and linear polarization. For most synchrotron sources (typically circularly unpolarized), total polarization is a good proxy for linear polarization. Leave `POLANG_NAME = ''` in these cases.
 
 ---
 
