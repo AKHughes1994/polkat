@@ -61,30 +61,62 @@ singularity exec /path/to/polkat-[version].sif python3 tools/ms_info.py yourfile
 
 ---
 
-### INFO
+## INFO
 
-Run INFO with:
+The first step, `INFO`, is run with:
 
 ```bash
 python3 setups/INFO.py idia
 ./submit_info_job.sh
 ```
 
-Replace `idia` with `node` if running locally and ensure `NODE_CONTAINER_PATH` is correctly set in `config.py`.
+If running locally, replace `idia` with `node` and ensure `NODE_CONTAINER_PATH` in `config.py` points to your `polkat-[version].sif`.
 
-This step extracts observation metadata and writes `project_info.json`. It also splits fields and averages the ms-file to 1024 channels. Scans <10s (from 2s integration data) are flagged to address known metadata issues.
-
-Key `config.py` options:
-
-- `POLANG_NAME`: Default `'J1331+3030'` (3C286); blank disables polarization angle calibration.
-- `POLANG_DIR`: Coordinates of the polang calibrator.
-- `PRE_FIELDS`: List of fields (target, calibrator, etc.).
+This step extracts info for targets/calibrators from your ms-file, storing it in `project_info.json`. INFO also splits out your desired fields and averages your ms-file down to (by default) 1024 frequency channels (oxkat did this at the start of 1GC). 
 
 
+**Commonly customized `config.py` variables:**
 
-### Note: No Polarization Angle Calibrator?
+- `POLANG_NAME = 'J1331+3030'` — Name of the polarization angle calibrator as it appears in the ms-file (default: J1331+3030/3C286). Leave blank if you do not wish to perform polarization angle calibration.
+- `POLANG_DIR  = '13:31:08.2881,+30.30.32.959'` — Coordinates of the polarization angle calibrator (default: 3C286).
+- `PRE_FIELDS = ''` — Specify fields of interest. For multi-target ms-files, polkat will process each target. To process only a specific target, provide the names of the target, phase calibrator, primary calibrator, and (if applicable) polarization angle calibrator. **If you use `PRE_FIELDS`, be sure to include the polarization calibrator in the string.**
+
+- ### Note: No Polarization Angle Calibrator?
 
 If no polang calibrator is available, make sure `POLANG_NAME = ''`. The primary (e.g., J1939) must be unpolarized. You can recover total polarization (but not separate linear from circular).
+
+SARAO/MeerKAT provides two polarization angle calibrators: J1331+3030 (3C286, default) and J0521+1638 (3C138). Parameters for 3C138 are also included in the config file. Using a non-standard calibrator is possible, but intended for expert users.
+
+A block of code has been added to `oxkat/PRE_casa_average_to_1k_add_wtspec.py` to address a known metadata issue:
+
+```
+# Remove short scans that arise from metadata error from 2s integration observations
+bad_scans = []
+good_scans = []
+
+tb.open(master_ms)
+scans = np.unique(tb.getcol('SCAN_NUMBER'))
+for scan in scans:
+    subtab = tb.query(query='SCAN_NUMBER=='+str(scan)) # scan info
+    scan_times = np.unique(subtab.getcol('TIME')) # scan integration times
+    scan_dt = scan_times[-1] - scan_times[0] # total scan length (s)
+    integration = scan_times[1] - scan_times[0] # integration length (s)
+    if scan_dt < 10.0 and integration < 2.5:
+        bad_scans.append(str(scan))
+    else:
+        good_scans.append(str(scan))
+tb.close()
+
+if myscans != '':
+    myscans = myscans.split(',')
+    myscans = ','.join([scan for scan in myscans if scan not in bad_scans])
+else:
+    myscans = ','.join(good_scans)
+```
+
+This code flags any short scans (less than 10 seconds) when the dump time is 2 seconds, due to a known metadata bug that can mislabel the pointing direction. For most users, this removal is desirable unless you have genuine target scans shorter than 10 seconds. If this behavior is not desired, you can manually comment out this code block—it will not affect the rest of the workflow.
+
+At the end of the INFO step, you should have a working ms-file, typically named `[ms-file]_1024ch.ms`. You are now ready to proceed to the next stage.
 
 ---
 
