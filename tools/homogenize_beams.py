@@ -1847,23 +1847,11 @@ def homogenize_images(identifier: str, beam: Tuple[float, float, float],
                 
                     # For image_new
                     image_new = np.asarray(image_new, dtype=np.float32)
-                    if image_new.ndim == 2:
-                        image_new = image_new.reshape(1, 1, image_new.shape[0], image_new.shape[1])
-                    elif image_new.ndim == 3:
-                        image_new = image_new.reshape(1, image_new.shape[0], image_new.shape[1], image_new.shape[2])
-                    
-                    image_fits = fits.PrimaryHDU(data=image_new, header=header)
-                    image_fits.writeto(image_name, overwrite=True)
+                    create_fits(image_new, header, image_name)
                     
                     # For image_rms
-                    image_rms = np.asarray(image_rms, dtype=np.float32)
-                    if image_rms.ndim == 2:
-                        image_rms = image_rms.reshape(1, 1, image_rms.shape[0], image_rms.shape[1])
-                    elif image_rms.ndim == 3:
-                        image_rms = image_rms.reshape(1, image_rms.shape[0], image_rms.shape[1], image_rms.shape[2])
-                    
-                    residual_fits = fits.PrimaryHDU(data=image_rms, header=header)
-                    residual_fits.writeto(residual_name, overwrite=True)
+                    image_rms = np.asarray(image_rms, dtype=np.float32)  
+                    create_fits(image_rms, header, residual_name)
                     
                     msg(f'Successfully processed: {os.path.basename(image_name)}')
                 
