@@ -1845,11 +1845,13 @@ def homogenize_images(identifier: str, beam: Tuple[float, float, float],
                     header['BPA'] = np.degrees(p - 0.5 * np.pi)
                     header['HISTORY'] = f'Beam homogenized using pypher kernel'
                 
-                    image_fits = fits.PrimaryHDU(data=image_new, header=header)
-                    image_fits.writeto(image_name, overwrite=True)
-                
-                    residual_fits = fits.PrimaryHDU(data=image_rms, header=header)
-                    residual_fits.writeto(residual_name, overwrite=True)
+                    # For image_new
+                    image_new = np.asarray(image_new, dtype=np.float32)
+                    create_fits(image_new, header, image_name)
+                    
+                    # For image_rms
+                    image_rms = np.asarray(image_rms, dtype=np.float32)  
+                    create_fits(image_rms, header, residual_name)
                     
                     msg(f'Successfully processed: {os.path.basename(image_name)}')
                 
