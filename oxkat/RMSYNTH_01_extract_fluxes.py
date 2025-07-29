@@ -43,7 +43,7 @@ def get_imfit_values(fname, image, xpix, ypix):
 
     # Get the numnber of components
     n_comp = len(xpix)
-   
+  
     # For single components
     if n_comp == 1: 
         x = xpix[0]
@@ -62,9 +62,9 @@ def get_imfit_values(fname, image, xpix, ypix):
         # Take either twice the maximum distance or 10 times the bmaj axis as the bounding region radius
         x = xpix[0]
         y = ypix[0]
-        r = np.amax((10 * bmaj, 2.0 * max_dist))
+        r = np.amax((5 * bmaj, 2.0 * max_dist))
         src_region = f'circle[[{x}pix,{y}pix],{r}arcsec]'
-    
+   
     return imfit(image, estimates = fname, region = src_region)
     
     
@@ -101,7 +101,7 @@ def calculate_P0(flux_P, rms_Q, rms_U, rms_V, pol_flag, Aq = 0.8):
         rms_P = np.amax([rms_Q, rms_U, rms_V]) # adopt maximum
         
         # Always de-bias - from my own Mote Carlo experiments it seems like the bias correction becomes a factor of 2 for P^2 = Q^2 + U^2 + V^2  
-        flux_P0 =  (flux_P ** 2 - 2.0 * rms_P ** 2) ** (0.5)
+        P0 =  (flux_P ** 2 - 2.0 * rms_P ** 2) ** (0.5)
 
     return flux_P0, rms_P
 
@@ -182,7 +182,6 @@ def check_position(fname, image, xpix, ypix, snr_thresh = 5.0, P_image = False, 
     bmin = imhead(image, mode='get', hdkey='bmin')['value']
     bpa  = imhead(image, mode='get', hdkey='bpa')['value']
 
-
     for x, y in zip(xpix, ypix):
         region = f'circle[[{x}pix,{y}pix],{2 * bmaj}arcsec]'
 
@@ -195,6 +194,7 @@ def check_position(fname, image, xpix, ypix, snr_thresh = 5.0, P_image = False, 
 
         # If its a P-image don't use the image plane noise as the check criteria as it is (very) non-gaussian
         rms = get_imstat_values(image, x, y, manual_rms_region = manual_rms_region)[3]
+        
         if P_image is True:
             # msg(f'Check image: {image}')
             image_Q = image.replace('-Plin-', '-Q-').replace('-Ptot-', '-Q-')
@@ -210,7 +210,7 @@ def check_position(fname, image, xpix, ypix, snr_thresh = 5.0, P_image = False, 
             fix_var.append('abp')
         else:
             fix_var.append('xyabp')
-            msg(f'Fixing position of image: {image}')
+            msg(f'Fixing position of component {k} for: {image}')
         k+=1
 
     # Make the estimate file
@@ -298,7 +298,7 @@ def extract_polarization_properties(src_name,
     prefix_arr = glob.glob(f'{src_im_identifier}*-MFS*{mfs_im_suffix}')
     prefix_arr = sorted(list(set([x.split('-MFS')[0] for x in prefix_arr])))
     
-    for k, prefix in enumerate(prefix_arr):
+    for k, prefix in enumerate(prefix_arr[:]):
     
         # Extract the MFS image parameters
         msg(f'Fitting MFS image(s) for prefix {k}: {prefix}')
@@ -337,7 +337,7 @@ def extract_polarization_properties(src_name,
         # First fit Stokes I -- also extract pixel coordinates
         fix = []
         for z, boolean in enumerate(src_ulims):        
-            msg(f'For source {src_name} component {k} has upper limit = {boolean}')
+            msg(f'For source {src_name} component {z} has upper limit = {boolean}')
             if boolean:
                 fix.append('xyabp')
             else:
@@ -345,12 +345,12 @@ def extract_polarization_properties(src_name,
     
         make_estimate('estimate_I.txt', MFS_images[0], src_ra_pix, src_dec_pix,  fix)
         MFS_I_imfit = get_imfit_values('estimate_I.txt', MFS_images[0], src_ra_pix, src_dec_pix)
-       
+
         # Get number of components
         components = [key for key in MFS_I_imfit['results'].keys() if 'component' in key]              
         MFS_I_ra_pix = [MFS_I_imfit['results'][key]['pixelcoords'][0] for key in components]
         MFS_I_dec_pix = [MFS_I_imfit['results'][key]['pixelcoords'][1] for key in components]
-        
+       
         # Initialize arrays if they don't exist, else append values to existsing arrays
         for z, component in enumerate(components):
         
@@ -362,7 +362,7 @@ def extract_polarization_properties(src_name,
             RA_pix_I = MFS_I_imfit['results'][component]['pixelcoords'][0]
             DEC_pix_I = MFS_I_imfit['results'][component]['pixelcoords'][1]
             rms_I = get_imstat_values(MFS_images[0], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3
-        
+       
             if component not in output_dictionary['MFS']:
 
                 output_dictionary['MFS'][component] = {}
@@ -417,9 +417,10 @@ def extract_polarization_properties(src_name,
             MFS_V_dec_pix = [MFS_V_imfit['results'][key]['pixelcoords'][1] for key in components]   
   
             # Once again initialize arrays that don't exist
-            for component in components:
+            for component in components[:]:
             
                 # For ease and readability separate out the parameters for calculations and rms extraction
+                flux_I = MFS_I_imfit['results'][component]['peak']['value'] * 1e3
                 flux_P = MFS_P_imfit['results'][component]['peak']['value'] * 1e3
                 flux_Q = MFS_Q_imfit['results'][component]['peak']['value'] * 1e3
                 flux_U = MFS_U_imfit['results'][component]['peak']['value'] * 1e3
@@ -433,6 +434,7 @@ def extract_polarization_properties(src_name,
                 RA_P   = MFS_P_imfit['results'][component]['shape']['direction']['m0']['value'] * 180 / np.pi
                 DEC_P = MFS_P_imfit['results'][component]['shape']['direction']['m1']['value'] * 180 / np.pi
                 
+                rms_I = get_imstat_values(MFS_images[1], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3                
                 rms_Q = get_imstat_values(MFS_images[2], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3                
                 rms_U = get_imstat_values(MFS_images[3], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3                
                 rms_V = get_imstat_values(MFS_images[4], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3                
@@ -623,6 +625,7 @@ def extract_polarization_properties(src_name,
                         DEC_pix_I = CHAN_I_imfit['results'][component]['pixelcoords'][1]
             
                         # For ease and readability separate out the parameters for calculations and rms extraction
+                        flux_I = CHAN_I_imfit['results'][component]['peak']['value'] * 1e3
                         flux_P = CHAN_P_imfit['results'][component]['peak']['value'] * 1e3
                         flux_Q = CHAN_Q_imfit['results'][component]['peak']['value'] * 1e3
                         flux_U = CHAN_U_imfit['results'][component]['peak']['value'] * 1e3
@@ -636,6 +639,7 @@ def extract_polarization_properties(src_name,
                         RA_P   = CHAN_P_imfit['results'][component]['shape']['direction']['m0']['value'] * 180 / np.pi
                         DEC_P = CHAN_P_imfit['results'][component]['shape']['direction']['m1']['value'] * 180 / np.pi
                     
+                        rms_I = get_imstat_values(CHAN_images[0], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3                
                         rms_Q = get_imstat_values(CHAN_images[2], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3                
                         rms_U = get_imstat_values(CHAN_images[3], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3                
                         rms_V = get_imstat_values(CHAN_images[4], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3                
@@ -707,8 +711,8 @@ def extract_polarization_properties(src_name,
                             output_dictionary['CHAN'][component]['LP_EVPA'][k].append(LP_EVPA)
                             output_dictionary['CHAN'][component]['LP_EVPA_err'][k].append(LP_EVPA_err)     
 
-            except Exception as e:
-                msg(f"Error occurred: {e}: Channel likely flagged")
+            except:
+                msg('Fitting Failed: Channel is likely flagged')
 
 
         # Write RM Synthesis files (freq, I, Q, U, dI, dQ, dU)
@@ -746,7 +750,7 @@ def main():
         pol_flag = True
         
     # Iterate through sources as specified in rmsynth_info.json
-    for k in range(len(rmsynth_info['image_directory']))[:]:      
+    for k in range(len(rmsynth_info['image_directory']))[:]:
     
         # Construct image identifier based on input options
         if rmsynth_info["image_timing"][k]:
