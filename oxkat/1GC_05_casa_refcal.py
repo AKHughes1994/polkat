@@ -742,7 +742,7 @@ if pacal_name == '':
             # applymode='calflagstrict',
             field = pcal,
             #calwt = False,
-            parang = True,
+            parang = False,
             gainfield = [pcal,pcal, bpcal_name, pcal, bpcal_name],
             interp = ['linear','linear','linear','linear','nearest'],
             flagbackup=False)
@@ -758,7 +758,7 @@ if pacal_name == '':
                 gaintable = [ktab,gptab,bptab,ftab,dftab],
                 field=target,
                 #calwt=False,
-                parang=True,
+                parang=False,
                 gainfield = [related_pcal, related_pcal, bpcal_name, related_pcal, bpcal_name],
                 interp = ['linear','linear','linear','linear','nearest'],
                 flagbackup=False)
