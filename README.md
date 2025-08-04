@@ -1,5 +1,7 @@
 ### Caution
 
+**THE DEFAULT WAS RECENTLY SWITCHED FROM POLKAT_CASA TO THIS BRANCH. THE REASONS ARE: (A) THIS BRANCH HAS MORE FUNCTIONALITY (I.E., PEELING); (B) IT IS MORE INLINE WITH OKXAT WORKFLOW**
+
 This routine has been extensively tested for MeerKAT L- and S-bands. UHF band support is experimental: while the current version recovers correct polarization degrees, the polarization angle below 800 MHz is problematic. Please check your data carefully for UHF band reductions. We will update this documentation as we resolve these issues.
 
 ---
