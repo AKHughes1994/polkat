@@ -35,7 +35,7 @@ polkat was designed for ILIFU clusters (hosted by IDIA), but it can also be run 
 To run outside ILIFU, containers can be pulled from DockerHub:
 
 ```bash
-singularity pull polkat-0.1.2.sif docker://hughesakh/polkat:0.1.2
+singularity pull polkat-0.2.0.sif docker://hughesakh/polkat:0.2.0
 singularity pull polkat-albus.sif docker://hughesakh/polkat_albus:latest
 ```
 

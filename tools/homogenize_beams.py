@@ -20,14 +20,17 @@ import glob
 import subprocess
 import gc
 import time
+import uuid
 import scipy
 import matplotlib.pyplot as plt
 import numpy as np
+import bottleneck as bn
 from astropy.io import fits
 from astropy.convolution import Gaussian2DKernel
 from scipy.spatial import ConvexHull
 import psutil
 import multiprocessing as mp
+from multiprocessing import shared_memory
 from concurrent.futures import ProcessPoolExecutor, as_completed, ThreadPoolExecutor
 import threading
 from typing import List, Tuple, Optional, Dict, Any, Union
@@ -421,7 +424,7 @@ def flush_fits(newimage: np.ndarray, newheader: fits.Header, fitsfile: str) -> N
         f.flush()
 
 # ============================================================================
-# ENHANCED WELZL ALGORITHM IMPLEMENTATION
+# WELZL ALGORITHM IMPLEMENTATION
 # ============================================================================
 
 def is_singular(A: np.ndarray, tolerance: float = 1e-12) -> bool:
@@ -441,7 +444,7 @@ def is_singular(A: np.ndarray, tolerance: float = 1e-12) -> bool:
         True if matrix is singular or near-singular
     """
     try:
-        # Use SVD for more robust singularity detection
+        # Use SVD for singularity detection
         _, s, _ = np.linalg.svd(A)
         return np.min(s) < tolerance * np.max(s)
     except np.linalg.LinAlgError:
@@ -464,7 +467,7 @@ def center_form_to_geometric(F: np.ndarray, c: np.ndarray) -> Optional[Tuple[np.
         (center, major_radius, minor_radius, rotation_angle) or None if degenerate
     """
     try:
-        # Enhanced eigenvalue computation with better numerical stability
+        # Compute eigenvalues and eigenvectors
         w, V = np.linalg.eigh(F)
         
         # Check for positive definiteness (valid ellipse)
@@ -475,10 +478,10 @@ def center_form_to_geometric(F: np.ndarray, c: np.ndarray) -> Optional[Tuple[np.
         if V[1, 0] < 0:
             V[:, 0] = -V[:, 0]
         
-        # Compute rotation angle with improved precision
+        # Compute rotation angle
         rotation_angle = np.arctan2(V[1, 0], V[0, 0])
         
-        # Compute semi-axes with numerical safeguards
+        # Compute semi-axes with safeguards
         semi_major = 1.0 / np.sqrt(np.min(w))
         semi_minor = 1.0 / np.sqrt(np.max(w))
         
@@ -511,10 +514,10 @@ def ellipse_from_boundary5(S: np.ndarray) -> Optional[Tuple[np.ndarray, float, f
         if is_singular(A):
             return None
         
-        # Solve with improved numerical stability
+        # Solve for ellipse coefficients
         sol = np.linalg.solve(A, -np.ones(S.shape[0]))
         
-        # Compute ellipse center with safeguards
+        # Compute ellipse center
         center_matrix = -2 * np.array([[sol[0], sol[2]], [sol[2], sol[1]]])
         if is_singular(center_matrix):
             return None
@@ -678,7 +681,7 @@ def ellipse_from_boundary3(S: np.ndarray) -> Optional[Tuple[np.ndarray, float, f
         if is_singular(Sc):
             return None
         
-        # Enhanced matrix inversion with condition number check
+        # Matrix inversion with condition check
         StS = Sc.T @ Sc
         if is_singular(StS):
             return None
@@ -708,7 +711,7 @@ def welzl(interior: np.ndarray, boundary: np.ndarray = None) -> Optional[Tuple[n
     if boundary is None:
         boundary = np.zeros((0, 2))
     
-    # Enhanced stopping conditions
+    # Check stopping conditions
     if interior.shape[0] == 0 or boundary.shape[0] == 5:
         if boundary.shape[0] <= 2:
             return None
@@ -859,7 +862,7 @@ def convexhull(images: List[str], sigma_threshold: float = 3.0) -> Tuple[np.ndar
             bmin = header.get('BMIN', 0)
             bpa = header.get('BPA', 0)
             
-            # No need to check bmaj > 0 and bmin > 0 since filter_beam_outliers already did this
+            # Convert beam parameters
             a = bmaj / (8 * np.log(2)) ** 0.5
             b = bmin / (8 * np.log(2)) ** 0.5
             p = np.radians(bpa) + np.pi * 0.5
@@ -920,7 +923,7 @@ def get_homogenized_beam(identifier: str, sigma_threshold: float = 3.0) -> Tuple
     hull_points, all_points = convexhull(images, sigma_threshold)
     msg(f"Computed convex hull with {len(hull_points)} vertices from {len(all_points)} beam points")
     
-    # Apply Welzl algorithm with multiple attempts for robustness
+    # Apply Welzl algorithm with multiple attempts
     ellipse = None
     max_attempts = 5
     
@@ -977,7 +980,7 @@ def get_homogenized_beam(identifier: str, sigma_threshold: float = 3.0) -> Tuple
 # MEMORY MANAGEMENT AND CHUNK PROCESSING
 # ============================================================================
 
-def estimate_image_memory_usage(images: List[str], safety_factor: float = 1.5) -> float:
+def estimate_image_memory_usage(images: List[str], safety_factor: float = 1.0) -> Tuple[float, float]:
     """
     Estimate total memory required to load all images simultaneously.
     
@@ -986,12 +989,12 @@ def estimate_image_memory_usage(images: List[str], safety_factor: float = 1.5) -
     images : List[str]
         List of image file paths
     safety_factor : float
-        Safety multiplier for memory estimation
+        Safety multiplier for memory estimation (default: 1.0, can be increased for safety margin)
         
     Returns
     -------
-    float
-        Estimated memory usage in GB
+    Tuple[float, float]
+        (estimated_memory_gb, safety_factor) - memory usage in GB and the safety factor used
     """
     try:
         # Sample first few images to estimate size
@@ -1010,13 +1013,42 @@ def estimate_image_memory_usage(images: List[str], safety_factor: float = 1.5) -
             total_estimated_pixels = avg_pixels_per_image * len(images)
             # 4 bytes per float32 pixel
             estimated_gb = (total_estimated_pixels * 4 * safety_factor) / (1024**3)
-            return estimated_gb
+            return estimated_gb, safety_factor
         else:
-            return float('inf')  # Could not estimate
+            return float('inf'), safety_factor  # Could not estimate
             
     except Exception as e:
         msg(f"Warning: Could not estimate memory usage: {e}")
-        return float('inf')
+        return float('inf'), safety_factor
+
+def estimate_memory_from_dimensions(num_images: int, ny: int, nx: int, safety_factor: float = 1.5) -> Tuple[float, float]:
+    """
+    Estimate total memory required based on number of images and dimensions.
+    
+    Parameters
+    ----------
+    num_images : int
+        Number of images
+    ny : int
+        Image height in pixels
+    nx : int
+        Image width in pixels
+    safety_factor : float
+        Safety multiplier for memory estimation (default: 1.5)
+        
+    Returns
+    -------
+    Tuple[float, float]
+        (estimated_memory_gb, safety_factor) - memory usage in GB and the safety factor used
+    """
+    try:
+        total_pixels = num_images * ny * nx
+        # 4 bytes per float32 pixel
+        estimated_gb = (total_pixels * 4 * safety_factor) / (1024**3)
+        return estimated_gb, safety_factor
+    except Exception as e:
+        msg(f"Warning: Could not estimate memory usage: {e}")
+        return float('inf'), safety_factor
 
 def can_load_all_images_in_memory(images: List[str], system_info: Dict[str, Any]) -> bool:
     """
@@ -1034,15 +1066,14 @@ def can_load_all_images_in_memory(images: List[str], system_info: Dict[str, Any]
     bool
         True if all images can fit in memory
     """
-    estimated_gb = estimate_image_memory_usage(images)
+    estimated_gb, actual_safety_factor = estimate_image_memory_usage(images)
     available_gb = system_info['usable_memory_gb']
         
     msg(f"Memory analysis:")
-    msg(f"  Estimated image data: {estimated_gb:.1f} GB")
+    msg(f"  Estimated image data: {estimated_gb:.1f} GB (safety factor: {actual_safety_factor}x)")
     msg(f"  Available memory: {available_gb:.1f} GB")
     
     can_fit = estimated_gb <= available_gb
-    # can_fit = estimated_gb <= temp # 
     msg(f"  Can load all images in memory: {can_fit}")
     
     return can_fit
@@ -1084,10 +1115,10 @@ def calculate_optimal_chunk_size(ny: int, nx: int, num_images: int,
     """
     # Auto-detect worker type based on memory constraints if not specified
     if worker_type == 'auto':
-        estimated_memory_gb = num_images * ny * nx * 4 * 1.5 / (1024**3)
+        estimated_memory_gb, actual_safety_factor = estimate_memory_from_dimensions(num_images, ny, nx)
         can_fit_in_memory = estimated_memory_gb <= resources['usable_memory_gb']
         worker_type = 'processes' if can_fit_in_memory else 'threads'
-        msg(f"Auto-detected worker type: {worker_type} (can fit in memory: {can_fit_in_memory})")
+        msg(f"Auto-detected worker type: {worker_type} (estimated memory: {estimated_memory_gb:.1f} GB, safety factor: {actual_safety_factor}x, can fit: {can_fit_in_memory})")
 
     # Set default number of workers based on type
     if n_workers is None:
@@ -1099,13 +1130,11 @@ def calculate_optimal_chunk_size(ny: int, nx: int, num_images: int,
     # Calculate memory constraints based on worker type
     if worker_type == 'processes':
         memory_per_worker = resources['usable_memory_pixels'] / n_workers
-        overhead_factor = 1.0
-        max_chunk_area_per_worker = memory_per_worker / overhead_factor
-        strategy_desc = "multiprocessing (pre-loaded images)"
+        max_chunk_area_per_worker = memory_per_worker
+        strategy_desc = "multiprocessing (shared memory)"
     else:
         total_memory = resources['usable_memory_pixels']
-        overhead_factor = 1.0
-        max_chunk_area_per_worker = total_memory / (n_workers * num_images * overhead_factor)
+        max_chunk_area_per_worker = total_memory / (n_workers * num_images)
         memory_per_worker = total_memory
         strategy_desc = "threading (I/O bound)"    
 
@@ -1116,26 +1145,25 @@ def calculate_optimal_chunk_size(ny: int, nx: int, num_images: int,
     msg(f'  Number of images: {num_images}')
     msg(f'  Memory per worker: {memory_per_worker:,} pixels')
     msg(f'  Max chunk area per worker: {max_chunk_area_per_worker:.0f} pixels')
-    msg(f'  Overhead factor: {overhead_factor}x')
 
-    # Get valid divisors for efficient chunking
+    # Get divisors for spatial chunking
     y_divisors = get_divisors(ny)
     x_divisors = get_divisors(nx)
     
     if worker_type == 'processes':
         # For CPU-bound multiprocessing, aim for optimal work distribution
         total_pixels = ny * nx
-        min_pixels_per_chunk = 256 * 256  # Minimum work to justify a process
+        min_pixels_per_chunk = 256 * 256  # Minimum chunk size for process overhead
         max_reasonable_chunks = total_pixels // min_pixels_per_chunk
         
-        # Don't use more cores than we can effectively utilize
+        # Limit workers to available work
         effective_workers = min(n_workers, max(1, max_reasonable_chunks))
         
         if effective_workers < n_workers:
             msg(f'  Reducing workers from {n_workers} to {effective_workers} for efficiency')
             n_workers = effective_workers
         
-        # Target 1-2 chunks per worker for good load balancing
+        # Target chunks for load balancing
         target_chunks = n_workers * 1.5
         target_chunk_area = total_pixels / target_chunks
         
@@ -1160,7 +1188,7 @@ def calculate_optimal_chunk_size(ny: int, nx: int, num_images: int,
                 total_chunks = (ny // chunk_y) * (nx // chunk_x)
                 chunks_per_worker = total_chunks / n_workers
                 
-                # Score: prefer chunks that give good work distribution
+                # Calculate work distribution score
                 if chunks_per_worker < 0.5:
                     distribution_score = chunks_per_worker * 2
                 elif chunks_per_worker > 3.0:
@@ -1208,12 +1236,12 @@ def calculate_optimal_chunk_size(ny: int, nx: int, num_images: int,
                 aspect_ratio = max(chunk_y, chunk_x) / min(chunk_y, chunk_x)
                 square_score = 1.0 / aspect_ratio
                 
-                # Worker distribution score (prefer more, smaller chunks for better I/O parallelism)
+                # Worker distribution score for I/O parallelism
                 chunks_per_worker = total_chunks / n_workers
                 distribution_score = min(1.0, chunks_per_worker / 4.0)
                 
                 # Memory efficiency score
-                memory_usage = chunk_area * num_images * overhead_factor
+                memory_usage = chunk_area * num_images
                 memory_efficiency = 1.0 - (memory_usage / memory_per_worker)
                 memory_efficiency = max(0.1, memory_efficiency)
                 
@@ -1233,11 +1261,15 @@ def calculate_optimal_chunk_size(ny: int, nx: int, num_images: int,
     chunks_per_worker = total_chunks / n_workers
     
     if worker_type == 'processes':
-        memory_per_chunk = best_chunk_y * best_chunk_x * 4  # 4 bytes per float32
-        peak_memory_estimate = memory_per_chunk * n_workers
+        # For processes with shared memory: image stack in shared memory + chunk processing per worker
+        total_image_memory = num_images * ny * nx * 4  # 4 bytes per float32 for entire shared image stack
+        chunk_processing_memory = best_chunk_y * best_chunk_x * 4 * n_workers  # Additional memory for chunk processing per worker
+        peak_memory_estimate = total_image_memory + chunk_processing_memory
     else:
-        memory_per_chunk = num_images * best_chunk_y * best_chunk_x * 4
-        peak_memory_estimate = memory_per_chunk * n_workers
+        # For threads: Each thread loads one chunk worth of data from all images at a time
+        # Peak memory is when all threads are processing their chunks simultaneously
+        memory_per_thread = num_images * best_chunk_y * best_chunk_x * 4  # 4 bytes per float32
+        peak_memory_estimate = memory_per_thread * n_workers
     
     memory_efficiency_pct = (peak_memory_estimate / (resources['usable_memory_gb'] * 1024**3)) * 100
     
@@ -1246,7 +1278,16 @@ def calculate_optimal_chunk_size(ny: int, nx: int, num_images: int,
     msg(f'  Aspect ratio: {max(best_chunk_y, best_chunk_x)/min(best_chunk_y, best_chunk_x):.2f}')
     msg(f'  Total chunks: {total_chunks}')
     msg(f'  Chunks per worker (avg): {chunks_per_worker:.1f}')
-    msg(f'  Memory per chunk: {memory_per_chunk / (1024**3):.2f} GB')
+    
+    if worker_type == 'processes':
+        total_image_memory_gb = (num_images * ny * nx * 4) / (1024**3)
+        chunk_memory_gb = (best_chunk_y * best_chunk_x * 4 * n_workers) / (1024**3)
+        msg(f'  Shared image stack memory: {total_image_memory_gb:.2f} GB')
+        msg(f'  Chunk processing memory: {chunk_memory_gb:.2f} GB') 
+    else:
+        memory_per_chunk_gb = (num_images * best_chunk_y * best_chunk_x * 4) / (1024**3)
+        msg(f'  Memory per chunk: {memory_per_chunk_gb:.2f} GB')
+    
     msg(f'  Estimated peak memory: {peak_memory_estimate / (1024**3):.2f} GB')
     msg(f'  Memory efficiency: {memory_efficiency_pct:.1f}% of available')
     msg(f'  Optimization score: {best_score:.3f}')
@@ -1271,9 +1312,9 @@ def process_chunk_cpu_worker(args):
     """
     Worker function for CPU-bound chunk processing in multiprocessing environment.
     
-    Extracts a chunk from pre-loaded image stack and computes median across 
+    Extracts a chunk from shared memory image stack and computes median across 
     the image axis. Designed for CPU-intensive median computation on data
-    that is already loaded in memory.
+    that is shared across processes.
     
     Parameters
     ----------
@@ -1281,8 +1322,10 @@ def process_chunk_cpu_worker(args):
         Packed arguments containing:
         - coords : Tuple[int, int]
             Chunk coordinates (i, j) for positioning
-        - image_stack : np.ndarray
-            Pre-loaded 3D array of shape (num_images, height, width)
+        - shm_name : str
+            Name of shared memory block containing image stack
+        - shape : Tuple[int, int, int]
+            Shape of the shared image stack (num_images, height, width)
         - chunk_y : int
             Chunk height in pixels
         - chunk_x : int  
@@ -1303,36 +1346,46 @@ def process_chunk_cpu_worker(args):
     
     Notes
     -----
-    Optimized for multiprocessing with pre-loaded data where image_stack
-    is shared across processes. Each process computes median for independent
-    spatial chunks without I/O overhead.
+    Uses shared memory to avoid copying the entire image stack to each worker process.
+    Each process computes median for independent spatial chunks.
     """
-    coords, image_stack, chunk_y, chunk_x, ny, nx = args
+    coords, shm_name, shape, chunk_y, chunk_x, ny, nx = args
     i, j = coords
     y_start, y_end = i, min(i + chunk_y, ny)
     x_start, x_end = j, min(j + chunk_x, nx)
     
-    # Extract chunk from pre-loaded stack and compute median
-    chunk_data = image_stack[:, y_start:y_end, x_start:x_end]
-    median_chunk = np.median(chunk_data, axis=0)
-    
-    return (median_chunk, y_start, y_end, x_start, x_end)
+    try:
+        # Attach to existing shared memory
+        existing_shm = shared_memory.SharedMemory(name=shm_name)
+        # Create numpy array view of shared memory
+        image_stack = np.ndarray(shape, dtype=np.float32, buffer=existing_shm.buf)
+        
+        # Extract chunk from shared memory stack and compute median
+        chunk_data = image_stack[:, y_start:y_end, x_start:x_end]
+        median_chunk = bn.median(chunk_data, axis=0)
+        
+        # Don't close the shared memory here - it will be cleaned up by the main process
+        return (median_chunk, y_start, y_end, x_start, x_end)
+        
+    except Exception as e:
+        return (None, y_start, y_end, x_start, x_end)
 
-def compute_median_preloaded(images_data: List[np.ndarray], 
-                           resources: Dict[str, Any],
-                           chunk_size: Optional[int] = None,
-                           n_processes: Optional[int] = None) -> np.ndarray:
+def compute_median_preloaded_shared(shm_name: str, shape: Tuple[int, int, int],
+                                   resources: Dict[str, Any],
+                                   chunk_size: Optional[int] = None,
+                                   n_processes: Optional[int] = None) -> np.ndarray:
     """
-    Compute median from pre-loaded images using multiprocessing for CPU-bound computation.
+    Compute median from images already loaded in shared memory (zero-copy approach).
     
-    Optimized for scenarios where all images fit in memory and can be pre-loaded.
-    Uses multiprocessing to parallelize median computation across spatial chunks,
-    with each process handling independent regions of the image stack.
+    This function works directly with existing shared memory created by the caller,
+    eliminating the need for any data copying. Optimized for maximum memory efficiency.
     
     Parameters
     ----------
-    images_data : List[np.ndarray]
-        List of pre-loaded image arrays, all must have same dimensions
+    shm_name : str
+        Name of existing shared memory block containing image stack
+    shape : Tuple[int, int, int]
+        Shape of the image stack (num_images, height, width)
     resources : Dict[str, Any]
         System resource information for optimization
     chunk_size : Optional[int]
@@ -1348,24 +1401,21 @@ def compute_median_preloaded(images_data: List[np.ndarray],
     Notes
     -----
     Memory Strategy:
-    - Images are stacked into single 3D array for efficient access
+    - Works directly with existing shared memory (ZERO COPY)
+    - No memory duplication at any point
     - Each process works on independent spatial chunks
-    - Memory usage scales with chunk size, not number of images
+    - Most memory-efficient approach possible
     
     Performance Characteristics:
     - CPU-bound (median computation is the bottleneck)
     - Optimal when all images fit in memory simultaneously
     - Scales with number of CPU cores available
     """
-    if not images_data:
-        raise ValueError("No image data provided")
+    num_images, ny, nx = shape
     
-    ny, nx = images_data[0].shape
-    num_images = len(images_data)
+    msg(f"Computing median from shared memory stack: {num_images} images ({ny}x{nx}) - ZERO COPY")
     
-    msg(f"Computing median from {num_images} pre-loaded images ({ny}x{nx})")
-    
-    # Calculate optimal chunk size for multiprocessing - FORCE processes
+    # Calculate optimal chunk size for multiprocessing
     if chunk_size is None:
         chunk_y, chunk_x, _ = calculate_optimal_chunk_size(ny, nx, num_images, resources, n_processes, worker_type='processes')
     else:
@@ -1376,42 +1426,52 @@ def compute_median_preloaded(images_data: List[np.ndarray],
         n_processes = resources['optimal_processes_cpu']
 
     msg(f"Using chunk size: {chunk_y}x{chunk_x} pixels")
-    msg(f"Using {n_processes} CPU processes for parallel median computation")
+    msg(f"Using {n_processes} CPU processes with existing shared memory")
     
-    # Stack all images into a single 3D array for efficient processing
-    image_stack = np.stack(images_data, axis=0)
-    result = np.zeros((ny, nx), dtype=np.float32)
-    
-    # Generate chunk coordinates
-    chunk_coords = [(i, j) for i in range(0, ny, chunk_y) for j in range(0, nx, chunk_x)]
-    
-    msg(f"Processing {len(chunk_coords)} chunks using {n_processes} CPU processes")
-    
-    start_time = time.time()
-    
-    # Prepare arguments for worker function
-    worker_args = [(coords, image_stack, chunk_y, chunk_x, ny, nx) for coords in chunk_coords]
-    
-    # Use ProcessPoolExecutor for CPU-bound median computation
-    with ProcessPoolExecutor(max_workers=n_processes) as executor:
-        futures = [executor.submit(process_chunk_cpu_worker, args) for args in worker_args]
+    try:
+        # Attach to existing shared memory to verify it exists
+        shm = shared_memory.SharedMemory(name=shm_name)
+        shared_array = np.ndarray(shape, dtype=np.float32, buffer=shm.buf)
         
-        for i, future in enumerate(as_completed(futures)):
-            median_chunk, y_start, y_end, x_start, x_end = future.result()
-            result[y_start:y_end, x_start:x_end] = median_chunk
+        # Result array
+        result = np.zeros((ny, nx), dtype=np.float32)
+        
+        # Generate chunk coordinates
+        chunk_coords = [(i, j) for i in range(0, ny, chunk_y) for j in range(0, nx, chunk_x)]
+        
+        msg(f"Processing {len(chunk_coords)} chunks using {n_processes} CPU processes")
+        
+        start_time = time.time()
+        
+        # Prepare arguments for worker function
+        worker_args = [(coords, shm_name, shape, chunk_y, chunk_x, ny, nx) for coords in chunk_coords]
+        
+        # Use ProcessPoolExecutor for CPU-bound median computation
+        with ProcessPoolExecutor(max_workers=n_processes) as executor:
+            futures = [executor.submit(process_chunk_cpu_worker, args) for args in worker_args]
             
-            progress = 100 * (i + 1) / len(futures)
-            elapsed = time.time() - start_time
-            rate = (i + 1) / elapsed
-            eta = (len(futures) - i - 1) / rate if rate > 0 else 0
-            msg(f"Progress: {i+1}/{len(futures)} chunks ({progress:.1f}%) | "
-                f"Rate: {rate:.1f} chunks/s | ETA: {eta:.0f}s")
-    
-    elapsed = time.time() - start_time
-    msg(f"Median computation completed in {elapsed:.1f}s")
-    
-    return result
-
+            for i, future in enumerate(as_completed(futures)):
+                median_chunk, y_start, y_end, x_start, x_end = future.result()
+                if median_chunk is not None:
+                    result[y_start:y_end, x_start:x_end] = median_chunk
+                else:
+                    msg(f"Warning: Failed to process chunk {i+1}")
+                
+                progress = 100 * (i + 1) / len(futures)
+                elapsed = time.time() - start_time
+                rate = (i + 1) / elapsed
+                eta = (len(futures) - i - 1) / rate if rate > 0 else 0
+                msg(f"Progress: {i+1}/{len(futures)} chunks ({progress:.1f}%) | "
+                    f"Rate: {rate:.1f} chunks/s | ETA: {eta:.0f}s")
+        
+        elapsed = time.time() - start_time
+        msg(f"Median computation completed in {elapsed:.1f}s")
+        
+        return result
+        
+    except Exception as e:
+        msg(f"Shared memory processing failed: {e}")
+        raise  # Let compute_median_chunked handle the fallback
 
 def process_chunk_threaded(args: Tuple) -> Tuple:
 
@@ -1445,25 +1505,23 @@ def process_chunk_threaded(args: Tuple) -> Tuple:
         chunk_width = x_end - x_start
         num_images = len(images)
         
-        # PRE-ALLOCATE: Single numpy array instead of list
+        # Pre-allocate array for chunk data from all images
         chunk_data = np.zeros((num_images, chunk_height, chunk_width), dtype=np.float32)
         
-        # Load chunk from images directly into pre-allocated array
+        # Load chunk data from each image
         for img_idx, img_path in enumerate(images):
             img = get_image(img_path)
             if img is not None:
                 # Check dimensions to avoid indexing errors
                 if img.shape[0] >= y_end and img.shape[1] >= x_end:
-                    # Extract directly into pre-allocated array (no copy needed)
                     chunk_data[img_idx] = img[y_start:y_end, x_start:x_end]
                 else:
                     msg(f"Warning: Image {img_path} has incompatible dimensions {img.shape}")
-                    # chunk_data[img_idx] remains zeros (already initialized)
-                del img  # Free the full image immediately
-            # If img is None, chunk_data[img_idx] remains zeros
+                del img
+            # If img is None, chunk_data[img_idx] remains zeros by default initialization
         
-        # Compute median directly on pre-allocated array
-        result_chunk = np.median(chunk_data, axis=0)
+        # Compute median across images for this chunk
+        result_chunk = bn.median(chunk_data, axis=0)
         
         # Clean up
         del chunk_data
@@ -1507,7 +1565,7 @@ def compute_median_chunked_threaded(images: List[str],
     ny, nx = first_img.shape
     del first_img
     
-    # Force threading parameters
+    # Set optimal threading parameters
     if n_threads is None:
         n_threads = resources['optimal_threads_io']
     
@@ -1582,25 +1640,126 @@ def compute_median_chunked(images: List[str],
         indices = np.linspace(0, len(images) - 1, max_images, dtype=int)
         images = [images[i] for i in indices]
     
-    # FIXED: Determine strategy ONCE and stick with it
+    # Determine strategy based on available memory
     can_preload = can_load_all_images_in_memory(images, resources)
     
     if can_preload:
-        msg("Strategy: Pre-loading all images for optimal performance")
+        msg("Strategy: Pre-loading all images for shared memory processing")
         
-        # Pre-load all images
-        images_data = []
-        for i, img_path in enumerate(images):
-            img = get_image(img_path)
-            if img is not None:
-                images_data.append(img)
-            if (i + 1) % 10 == 0:
-                msg(f"Loaded {i+1}/{len(images)} images")
+        # Get dimensions from first image
+        first_img = get_image(images[0])
+        if first_img is None:
+            raise ValueError("Could not load first image to determine dimensions")
         
-        if not images_data:
-            raise ValueError("Could not load any images")
+        ny, nx = first_img.shape
+        num_images = len(images)
         
-        return compute_median_preloaded(images_data, resources, chunk_size)
+        # Try shared memory approach first
+        try:
+            # Create unique shared memory name to avoid conflicts
+            shm_name = f"homogenize_beams_{uuid.uuid4().hex[:8]}_{os.getpid()}"
+            
+            # Create shared memory for the image stack
+            shape = (num_images, ny, nx)
+            nbytes = num_images * ny * nx * 4  # 4 bytes per float32
+            msg(f"Creating shared memory stack: {num_images} images of {ny}x{nx} pixels ({nbytes / (1024**3):.2f} GB)")
+            
+            # Create shared memory block with unique name
+            shm = shared_memory.SharedMemory(create=True, size=nbytes, name=shm_name)
+            
+            # Create numpy array view of shared memory
+            shared_image_stack = np.ndarray(shape, dtype=np.float32, buffer=shm.buf)
+            
+            # Load first image directly into shared memory
+            shared_image_stack[0] = first_img.astype(np.float32)
+            loaded_count = 1
+            
+            # Load remaining images directly into shared memory
+            for i in range(1, len(images)):
+                img = get_image(images[i])
+                if img is not None:
+                    if img.shape != (ny, nx):
+                        msg(f"Warning: Image {images[i]} has different dimensions {img.shape}, expected {(ny, nx)}")
+                        continue
+                    shared_image_stack[loaded_count] = img.astype(np.float32)
+                    loaded_count += 1
+                
+                if (i + 1) % 10 == 0:
+                    msg(f"Loaded {loaded_count}/{i+1} images into shared memory")
+            
+            if loaded_count == 0:
+                raise ValueError("Could not load any images")
+            
+            # Trim the shared memory view if some images failed to load
+            if loaded_count < num_images:
+                msg(f"Trimming shared memory view from {num_images} to {loaded_count} images due to load failures")
+                shared_image_stack = shared_image_stack[:loaded_count]
+            
+            # Compute median from shared memory
+            try:
+                result = compute_median_preloaded_shared(shm_name, shared_image_stack.shape, resources, chunk_size)
+                return result
+            except Exception as median_error:
+                msg(f"Shared memory median computation failed: {median_error}")
+                raise  # Re-raise to trigger the outer fallback
+            finally:
+                # Clean up shared memory after processing
+                try:
+                    shm.close()
+                    shm.unlink()
+                    msg("Shared memory cleaned up successfully")
+                except Exception as cleanup_error:
+                    msg(f"Warning: Shared memory cleanup failed: {cleanup_error}")
+            
+        except Exception as e:
+            msg(f"Shared memory approach failed: {e}")
+            msg("Falling back to simple array approach...")
+            
+            # Clean up shared memory if it was created
+            try:
+                if 'shm' in locals():
+                    shm.close()
+                    shm.unlink()
+            except:
+                pass
+            
+            # Simple fallback: Load all images into regular array and compute median
+            msg(f"Loading {num_images} images into regular array: {ny}x{nx} pixels")
+            image_stack = np.zeros((num_images, ny, nx), dtype=np.float32)
+            
+            # Load first image into the stack
+            image_stack[0] = first_img.astype(np.float32)
+            loaded_count = 1
+            
+            # Load remaining images
+            for i in range(1, len(images)):
+                img = get_image(images[i])
+                if img is not None:
+                    if img.shape != (ny, nx):
+                        msg(f"Warning: Image {images[i]} has different dimensions {img.shape}, expected {(ny, nx)}")
+                        continue
+                    image_stack[loaded_count] = img.astype(np.float32)
+                    loaded_count += 1
+                
+                if (i + 1) % 10 == 0:
+                    msg(f"Loaded {loaded_count}/{i+1} images into array")
+            
+            if loaded_count == 0:
+                raise ValueError("Could not load any images")
+            
+            # Trim the array if some images failed to load
+            if loaded_count < num_images:
+                msg(f"Trimming array from {num_images} to {loaded_count} images due to load failures")
+                image_stack = image_stack[:loaded_count]
+            
+            # Simple median computation
+            msg("Computing median using simple array approach...")
+            start_time = time.time()
+            result = bn.median(image_stack, axis=0)
+            elapsed = time.time() - start_time
+            msg(f"Simple median computation completed in {elapsed:.1f}s")
+            
+            return result
     else:
         msg("Strategy: Using threaded I/O for memory-efficient processing")
         return compute_median_chunked_threaded(images, resources, chunk_size, max_images)
@@ -1812,7 +1971,6 @@ def homogenize_images(identifier: str, beam: Tuple[float, float, float],
 
             for im in images:
 
-                # Replace the existing convolution code with:
                 try:
                     # Get various names
                     image_name = im.replace('image.fits', 'image.homogenized.fits') 
@@ -1829,10 +1987,10 @@ def homogenize_images(identifier: str, beam: Tuple[float, float, float],
                         msg(f'Warning: Could not load required images for {im}')
                         continue
                 
-                    # Efficient convolution: model with new PSF (no huge zero arrays)
+                    # Convolve model with new PSF
                     image_new = scipy.signal.fftconvolve(model_image, psf_new_image, mode='same')
                     
-                    # Efficient convolution: residual with kernel (no huge zero arrays)
+                    # Convolve residual with kernel
                     image_rms = scipy.signal.fftconvolve(residual_image, kernel_image, mode='same')
                     
                     # Combine model and residual
