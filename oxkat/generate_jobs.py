@@ -473,16 +473,22 @@ def generate_syscall_predict(msname,
 #                            cellsize = cfg.WSC_CELLSIZE,
 #                            predictchannels = cfg.WSC_PREDICTCHANNELS,
                             mem = cfg.WSC_MEM,
-                            absmem = cfg.WSC_ABSMEM):
+                            absmem = cfg.WSC_ABSMEM,
+                            parallelreordering = cfg.WSC_PARALLELREORDERING,
+                            parallelgridding = cfg.WSC_PARALLELGRIDDING):
 
     # Generate system call to run wsclean in predict mode
     syscall = 'wsclean '
     syscall += '-predict '
     syscall += '-field '+str(field)+' '
     syscall += '-pol ' + str(pol) + ' '
+
+    if parallelreordering != 0:
+        syscall += '-parallel-reordering '+str(parallelreordering)+' '
+    if parallelgridding != 0:
+        syscall += '-parallel-gridding '+str(parallelgridding)+' '
     if intervalsout:
         syscall += '-intervals-out ' + str(intervalsout) + ' '
-
     syscall += '-channels-out '+str(chanout)+' '
     syscall += '-name '+imgname+' '
     if absmem < 0:
@@ -492,7 +498,7 @@ def generate_syscall_predict(msname,
 #    syscall += '-predict-channels '+str(predictchannels)+' '
     syscall += msname + ' '
 
-    return syscall 
+    return syscall
 
 def generate_syscall_wsclean(mslist,
                           imgname,
