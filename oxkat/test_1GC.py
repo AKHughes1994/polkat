@@ -61,6 +61,8 @@ flagmanager(vis=myms,
         mode='restore',
         versionname='autoflag_cals_data')
 
+# Clear calibration
+clearcal(vis=myms, field = pacal_name, addmodel=True)
 
 # ------- Set BP calibrator models
 
@@ -153,7 +155,7 @@ bandpass(vis=myms,
     minblperant=4,
     minsnr=3.0,
     bandtype='B',
-    fillgaps=gapfill,
+    fillgaps=0,
     gainfield=[bpcal_name,bpcal_name],
     interp = ['linear','linear'],
     gaintable=[ktab0,gptab0])
@@ -195,7 +197,7 @@ polcal(vis = myms,
     interp = ['linear','linear','linear','linear'],
     append = False)
 
-flagdata(vis=dftab0,mode='clip', clipminmax=[0.0,0.1], flagbackup=False, datacolumn='CPARAM')
+flagdata(vis=dftab0,mode='clip', clipminmax=[0.0,0.05], flagbackup=False, datacolumn='CPARAM')
 
 # ------- Correct primary data with K0,B0,Gp0,gatab0,dftab0
 
@@ -285,7 +287,7 @@ bandpass(vis=myms,
     minblperant=4,
     minsnr=3.0,
     bandtype='B',
-    fillgaps=gapfill,
+    fillgaps=0,
     gaintable=[ktab, gptab, gatab0, dftab0],
     gainfield=[bpcal_name, bpcal_name, bpcal_name, bpcal_name],
     interp=['linear','linear', 'linear', 'nearest'])
@@ -293,6 +295,9 @@ bandpass(vis=myms,
 
 flagdata(vis=bptab,mode='tfcrop',datacolumn='CPARAM' , flagbackup=False)
 flagdata(vis=bptab,mode='rflag',datacolumn='CPARAM' , flagbackup=False)
+
+
+
 
 # -------- Ga (primary; apply K, Gp, BP, Df0) -- Gaintype 'T'
 
@@ -325,7 +330,7 @@ polcal(vis = myms,
     gainfield=[bpcal_name, bpcal_name, bpcal_name, bpcal_name],
     interp=['linear','linear', 'linear', 'linear'])
 
-flagdata(vis=dftab, mode='clip', clipminmax=[0.0,0.1], flagbackup=False, datacolumn='CPARAM')
+flagdata(vis=dftab, mode='clip', clipminmax=[0.0,0.05], flagbackup=False, datacolumn='CPARAM')
 
 
 # -------------------------------------------------------------------------------------------------------- #
@@ -608,7 +613,7 @@ if pacal_name != '':
         solint = 'inf',
         gaintype='KCROSS',
         parang = True,
-        gaintable=[ktab,gptab,bptab,gatab,dftab],
+        gaintable=[ktab0,gptab0,bptab0,gatab0,dftab0],
         gainfield=[pacal_name, pacal_name,bpcal_name, pacal_name, bpcal_name],
         interp = ['nearest','nearest','linear','nearest','nearest'],
         append = False)
@@ -623,7 +628,7 @@ if pacal_name != '':
         solint = 'inf,16ch', # 64-channels-across in frequency
         poltype='Xf',
         combine = '',
-        gaintable=[ktab,gptab,bptab,gatab,dftab, kcross],
+        gaintable=[ktab0,gptab0,bptab0,gatab0,dftab0, kcross],
         gainfield=[pacal_name,pacal_name,bpcal_name, pacal_name, bpcal_name, pacal_name],
         interp = ['nearest','nearest','linear','nearest','nearest', 'nearest'],
         append = False)
@@ -742,7 +747,7 @@ if pacal_name == '':
             # applymode='calflagstrict',
             field = pcal,
             #calwt = False,
-            parang = False,
+            parang = True,
             gainfield = [pcal,pcal, bpcal_name, pcal, bpcal_name],
             interp = ['linear','linear','linear','linear','nearest'],
             flagbackup=False)
@@ -758,7 +763,7 @@ if pacal_name == '':
                 gaintable = [ktab,gptab,bptab,ftab,dftab],
                 field=target,
                 #calwt=False,
-                parang=False,
+                parang=True,
                 gainfield = [related_pcal, related_pcal, bpcal_name, related_pcal, bpcal_name],
                 interp = ['linear','linear','linear','linear','nearest'],
                 flagbackup=False)
@@ -791,13 +796,13 @@ if pacal_name == '':
 # ------- PACAL
 
 applycal(vis = myms,
-        gaintable = [ktab,gptab,bptab,ftab,dftab, kcross, xftab],
+        gaintable = [ktab0,gptab0,bptab0,ftab0, dftab0, kcross, xftab],
  #       applymode='calflagstrict',
         field = pacal_name,
         #calwt = False,
         parang = True,
         gainfield = [pacal_name,pacal_name, bpcal_name, pacal_name, bpcal_name, pacal_name, pacal_name],
-        interp = ['nearest','nearest','linear','nearest','nearest','nearest', 'nearest'],
+        interp = ['linear','linear','linear','linear','linear','linear', 'linear'],
         flagbackup=False)
 
 # ------- Secondaries
@@ -848,7 +853,7 @@ for i in range(0,len(targets)):
         datacolumn='corrected',
         field=target, flagbackup=False)
 
-# ---- Apply aggressive flags if desired
+# ---- Apply aggressive flags
 if CAL_1GC_AGGRESSIVE_FLAGS and CAL_1GC_BL_FREQS != []:
 
     flagspw = ','.join(CAL_1GC_BL_FREQS)

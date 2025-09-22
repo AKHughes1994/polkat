@@ -204,13 +204,16 @@ def check_position(fname, image, xpix, ypix, snr_thresh = 5.0, P_image = False, 
             rms = np.amax((ims_Q[3],ims_U[3]))
         if fix_additional_comps is True and k > 0:
             fix_var.append('xyabp')
+            msg(f'Fixing position of component {k} because manual flag set: {image}')
         elif fix_additional_comps is True and k == 0 and test_flux > snr_thresh * rms:
             fix_var.append('abp')
+            msg(f'Free fitting position of component {k} with S/N = {test_flux/rms:.2f}: {image}')
         elif fix_additional_comps is False and test_flux > snr_thresh * rms:
             fix_var.append('abp')
+            msg(f'Free fitting position of component {k} with S/N = {test_flux/rms:.2f}: {image}')
         else:
             fix_var.append('xyabp')
-            msg(f'Fixing position of component {k} for: {image}')
+            msg(f'Fixing position of component {k} due to S/N = {test_flux/rms:.2f}: {image}')
         k+=1
 
     # Make the estimate file
@@ -394,11 +397,36 @@ def extract_polarization_properties(src_name,
         
         # Next fit Polarization intensity and check if source is bright enough to allow positions to vary freely
         if not only_intensity:
-            check_position('estimate_P.txt', MFS_images[1], MFS_I_ra_pix, MFS_I_dec_pix, P_image = True, fix_additional_comps = fix_additional_comps, manual_rms_region = manual_rms_region)
-            MFS_P_imfit  = get_imfit_values('estimate_P.txt', MFS_images[1], MFS_I_ra_pix, MFS_I_dec_pix)
-            MFS_P_ra_pix = [MFS_P_imfit['results'][key]['pixelcoords'][0] for key in components]
-            MFS_P_dec_pix = [MFS_P_imfit['results'][key]['pixelcoords'][1] for key in components]   
             
+            # Run a first pass
+            try:
+                check_position('estimate_P.txt', MFS_images[1], MFS_I_ra_pix, MFS_I_dec_pix, P_image = True, fix_additional_comps = False, manual_rms_region = manual_rms_region)
+                MFS_P_imfit  = get_imfit_values('estimate_P.txt', MFS_images[1], MFS_I_ra_pix, MFS_I_dec_pix)
+                MFS_P_ra_pix = [MFS_P_imfit['results'][key]['pixelcoords'][0] for key in components]
+                MFS_P_dec_pix = [MFS_P_imfit['results'][key]['pixelcoords'][1] for key in components]   
+           
+                # If any of the P components are very far from Stokes I refit fixing the additional comps 
+                dist_check = False
+                dist_max = 0.0
+                for z in range(len(MFS_P_ra_pix)):
+                    dist = ((MFS_I_ra_pix[z] - MFS_P_ra_pix[z]) ** 2 + (MFS_I_dec_pix[z] - MFS_P_dec_pix[z]) ** 2) ** 0.5
+                    if dist > 3.0: # should not be >3 pixels
+                        dist_check = True
+                        if dist > dist_max:
+                            dist_max = dist
+                            
+            except Exception as e:
+                msg(f'Free fitting failed, assuming multi-component fit to complex re-trying fixing the secondary component positions to Stokes I: {e}')
+                dist_max = -1.0
+                dist_check = True
+
+            if dist_check:
+                msg(f'Significant offset between Stokes I and P {dist_max:.1f} pix, re-fitting while fixing multi-component')
+                check_position('estimate_P.txt', MFS_images[1], MFS_I_ra_pix, MFS_I_dec_pix, P_image = True, fix_additional_comps = fix_additional_comps, manual_rms_region = manual_rms_region)
+                MFS_P_imfit  = get_imfit_values('estimate_P.txt', MFS_images[1], MFS_I_ra_pix, MFS_I_dec_pix)
+                MFS_P_ra_pix = [MFS_P_imfit['results'][key]['pixelcoords'][0] for key in components]
+                MFS_P_dec_pix = [MFS_P_imfit['results'][key]['pixelcoords'][1] for key in components]   
+
             # Make estimate and fit for Q/U -- checking against position of Lin. Pol. components
             check_position('estimate_Q.txt', MFS_images[2], MFS_P_ra_pix, MFS_P_dec_pix, P_image = False, fix_additional_comps = fix_additional_comps, manual_rms_region = manual_rms_region)
             MFS_Q_imfit  = get_imfit_values('estimate_Q.txt', MFS_images[2], MFS_P_ra_pix, MFS_P_dec_pix)
@@ -596,7 +624,7 @@ def extract_polarization_properties(src_name,
                 # Next fit Polarization intensity and check if source is bright enough to allow positions to vary freely
                 if not only_intensity:
 
-                    check_position('estimate_P.txt', CHAN_images[1], CHAN_I_ra_pix, CHAN_I_dec_pix, P_image = True, fix_additional_comps = fix_additional_comps, manual_rms_region = manual_rms_region)
+                    check_position('estimate_P.txt', CHAN_images[1], MFS_P_ra_pix, MFS_P_dec_pix, P_image = True, fix_additional_comps = fix_additional_comps, manual_rms_region = manual_rms_region)
                     CHAN_P_imfit  = get_imfit_values('estimate_P.txt', CHAN_images[1], CHAN_I_ra_pix, CHAN_I_dec_pix)
                     CHAN_P_ra_pix = [CHAN_P_imfit['results'][key]['pixelcoords'][0] for key in components]
                     CHAN_P_dec_pix = [CHAN_P_imfit['results'][key]['pixelcoords'][1] for key in components]   
@@ -751,7 +779,11 @@ def main():
         
     # Iterate through sources as specified in rmsynth_info.json
     for k in range(len(rmsynth_info['image_directory']))[:]:
-    
+   
+        if not os.path.exists(rmsynth_info['image_directory'][k]):
+            msg('Skipping {} as the directory does not exist'.format(rmsynth_info['image_directory'][k]))
+            continue
+
         # Construct image identifier based on input options
         if rmsynth_info["image_timing"][k]:
             src_im_identifier = cfg.CWD +'/{}/*{}*.ms_{}-t'.format(rmsynth_info["image_directory"][k], 

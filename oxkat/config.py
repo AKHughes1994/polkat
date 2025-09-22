@@ -243,7 +243,7 @@ CAL_1GC_PRIMARY_MODEL = 'auto'       # setjy = use setjy component model only
 
 # GBK settings
 CAL_1GC_DELAYCUT = 2.5               # [now defunct] Jy at central freq. Do not solve for K on secondaries weaker than this
-CAL_1GC_FILLGAPS = 24                # Maximum channel gap over which to interpolate bandpass solutions
+CAL_1GC_FILLGAPS = 0                 # Maximum channel gap over which to interpolate bandpass solutions
 
 # Band specific options
 

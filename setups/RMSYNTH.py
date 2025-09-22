@@ -79,7 +79,7 @@ def main():
     step['slurm_config'] = cfg.SLURM_RM
     step['id'] = 'POEXT'+code
     syscall = CONTAINER_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
-    syscall += gen.generate_syscall_casa(casascript=cfg.OXKAT+f'/RMSYNTH_01_extract_fluxes.py')
+    syscall += gen.generate_syscall_casa_short(casascript=cfg.OXKAT+f'/RMSYNTH_01_extract_fluxes.py')
     step['syscall'] = syscall
     steps.append(step)
     step_i += 1
@@ -92,7 +92,7 @@ def main():
         step['slurm_config'] = cfg.SLURM_RM
         step['id'] = 'POSYS'+code
         syscall = CONTAINER_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
-        syscall += gen.generate_syscall_casa(casascript=cfg.OXKAT+f'/RMSYNTH_01B_systematics.py')
+        syscall += gen.generate_syscall_casa_short(casascript=cfg.OXKAT+f'/RMSYNTH_01B_systematics.py')
         step['syscall'] = syscall
         steps.append(step)
         step_i += 1      
