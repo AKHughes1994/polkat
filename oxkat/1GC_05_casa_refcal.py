@@ -620,7 +620,7 @@ if pacal_name != '':
         uvrange = myuvrange,
         caltable = xftab,
         refant = str(ref_ant),
-        solint = 'inf,64ch', # 16-channels-across in frequency
+        solint = 'inf,16ch', # 64-channels-across in frequency
         poltype='Xf',
         combine = '',
         gaintable=[ktab,gptab,bptab,gatab,dftab, kcross],
@@ -847,6 +847,16 @@ for i in range(0,len(targets)):
         mode='tfcrop',
         datacolumn='corrected',
         field=target, flagbackup=False)
+
+# ---- Apply aggressive flags if desired
+if CAL_1GC_AGGRESSIVE_FLAGS and CAL_1GC_BL_FREQS != []:
+
+    flagspw = ','.join(CAL_1GC_BL_FREQS)
+
+    flagdata(vis = myms,
+        mode = 'manual',
+        spw = flagspw,
+        flagbackup=False)
 
 # ---- Save flags
 

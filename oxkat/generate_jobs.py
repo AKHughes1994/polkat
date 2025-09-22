@@ -407,6 +407,11 @@ def generate_syscall_casa(casascript,casalogfile='',extra_args=''):
 
     return syscall
 
+def generate_syscall_casa_short(casascript):
+
+    syscall = 'casa --nogui -c ' + casascript
+    return syscall
+
 
 def generate_syscall_cubical(parset,myms,extra_args=''):
 
