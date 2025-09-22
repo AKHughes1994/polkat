@@ -19,7 +19,7 @@ def preamble():
     print('                     |')
     print('                     | v1.0')  
     print('   p o l  k  a  t    | The poorly coded, younger brother of oxkat:')
-    print('      C A S A        | Feel free to email questions/concerns to:')
+    print('   C A S A / Q C     | Feel free to email questions/concerns to:')
     print('                     | hughesakh@gmail.com')
     print('                     | fraser.cowie@physics.ox.ac.uk')
     print('                     |')
@@ -437,6 +437,14 @@ def generate_syscall_cubical(parset,myms,extra_args=''):
 
     return syscall
 
+def generate_syscall_quartical(yaml,myms,extra_args=''):
+
+    syscall = 'goquartical '+yaml+' '
+    syscall += 'input_ms.path='+myms+' '
+    if extra_args != '':
+        syscall += extra_args
+
+    return syscall
 
 def generate_syscall_tricolour(myms = '',
                           config = '',
