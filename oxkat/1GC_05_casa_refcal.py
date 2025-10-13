@@ -65,26 +65,44 @@ flagmanager(vis=myms,
 # ------- Set BP calibrator models
 
 if primary_tag == '1934':
-    if band != 'L':
+    
+    # MeerKAT specific crystalball models for 1939 from B.Hugo: https://archive-gw-1.kat.ac.za/public/repository/10.48479/hhhy-4r55/index.htmlV
+    if band == 'L':
+        syscall = f"crystalball {myms} -f {bpcal_name} -sm {DATA}/crystalball/fitted.PKS1934.LBand.wsclean.cat.txt"
+        subprocess.run([syscall],shell=True)
+
+    elif band == 'UHF':
+        syscall = f"crystalball {myms} -f {bpcal_name} -sm {DATA}/crystalball/fitted.PKS1934.UBand.wsclean.cat.txt"
+        subprocess.run([syscall],shell=True)
+
+    else:
         setjy(vis=myms,
             field=bpcal_name,
             standard='Stevens-Reynolds 2016',
             scalebychan=True,
             usescratch=True)
-    else:
-        syscall = f"crystalball {myms} -f {bpcal_name} -sm {DATA}/crystalball/fitted.PKS1934.LBand.wsclean.cat.txt"
+
+elif primary_tag == '0408':
+
+    # MeerKAT specific crystalball models for 0408 from B.Hugo: https://archive-gw-1.kat.ac.za/public/repository/10.48479/ez63-vx81/index.html
+    if band == 'L':
+        syscall = f"crystalball {myms} -f {bpcal_name} -sm {DATA}/crystalball/fitted.PKS0407.LBand.wsclean.cat.txt"
+        subprocess.run([syscall],shell=True)
+
+    elif band == 'UHF':
+        syscall = f"crystalball {myms} -f {bpcal_name} -sm {DATA}/crystalball/fitted.PKS0407.UBand.wsclean.cat.txt"
         subprocess.run([syscall],shell=True)
     
-elif primary_tag == '0408':
-    bpcal_mod = CAL_1GC_0408_MODEL
-    setjy(vis=myms,
-        field=bpcal_name,
-        standard='manual',
-        fluxdensity=bpcal_mod[0],
-        spix=bpcal_mod[1],
-        reffreq=bpcal_mod[2],
-        scalebychan=True,
-        usescratch=True)
+    else:
+        bpcal_mod = CAL_1GC_0408_MODEL
+        setjy(vis=myms,
+            field=bpcal_name,
+            standard='manual',
+            fluxdensity=bpcal_mod[0],
+            spix=bpcal_mod[1],
+            reffreq=bpcal_mod[2],
+            scalebychan=True,
+            usescratch=True)
 
 elif primary_tag == 'other':
     setjy(vis=myms,
