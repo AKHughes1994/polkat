@@ -88,7 +88,7 @@ def fit_flux_model(nu, s, nu0, sigma, sref, order=5):
 
 def convert_flux_model(nu=np.linspace(0.9, 4, 200)*1e9, 
                        a=1, b=0, c=0, d=0, 
-                       Reffreq=3.6e9):
+                       Reffreq=2.7e9):
     """
     Convert from katpoint log-flux model to CASA-style flux model.
     
