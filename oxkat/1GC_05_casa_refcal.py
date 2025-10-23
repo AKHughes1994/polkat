@@ -772,27 +772,30 @@ if pacal_name != '':
             # Get the cross-hand phase            
             tb.open(xftab)
             gains = tb.getcol('CPARAM')
+            flags = tb.getcol('FLAG')
             gains = np.nanmedian(gains[0,:,:], axis=-1)
+            flags = np.nanmedian(flags[0,:,:], axis=-1).astype(bool)
+            gains = gains[~flags]
             tb.close()
-        
+
             # Get continuity
             phases = np.angle(gains)
- 
+
             # Calculate differences between adjacent phases
             phase_diffs = np.diff(phases)
- 
+
             # Wrap differences to [-π, π] range (shortest path around circle)
             phase_diffs = np.arctan2(np.sin(phase_diffs), np.cos(phase_diffs))
- 
+
             # Convert to degrees
             phase_diffs_deg = np.degrees(phase_diffs)
- 
+
             # Find maximum absolute jump
             max_jump = np.max(np.abs(phase_diffs_deg))
- 
+
             # Check against threshold
             is_continuous = max_jump < XF_AUTO_ANG_JUMP
- 
+
             print(f"Maximum phase jump: {max_jump:.2f}°")
             print(f"Threshold: {XF_AUTO_ANG_JUMP}°")
             print(f"Phase continuous: {is_continuous}")

@@ -219,31 +219,18 @@ POLANG_NAME = 'J1331+3030'         # Specify the name of the field you want to u
 POLANG_DIR  = '13:31:08.2881,+30.30.32.959' # CASA Format
 POLANG_MOD  = [1.0, 0.0, 0.5, 0.0]
 XF_TARGET_POLANG = 28.0  # Expected INTRINSIC (i.e. correcting RM effects) linear polarization angle in degrees
+XF_TARGET_RM = 0.0 # Guess for the intrinsic RM; for 'manual' XF determination and RM trialing
 
 #POLANG_NAME = 'J0521+1638'         # Specify the name of the field you want to use as a Polarization angle calibrator -- 3C138
 #POLANG_DIR  = '05:21:09.890000,+16.38.22.10000' # CASA Format
 #POLANG_MOD  = [1.0, 0.3, -0.05, 0.0]
 #XF_TARGET_POLANG = -10.0  # Expected INTRINSIC (i.e. correcting RM effects) linear polarization angle in degrees
+#XF_TARGET_RM = 0.0 # Guess for the intrinsic RM; for 'manual' XF determination and RM trialing
 
 # PARAMETERS TO DECIDE XF SOLVE METHOD -- DEFAULTS ARE LIKELY ALL GOOD
 XF_MODE = 'auto' # options are: auto (RECOMMENDED: determine based on band and/or if there is large phase discontinuties), casa or  manual
 XF_AUTO_ANG_JUMP = 90.0 # angle in degrees where, if the CASA XF solver has adjacent solution intervals that have a discontinuity
                         # larger than this value, it will solve XF manually.
-
-# XF table targets
-XF_CHANINT = 16  # Channels per solution interval default is 1024 frequency channels so 1024 / 16 = 64 cross-hand phase intervals
-XF_MAX_AVG_CHANNELS = None # If None, auto calculate will be the same as the number of cross-hand solution intervals
-
-# Calibration and outlier thresholds
-XF_MIN_CROSS_FLUX = 0.1  # Minimum total cross-hand flux (Jy) for reliable solutions
-XF_SIGMA_CLIP = 2.0  # N-sigma threshold for outlier flagging
-XF_CLIP_WINDOW = 50  # Window size for local scatter analysis
-
-# Smoothing control for XF table creation and interpolation
-XF_USE_SMOOTHING = True  # Apply Savitzky-Golay smoothing before interpolation
-XF_SAVGOL_WINDOW = None  # Window length (odd integer); None=auto-calculate (recommended)
-XF_SAVGOL_POLYORDER = 3  # Polynomial order for Savitzky-Golay filter
-
 
 # Reference antennas
 CAL_1GC_REF_ANT = 'auto'             # Comma-separated list to manually specify refant(s)

@@ -656,8 +656,6 @@ mstransform(vis = myms,
 
 print(f"Field: {pacal_name}")
 print(f"Target lin. pol. angle: {XF_TARGET_POLANG} deg")
-print(f"Target RM: {XF_TARGET_RM} rad / m^2")
-print(f"Trialed IONO RM range {XF_DELTARM_TRIALS[0]} to {XF_DELTARM_TRIALS[1]} rad / m^2")
 print(f"Channel averaging interval: {XF_CHANINT} channels")
 print(f"Min cross-hand flux threshold: {XF_MIN_CROSS_FLUX} Jy")
 print(f"Local scatter sigma threshold: {XF_SIGMA_CLIP}")
@@ -791,7 +789,7 @@ im_fracs = {
 
 print(f'\nImaginary flux fractions (should be <<10% for good calibration):')
 for stokes, frac in im_fracs.items():
-    status = "WARNING: HIGH" if frac > 10.0 else "OK"
+    status = "⚠️ HIGH" if frac > 10.0 else "✓ OK"
     print(f'  {stokes}: {frac:.1f}% {status}')
 
 high_im_stokes = [f'{s}({f:.1f}%)' for s, f in im_fracs.items() if f > 10.0]
@@ -857,9 +855,9 @@ print(f"Saved: {xfdir}/crosshand_phase.png, {xfdir}/crosshand_phase_per_channel.
 chi_deg, parang_diagnostics = compute_parallactic_angle(temp_ms, pacal_name)
 
 # ============================
-# Identify Unflagged Channels
+# Top 5% Bandwidth Analysis
 # ============================
-print("\n=== Identifying unflagged channels ===")
+print("\n=== Top 5% bandwidth analysis ===")
 
 unflagged_mask = np.isfinite(Q_use) & np.isfinite(U_use) & np.isfinite(V_use) & np.isfinite(rho_rad)
 unflagged_idx = np.where(unflagged_mask)[0]
@@ -868,421 +866,253 @@ if len(unflagged_idx) == 0:
     sys.exit("ERROR: No unflagged channels found!")
 
 print(f"Found {len(unflagged_idx)} unflagged channels out of {len(f_use)} total channels")
-print(f"Frequency range: {f_use[unflagged_idx].min():.3f} - {f_use[unflagged_idx].max():.3f} GHz")
+
+# Select top 5% by frequency
+n_top5 = max(1, int(0.05 * len(unflagged_idx)))
+unflagged_freqs = f_use[unflagged_idx]
+freq_sorted_idx = np.argsort(unflagged_freqs)
+top5_relative_idx = freq_sorted_idx[-n_top5:]
+top5_idx = unflagged_idx[top5_relative_idx]
+
+print(f"Using top {n_top5} unflagged channels ({100*n_top5/len(unflagged_idx):.1f}% of unflagged bandwidth)")
+print(f"Frequency range: {f_use[top5_idx].min():.3f} - {f_use[top5_idx].max():.3f} GHz")
+
+# Calculate averages for top 5%
+I_top5 = np.mean(I_use[top5_idx])
+Q_top5 = np.mean(Q_use[top5_idx])
+U_top5 = np.mean(U_use[top5_idx])
+V_top5 = np.mean(V_use[top5_idx])
+
+print(f"\nRaw averages (top 5% unflagged bandwidth):")
+print(f"  I = {I_top5:.6f} Jy")
+print(f"  Q = {Q_top5:.6f} Jy, U = {U_top5:.6f} Jy, V = {V_top5:.6f} Jy")
+print(f"  Q/I = {Q_top5/I_top5*100:.3f}%, U/I = {U_top5/I_top5*100:.3f}%, V/I = {V_top5/I_top5*100:.3f}%")
+
+# Calculate cross-hand phase for top 5%
+rho_top5_rad = np.mean(rho_rad[top5_idx])
+rho_top5_deg = np.degrees(rho_top5_rad)
+print(f"\nCross-hand phase (top 5% average): {rho_top5_deg:.3f} deg ({rho_top5_rad:.6f} rad)")
+
+# Define ±π solutions
+rho_pos = rho_top5_rad
+rho_neg = rho_top5_rad + np.pi
+
+# Wrap to [-π, π]
+rho_pos = ((rho_pos + np.pi) % (2*np.pi)) - np.pi
+rho_neg = ((rho_neg + np.pi) % (2*np.pi)) - np.pi
+
+# Ensure opposite signs
+if rho_pos * rho_neg > 0:
+    if rho_pos > 0:
+        rho_neg = rho_pos - np.pi
+    else:
+        rho_neg = rho_pos + np.pi
+    rho_neg = ((rho_neg + np.pi) % (2*np.pi)) - np.pi
+
+if rho_pos < 0 and rho_neg > 0:
+    rho_pos, rho_neg = rho_neg, rho_pos
+
+print(f"Positive solution: {np.degrees(rho_pos):.3f} deg (rho = {rho_pos:.6f} rad)")
+print(f"Negative solution: {np.degrees(rho_neg):.3f} deg (rho = {rho_neg:.6f} rad)")
+
+assert -np.pi <= rho_pos <= np.pi, f"rho_pos ({rho_pos:.6f}) not in [-π, π]"
+assert -np.pi <= rho_neg <= np.pi, f"rho_neg ({rho_neg:.6f}) not in [-π, π]"
+assert rho_pos >= 0, f"rho_pos ({rho_pos:.6f}) should be non-negative"
+assert rho_neg <= 0, f"rho_neg ({rho_neg:.6f}) should be non-positive"
+print("✓ Both solutions are within [-π, π] with opposite signs")
+
+# Apply corrections for both solutions
+U_xh_pos, V_xh_pos = correct_crosshand_phase(U_top5, V_top5, rho_pos)
+U_xh_neg, V_xh_neg = correct_crosshand_phase(U_top5, V_top5, rho_neg)
+
+print(f"\nAfter cross-hand phase correction:")
+print(f"  Positive: U = {U_xh_pos:.6f} Jy, V = {V_xh_pos:.6f} Jy (V/I = {V_xh_pos/I_top5*100:.3f}%)")
+print(f"  Negative: U = {U_xh_neg:.6f} Jy, V = {V_xh_neg:.6f} Jy (V/I = {V_xh_neg/I_top5*100:.3f}%)")
+
+# Apply parallactic angle correction
+Q_final_pos, U_final_pos = correct_parallactic_angle(Q_top5, U_xh_pos, chi_deg)
+Q_final_neg, U_final_neg = correct_parallactic_angle(Q_top5, U_xh_neg, chi_deg)
+
+print(f"\nAfter parallactic angle correction (χ = {chi_deg:.3f}°):")
+print(f"  Positive: Q = {Q_final_pos:.6f} Jy, U = {U_final_pos:.6f} Jy, V = {V_xh_pos:.6f} Jy")
+print(f"  Negative: Q = {Q_final_neg:.6f} Jy, U = {U_final_neg:.6f} Jy, V = {V_xh_neg:.6f} Jy")
+
+P_pos = np.sqrt(Q_final_pos**2 + U_final_pos**2) / I_top5 * 100
+P_neg = np.sqrt(Q_final_neg**2 + U_final_neg**2) / I_top5 * 100
+
+print(f"\nTotal linear polarization fraction:")
+print(f"  Positive solution: P = {P_pos:.3f}%")
+print(f"  Negative solution: P = {P_neg:.3f}%")
 
 # ============================
-# Per-Channel RM Trial Analysis
+# RM Trial Analysis
 # ============================
-print("\n=== Per-Channel RM Trial Analysis (3-Stage Approach) ===")
-print("Stage 1: Find best delta_RM for each channel/option")
-print("Stage 2: Determine global delta_RM from mode")
-print("Stage 3: Select ±π option using fixed delta_RM")
+print("\n=== RM Trial Analysis ===")
+print(f"Target angle: {XF_TARGET_POLANG:.1f} degrees")
+print("Trialing 21 RM values from -7 to +7 rad/m² to select best cross-hand phase solution")
+
+rm_trials = np.linspace(-7.0, 7.0, 21)
+c = 2.998e8  # Speed of light in m/s
+
+freq_top5_hz = np.mean(f_use[top5_idx]) * 1e9
+lambda_sq = (c / freq_top5_hz)**2
+print(f"Average frequency (top 5%): {freq_top5_hz/1e9:.3f} GHz")
+print(f"Average wavelength squared: {lambda_sq:.6e} m²")
+
+results_pos = []
+results_neg = []
+
+print(f"\n{'RM':>8s} {'Pos_Angle':>10s} {'Neg_Angle':>10s} {'Pos_Diff':>10s} {'Neg_Diff':>10s}")
+print("-" * 50)
+
+for rm in rm_trials:
+    angle_pos = calculate_derotated_angle(Q_final_pos, U_final_pos, rm, lambda_sq)
+    angle_neg = calculate_derotated_angle(Q_final_neg, U_final_neg, rm, lambda_sq)
+    
+    diff_pos = abs(angle_pos - XF_TARGET_POLANG)
+    diff_neg = abs(angle_neg - XF_TARGET_POLANG)
+    
+    if diff_pos > 90:
+        diff_pos = 180 - diff_pos
+    if diff_neg > 90:
+        diff_neg = 180 - diff_neg
+    
+    results_pos.append({'rm': rm, 'angle': angle_pos, 'diff': diff_pos})
+    results_neg.append({'rm': rm, 'angle': angle_neg, 'diff': diff_neg})
+    
+    print(f"{rm:8.2f} {angle_pos:10.3f} {angle_neg:10.3f} {diff_pos:10.3f} {diff_neg:10.3f}")
+
+total_diff_pos = sum(r['diff'] for r in results_pos)
+total_diff_neg = sum(r['diff'] for r in results_neg)
+
+print(f"\nTotal differences across all RM trials:")
+print(f"  Positive solution: {total_diff_pos:.3f}° (sum of {len(results_pos)} trials)")
+print(f"  Negative solution: {total_diff_neg:.3f}° (sum of {len(results_neg)} trials)")
+
+# Select best solution
+if total_diff_pos < total_diff_neg:
+    best_overall = 'positive'
+    best_rho = rho_pos
+    best_Q = Q_final_pos
+    best_U = U_final_pos
+    best_V = V_xh_pos
+    selected_total_diff = total_diff_pos
+else:
+    best_overall = 'negative'
+    best_rho = rho_neg
+    best_Q = Q_final_neg
+    best_U = U_final_neg
+    best_V = V_xh_neg
+    selected_total_diff = total_diff_neg
+
+print(f"\n=== SOLUTION SELECTION RESULTS ===")
+print(f"Winner: {best_overall} solution")
+print(f"Selected cross-hand phase: {np.degrees(best_rho):.3f}° ({best_rho:.6f} rad)")
+print(f"Final: Q/I = {best_Q/I_top5*100:.3f}%, U/I = {best_U/I_top5*100:.3f}%, "
+      f"V/I = {best_V/I_top5*100:.3f}%, P = {np.sqrt(best_Q**2+best_U**2)/I_top5*100:.3f}%")
+
+# ============================
+# Full-Bandwidth Pseudo-Continuity Analysis
+# ============================
+print("\n=== Pseudo-Continuity Analysis Across Full Bandwidth ===")
+print("Determining cross-hand phase solutions in ~5% frequency chunks with continuity constraint")
 
 n_channels = len(f_use)
 selected_rho_per_channel = np.full(n_channels, np.nan)
 selected_solution_per_channel = np.full(n_channels, '', dtype='U8')
 
 valid_channels = unflagged_idx
-n_valid = len(valid_channels)
 
-print(f"\nProcessing {n_valid} unflagged channels")
-print(f"Frequency range: {f_use[valid_channels].min():.3f} - {f_use[valid_channels].max():.3f} GHz")
+# Define frequency chunks
+target_channels_per_chunk = max(1, int(0.05 * len(valid_channels)))
+n_chunks = max(5, min(40, len(valid_channels) // target_channels_per_chunk))
 
-# RM trial parameters - increased to 30 trials
-delta_rm_trials = np.linspace(XF_DELTARM_TRIALS[0], XF_DELTARM_TRIALS[-1], 30)
-rm_trials = delta_rm_trials + XF_TARGET_RM
-c = 2.998e8  # Speed of light in m/s
+unflagged_freqs = f_use[valid_channels]
+freq_min, freq_max = unflagged_freqs.min(), unflagged_freqs.max()
+freq_edges = np.linspace(freq_min, freq_max, n_chunks + 1)
 
-print(f"Trialing {len(rm_trials)} RM values from {rm_trials[0]:.1f} to {rm_trials[-1]:.1f} rad/m²")
-print(f"Delta RM range: {delta_rm_trials[0]:.2f} to {delta_rm_trials[-1]:.2f} rad/m²")
+print(f"Dividing {len(valid_channels)} unflagged channels into {n_chunks} frequency chunks")
+print(f"Frequency range: {freq_min:.3f} - {freq_max:.3f} GHz")
 
-# Pre-compute wavelength squared for all valid channels
-freq_hz = f_use[valid_channels] * 1e9
-lambda_sq = (c / freq_hz)**2  # Shape: (n_valid,)
+previous_rho = best_rho
+previous_solution = best_overall
+print(f"Starting with top-of-band solution: {previous_solution} (rho = {np.degrees(previous_rho):.3f}°)")
 
-# Extract Q, U values for valid channels
-Q_channels = Q_use[valid_channels]
-U_channels = U_use[valid_channels]
-V_channels = V_use[valid_channels]
+chunk_results = []
 
-# Compute raw rho for both ±π solutions
-rho_raw = rho_rad[valid_channels]
-rho_option1 = ((rho_raw + np.pi) % (2*np.pi)) - np.pi  # No π correction
-rho_option2 = ((rho_raw + np.pi + np.pi) % (2*np.pi)) - np.pi  # +π correction
-
-# For each option, apply cross-hand phase correction
-U_xh_opt1, V_xh_opt1 = correct_crosshand_phase(U_channels, V_channels, rho_option1)
-U_xh_opt2, V_xh_opt2 = correct_crosshand_phase(U_channels, V_channels, rho_option2)
-
-# Apply parallactic angle correction
-Q_final_opt1, U_final_opt1 = correct_parallactic_angle(Q_channels, U_xh_opt1, chi_deg)
-Q_final_opt2, U_final_opt2 = correct_parallactic_angle(Q_channels, U_xh_opt2, chi_deg)
-
-# ============================
-# STAGE 1: Collect best delta_RM for each channel/option
-# ============================
-print("\n--- Stage 1: Finding best delta_RM for each channel/option ---")
-
-best_delta_rm_opt1 = np.zeros(n_valid)
-best_delta_rm_opt2 = np.zeros(n_valid)
-min_dev_opt1 = np.full(n_valid, np.inf)
-min_dev_opt2 = np.full(n_valid, np.inf)
-
-# Store angles at each RM for later use
-angles_opt1_at_delta_rm = {}
-angles_opt2_at_delta_rm = {}
-
-for i, (rm, delta_rm) in enumerate(zip(rm_trials, delta_rm_trials)):
-    angles_opt1 = calculate_derotated_angle(Q_final_opt1, U_final_opt1, rm, lambda_sq)
-    angles_opt2 = calculate_derotated_angle(Q_final_opt2, U_final_opt2, rm, lambda_sq)
+# Process from high to low frequency
+for i in range(n_chunks-1, -1, -1):
+    freq_low = freq_edges[i]
+    freq_high = freq_edges[i+1]
     
-    # Store for later
-    angles_opt1_at_delta_rm[delta_rm] = angles_opt1.copy()
-    angles_opt2_at_delta_rm[delta_rm] = angles_opt2.copy()
+    chunk_mask = (f_use >= freq_low) & (f_use < freq_high) & unflagged_mask
+    chunk_channels = np.where(chunk_mask)[0]
     
-    # Calculate deviations
-    dev_opt1 = np.abs(angles_opt1 - XF_TARGET_POLANG)
-    dev_opt1 = np.where(dev_opt1 > 90, 180 - dev_opt1, dev_opt1)
+    if len(chunk_channels) == 0:
+        print(f"Chunk {i+1:2d}: {freq_low:.3f}-{freq_high:.3f} GHz - No valid channels, skipping")
+        continue
     
-    dev_opt2 = np.abs(angles_opt2 - XF_TARGET_POLANG)
-    dev_opt2 = np.where(dev_opt2 > 90, 180 - dev_opt2, dev_opt2)
+    # Calculate chunk averages
+    Q_chunk = np.mean(Q_use[chunk_channels])
+    U_chunk = np.mean(U_use[chunk_channels])
+    V_chunk = np.mean(V_use[chunk_channels])
     
-    # Track best delta_RM for each channel/option
-    better_mask1 = dev_opt1 < min_dev_opt1
-    min_dev_opt1[better_mask1] = dev_opt1[better_mask1]
-    best_delta_rm_opt1[better_mask1] = delta_rm
+    rho_chunk_raw = np.arctan2(-V_chunk, U_chunk)
     
-    better_mask2 = dev_opt2 < min_dev_opt2
-    min_dev_opt2[better_mask2] = dev_opt2[better_mask2]
-    best_delta_rm_opt2[better_mask2] = delta_rm
-
-# Collect all delta_RMs (2 × N_channels values)
-all_delta_rms = np.concatenate([best_delta_rm_opt1, best_delta_rm_opt2])
-all_min_deviations = np.concatenate([min_dev_opt1, min_dev_opt2])
-
-print(f"Collected {len(all_delta_rms)} delta_RM values ({n_valid} channels × 2 options)")
-print(f"Delta_RM range: {all_delta_rms.min():.2f} to {all_delta_rms.max():.2f} rad/m²")
-print(f"Min deviation range: {all_min_deviations.min():.2f}° to {all_min_deviations.max():.2f}°")
-
-# ============================
-# STAGE 2: Quality filtering and mode selection
-# ============================
-print("\n--- Stage 2: Quality filtering and mode selection ---")
-
-# Calculate relative threshold for "good" solutions
-# Use median + K*MAD (Median Absolute Deviation) for robustness
-median_dev = np.median(all_min_deviations)
-mad_dev = np.median(np.abs(all_min_deviations - median_dev))
-threshold_dev = median_dev + 3.0 * 1.4826 * mad_dev  # 1.4826 converts MAD to std equivalent
-
-# Alternative: Use percentile-based threshold
-percentile_threshold = np.percentile(all_min_deviations, 75)
-
-# Use the more conservative (stricter) threshold
-quality_threshold = min(threshold_dev, percentile_threshold)
-
-print(f"Deviation statistics:")
-print(f"  Median deviation: {median_dev:.2f}°")
-print(f"  MAD-based threshold: {threshold_dev:.2f}°")
-print(f"  75th percentile: {percentile_threshold:.2f}°")
-print(f"  Using quality threshold: {quality_threshold:.2f}° (more conservative)")
-
-# Filter to only "good" solutions
-good_solutions = all_min_deviations < quality_threshold
-filtered_delta_rms = all_delta_rms[good_solutions]
-filtered_deviations = all_min_deviations[good_solutions]
-
-n_rejected = np.sum(~good_solutions)
-n_accepted = np.sum(good_solutions)
-
-print(f"\nQuality filtering results:")
-print(f"  Accepted: {n_accepted}/{len(all_delta_rms)} solutions ({n_accepted/len(all_delta_rms)*100:.1f}%)")
-print(f"  Rejected: {n_rejected}/{len(all_delta_rms)} solutions ({n_rejected/len(all_delta_rms)*100:.1f}%)")
-
-if n_accepted < 10:
-    print(f"WARNING: Very few good solutions ({n_accepted}). Using all solutions instead.")
-    filtered_delta_rms = all_delta_rms
-    filtered_deviations = all_min_deviations
-    quality_threshold = np.inf
-
-# Find mode (most frequent value) from filtered delta_RMs
-unique_delta_rms, counts = np.unique(filtered_delta_rms, return_counts=True)
-mode_idx = np.argmax(counts)
-global_delta_rm = unique_delta_rms[mode_idx]
-mode_count = counts[mode_idx]
-mode_fraction = mode_count / len(filtered_delta_rms) * 100
-
-print(f"\nMode calculation from {len(filtered_delta_rms)} filtered solutions:")
-print(f"  Mode delta_RM: {global_delta_rm:.2f} rad/m² (occurs {mode_count}/{len(filtered_delta_rms)} times, {mode_fraction:.1f}%)")
-print(f"  Global RM: {XF_TARGET_RM + global_delta_rm:.2f} rad/m²")
-
-# Show top 5 most common delta_RMs
-sorted_idx = np.argsort(counts)[::-1]
-print(f"\nTop 5 most common delta_RM values (from filtered solutions):")
-for i in range(min(5, len(unique_delta_rms))):
-    idx = sorted_idx[i]
-    delta = unique_delta_rms[idx]
-    cnt = counts[idx]
-    pct = cnt / len(filtered_delta_rms) * 100
-    marker = " <-- MODE" if i == 0 else ""
-    print(f"  {delta:+6.2f} rad/m²: {cnt:4d} occurrences ({pct:5.1f}%){marker}")
-
-# ============================
-# STAGE 3: Select ±π option using fixed delta_RM
-# ============================
-print("\n--- Stage 3: Selecting ±π option at fixed delta_RM ---")
-
-global_rm = XF_TARGET_RM + global_delta_rm
-print(f"Using fixed RM = {global_rm:.2f} rad/m² for all channels")
-
-# Get angles for both options at the global RM
-angles_opt1_fixed = angles_opt1_at_delta_rm[global_delta_rm]
-angles_opt2_fixed = angles_opt2_at_delta_rm[global_delta_rm]
-
-# Calculate deviations at fixed RM
-dev_opt1_fixed = np.abs(angles_opt1_fixed - XF_TARGET_POLANG)
-dev_opt1_fixed = np.where(dev_opt1_fixed > 90, 180 - dev_opt1_fixed, dev_opt1_fixed)
-
-dev_opt2_fixed = np.abs(angles_opt2_fixed - XF_TARGET_POLANG)
-dev_opt2_fixed = np.where(dev_opt2_fixed > 90, 180 - dev_opt2_fixed, dev_opt2_fixed)
-
-# Select option with smaller deviation at fixed RM
-use_option2 = dev_opt2_fixed < dev_opt1_fixed
-
-# Assign selected rho and solution names
-selected_rho_valid = np.where(use_option2, rho_option2, rho_option1)
-solution_names = np.where(use_option2, 'plus_pi', 'no_pi')
-
-# Store results in full arrays
-selected_rho_per_channel[valid_channels] = selected_rho_valid
-selected_solution_per_channel[valid_channels] = solution_names
-
-# Summary statistics
-n_no_pi = np.sum(solution_names == 'no_pi')
-n_plus_pi = np.sum(solution_names == 'plus_pi')
-print(f"\nFinal solution selection:")
-print(f"  Raw solution (no π): {n_no_pi} channels ({n_no_pi/n_valid*100:.1f}%)")
-print(f"  +π correction: {n_plus_pi} channels ({n_plus_pi/n_valid*100:.1f}%)")
-
-# ============================
-# Plotting: Delta_RM distribution
-# ============================
-print("\n--- Generating delta_RM distribution plot ---")
-
-fig_drm, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 12))
-
-# Top panel: Histogram of all delta_RMs (before filtering)
-ax1.hist(all_delta_rms, bins=30, alpha=0.7, color='gray', edgecolor='black')
-ax1.axvline(global_delta_rm, color='red', linestyle='--', linewidth=2, label=f'Mode: {global_delta_rm:.2f} rad/m²')
-ax1.set_xlabel('Delta RM (rad/m²)')
-ax1.set_ylabel('Count')
-ax1.set_title(f'All Delta_RM Values (N = {len(all_delta_rms)}, before quality filtering)')
-ax1.legend()
-ax1.grid(True, alpha=0.3)
-
-# Middle panel: Histogram of filtered delta_RMs (after quality filtering)
-ax2.hist(filtered_delta_rms, bins=30, alpha=0.7, color='blue', edgecolor='black')
-ax2.axvline(global_delta_rm, color='red', linestyle='--', linewidth=2, label=f'Mode: {global_delta_rm:.2f} rad/m²')
-ax2.set_xlabel('Delta RM (rad/m²)')
-ax2.set_ylabel('Count')
-ax2.set_title(f'Filtered Delta_RM Values (N = {len(filtered_delta_rms)}, deviation < {quality_threshold:.2f}°)')
-ax2.legend()
-ax2.grid(True, alpha=0.3)
-
-# Bottom panel: Separate histograms for each option (filtered)
-good_opt1 = min_dev_opt1 < quality_threshold
-good_opt2 = min_dev_opt2 < quality_threshold
-filtered_delta_rm_opt1 = best_delta_rm_opt1[good_opt1]
-filtered_delta_rm_opt2 = best_delta_rm_opt2[good_opt2]
-
-ax3.hist(filtered_delta_rm_opt1, bins=30, alpha=0.5, color='blue', 
-         edgecolor='black', label=f'Option 1 (no π) - {np.sum(good_opt1)} good')
-ax3.hist(filtered_delta_rm_opt2, bins=30, alpha=0.5, color='orange', 
-         edgecolor='black', label=f'Option 2 (+π) - {np.sum(good_opt2)} good')
-ax3.axvline(global_delta_rm, color='red', linestyle='--', linewidth=2, label=f'Mode: {global_delta_rm:.2f} rad/m²')
-ax3.set_xlabel('Delta RM (rad/m²)')
-ax3.set_ylabel('Count')
-ax3.set_title('Filtered Delta_RM Distribution by Option')
-ax3.legend()
-ax3.grid(True, alpha=0.3)
-
-plt.tight_layout()
-drm_plot_path = os.path.join(xfdir, 'delta_rm_distribution.png')
-plt.savefig(drm_plot_path, dpi=150)
-plt.close()
-print(f"Saved: {drm_plot_path}")
-
-# Display sample results from top and bottom of band
-freq_sorted_idx = np.argsort(f_use[valid_channels])
-
-print(f"\nSample channel solutions (top and bottom of band for verification):")
-print(f"{'Ch':>4s} {'Freq':>8s} {'Solution':>10s} {'Rho':>10s} {'FixedRM':>8s} {'Ang_Opt1':>9s} {'Ang_Opt2':>9s} {'Dev1':>7s} {'Dev2':>7s}")
-print("-" * 90)
-
-# Show bottom 5 channels (lowest frequency)
-n_bottom = min(5, n_valid)
-print("Bottom of band:")
-for i in range(n_bottom):
-    idx_in_valid = freq_sorted_idx[i]
-    ch = valid_channels[idx_in_valid]
-    print(f"{ch:4d} {f_use[ch]:8.3f} {solution_names[idx_in_valid]:>10s} "
-          f"{np.degrees(selected_rho_valid[idx_in_valid]):10.3f} "
-          f"{global_rm:8.2f} "
-          f"{angles_opt1_fixed[idx_in_valid]:9.2f} "
-          f"{angles_opt2_fixed[idx_in_valid]:9.2f} "
-          f"{dev_opt1_fixed[idx_in_valid]:7.2f} "
-          f"{dev_opt2_fixed[idx_in_valid]:7.2f}")
-
-# Show top 5 channels (highest frequency)
-n_top = min(5, n_valid)
-if n_valid > n_bottom:
-    print("Top of band:")
-    for i in range(n_top):
-        idx_in_valid = freq_sorted_idx[-(i+1)]
-        ch = valid_channels[idx_in_valid]
-        print(f"{ch:4d} {f_use[ch]:8.3f} {solution_names[idx_in_valid]:>10s} "
-              f"{np.degrees(selected_rho_valid[idx_in_valid]):10.3f} "
-              f"{global_rm:8.2f} "
-              f"{angles_opt1_fixed[idx_in_valid]:9.2f} "
-              f"{angles_opt2_fixed[idx_in_valid]:9.2f} "
-              f"{dev_opt1_fixed[idx_in_valid]:7.2f} "
-              f"{dev_opt2_fixed[idx_in_valid]:7.2f}")
-
-print(f"\nPer-channel RM trial complete: Processed {n_valid} channels")
-
-
-# ============================
-# DEBUGGING BLOCK - DETAILED CALCULATION TRACE FOR 3-STAGE APPROACH
-# ============================
-print("\n" + "="*100)
-print("DEBUGGING: Detailed calculation trace for sample channels (3-Stage Approach)")
-print("="*100)
-
-# Select one low-frequency and one high-frequency channel for debugging
-debug_idx_low = freq_sorted_idx[0]  # Lowest frequency
-debug_idx_high = freq_sorted_idx[-1]  # Highest frequency
-debug_channels = [debug_idx_low, debug_idx_high]
-debug_labels = ["LOWEST FREQUENCY", "HIGHEST FREQUENCY"]
-
-for debug_idx, debug_label in zip(debug_channels, debug_labels):
-    ch = valid_channels[debug_idx]
-    print(f"\n{'='*100}")
-    print(f"{debug_label} CHANNEL - Channel #{ch}, Frequency = {f_use[ch]:.3f} GHz")
-    print(f"{'='*100}")
+    # Define ±π solutions
+    rho_chunk_option1 = ((rho_chunk_raw + np.pi) % (2*np.pi)) - np.pi
+    rho_chunk_option2 = ((rho_chunk_raw + np.pi + np.pi) % (2*np.pi)) - np.pi
     
-    # Raw Stokes parameters (before any corrections)
-    I_raw = I_use[ch]
-    Q_raw = Q_use[ch]
-    U_raw = U_use[ch]
-    V_raw = V_use[ch]
+    # Calculate proximity to previous solution
+    prev_rho_deg = np.degrees(previous_rho)
+    proximity_option1 = angle_difference(np.degrees(rho_chunk_option1), prev_rho_deg)
+    proximity_option2 = angle_difference(np.degrees(rho_chunk_option2), prev_rho_deg)
     
-    print(f"\n1. RAW STOKES PARAMETERS (before any corrections):")
-    print(f"   I = {I_raw:.6f} Jy")
-    print(f"   Q = {Q_raw:.6f} Jy  ({Q_raw/I_raw*100:+.3f}%)")
-    print(f"   U = {U_raw:.6f} Jy  ({U_raw/I_raw*100:+.3f}%)")
-    print(f"   V = {V_raw:.6f} Jy  ({V_raw/I_raw*100:+.3f}%)")
-    print(f"   Raw cross-hand phase: ρ_raw = arctan2(-V, U) = {np.degrees(rho_rad[ch]):.3f}°")
+    # Select based on proximity
+    if proximity_option1 <= proximity_option2:
+        use_pi_correction = False
+        selected_rho_chunk = rho_chunk_option1
+        selected_proximity = proximity_option1
+    else:
+        use_pi_correction = True
+        selected_rho_chunk = rho_chunk_option2
+        selected_proximity = proximity_option2
     
-    # The two ±π options for cross-hand phase
-    rho_opt1 = rho_option1[debug_idx]
-    rho_opt2 = rho_option2[debug_idx]
+    # Apply to individual channels
+    for ch in chunk_channels:
+        rho_ch_raw = rho_rad[ch]
+        if use_pi_correction:
+            rho_ch_corrected = rho_ch_raw + np.pi
+        else:
+            rho_ch_corrected = rho_ch_raw
+        rho_ch_corrected = ((rho_ch_corrected + np.pi) % (2*np.pi)) - np.pi
+        selected_rho_per_channel[ch] = rho_ch_corrected
     
-    print(f"\n2. CROSS-HAND PHASE ±π OPTIONS:")
-    print(f"   Option 1 (no π):  ρ₁ = {np.degrees(rho_opt1):.3f}°")
-    print(f"   Option 2 (+π):    ρ₂ = {np.degrees(rho_opt2):.3f}°")
+    solution_name = 'no_pi' if not use_pi_correction else 'plus_pi'
     
-    # Apply cross-hand phase correction for both options
-    U_xh1, V_xh1 = correct_crosshand_phase(np.array([U_raw]), np.array([V_raw]), np.array([rho_opt1]))
-    U_xh2, V_xh2 = correct_crosshand_phase(np.array([U_raw]), np.array([V_raw]), np.array([rho_opt2]))
-    U_xh1, V_xh1 = U_xh1[0], V_xh1[0]
-    U_xh2, V_xh2 = U_xh2[0], V_xh2[0]
+    chunk_info = {
+        'chunk_id': i+1,
+        'freq_range': (freq_low, freq_high),
+        'n_channels': len(chunk_channels),
+        'use_pi_correction': use_pi_correction,
+        'chunk_avg_rho_deg': np.degrees(selected_rho_chunk),
+        'proximity_deg': selected_proximity
+    }
+    chunk_results.append(chunk_info)
     
-    print(f"\n3. AFTER CROSS-HAND PHASE CORRECTION:")
-    print(f"   Option 1 (no π):  U = {U_xh1:.6f} Jy, V = {V_xh1:.6f} Jy  (V/I = {V_xh1/I_raw*100:+.3f}%)")
-    print(f"   Option 2 (+π):    U = {U_xh2:.6f} Jy, V = {V_xh2:.6f} Jy  (V/I = {V_xh2/I_raw*100:+.3f}%)")
+    for ch in chunk_channels:
+        selected_solution_per_channel[ch] = solution_name
     
-    # Apply parallactic angle correction for both options
-    Q_pa1, U_pa1 = correct_parallactic_angle(np.array([Q_raw]), np.array([U_xh1]), chi_deg)
-    Q_pa2, U_pa2 = correct_parallactic_angle(np.array([Q_raw]), np.array([U_xh2]), chi_deg)
-    Q_pa1, U_pa1 = Q_pa1[0], U_pa1[0]
-    Q_pa2, U_pa2 = Q_pa2[0], U_pa2[0]
+    pi_status = "+π" if use_pi_correction else "raw"
+    print(f"Chunk {i+1:2d}: {freq_low:.3f}-{freq_high:.3f} GHz ({len(chunk_channels):3d} ch) - "
+          f"{pi_status:4s} (avg_rho={np.degrees(selected_rho_chunk):7.3f}°, "
+          f"prev={prev_rho_deg:7.3f}°, diff={selected_proximity:5.1f}°)")
     
-    print(f"\n4. AFTER PARALLACTIC ANGLE CORRECTION (χ = {chi_deg:.3f}°):")
-    print(f"   Option 1 (no π):  Q = {Q_pa1:.6f} Jy, U = {U_pa1:.6f} Jy, V = {V_xh1:.6f} Jy")
-    print(f"   Option 2 (+π):    Q = {Q_pa2:.6f} Jy, U = {U_pa2:.6f} Jy, V = {V_xh2:.6f} Jy")
-    
-    P1 = np.sqrt(Q_pa1**2 + U_pa1**2)
-    P2 = np.sqrt(Q_pa2**2 + U_pa2**2)
-    print(f"   Option 1 (no π):  Linear pol = {P1/I_raw*100:.3f}%")
-    print(f"   Option 2 (+π):    Linear pol = {P2/I_raw*100:.3f}%")
-    
-    # Calculate wavelength squared for this channel
-    freq_hz_ch = f_use[ch] * 1e9
-    lambda_sq_ch = (c / freq_hz_ch)**2
-    
-    print(f"\n5. STAGE 1: DELTA_RM TRIALS (λ² = {lambda_sq_ch:.6e} m²):")
-    print(f"   Target polarization angle = {XF_TARGET_POLANG:.1f}°")
-    print(f"   Target RM = {XF_TARGET_RM:.2f} rad/m², Delta RM trials from {delta_rm_trials[0]:.2f} to {delta_rm_trials[-1]:.2f} rad/m²")
-    print(f"\n   {'DeltaRM':>8s}  {'RM':>8s}  {'Ang_Opt1':>9s}  {'Dev1':>7s}  {'Ang_Opt2':>9s}  {'Dev2':>7s}")
-    print(f"   {'-'*60}")
-    
-    min_dev1 = np.inf
-    min_dev2 = np.inf
-    best_drm1 = None
-    best_drm2 = None
-    
-    for delta_rm in delta_rm_trials:
-        rm = XF_TARGET_RM + delta_rm
-        angle1 = calculate_derotated_angle(Q_pa1, U_pa1, rm, lambda_sq_ch)
-        angle2 = calculate_derotated_angle(Q_pa2, U_pa2, rm, lambda_sq_ch)
-        
-        dev1 = abs(angle1 - XF_TARGET_POLANG)
-        dev2 = abs(angle2 - XF_TARGET_POLANG)
-        if dev1 > 90:
-            dev1 = 180 - dev1
-        if dev2 > 90:
-            dev2 = 180 - dev2
-        
-        marker1 = " *" if dev1 < min_dev1 else "  "
-        marker2 = " *" if dev2 < min_dev2 else "  "
-        
-        if dev1 < min_dev1:
-            min_dev1 = dev1
-            best_drm1 = delta_rm
-        if dev2 < min_dev2:
-            min_dev2 = delta_rm
-            best_drm2 = delta_rm
-        
-        print(f"   {delta_rm:+8.2f}  {rm:8.2f}  {angle1:9.2f}  {dev1:7.2f}{marker1}  {angle2:9.2f}  {dev2:7.2f}{marker2}")
-    
-    print(f"\n   Best delta_RM for Option 1: {best_drm1:+.2f} rad/m² (deviation = {min_dev1:.2f}°)")
-    print(f"   Best delta_RM for Option 2: {best_drm2:+.2f} rad/m² (deviation = {min_dev2:.2f}°)")
-    
-    print(f"\n6. STAGE 2: QUALITY FILTERING AND MODE SELECTION:")
-    print(f"   Quality threshold: {quality_threshold:.2f}° (median + 3*MAD, or 75th percentile)")
-    print(f"   This channel - Option 1 min deviation: {min_dev_opt1[debug_idx]:.2f}° {'(GOOD)' if min_dev_opt1[debug_idx] < quality_threshold else '(REJECTED)'}")
-    print(f"   This channel - Option 2 min deviation: {min_dev_opt2[debug_idx]:.2f}° {'(GOOD)' if min_dev_opt2[debug_idx] < quality_threshold else '(REJECTED)'}")
-    print(f"   Global mode delta_RM: {global_delta_rm:+.2f} rad/m² (from {len(filtered_delta_rms)} good solutions)")
-    print(f"   Global RM: {global_rm:.2f} rad/m²")
-    
-    print(f"\n7. STAGE 3: ±π SELECTION AT FIXED RM:")
-    angle1_fixed = angles_opt1_fixed[debug_idx]
-    angle2_fixed = angles_opt2_fixed[debug_idx]
-    dev1_fixed = dev_opt1_fixed[debug_idx]
-    dev2_fixed = dev_opt2_fixed[debug_idx]
-    
-    print(f"   At fixed RM = {global_rm:.2f} rad/m²:")
-    print(f"   Option 1 (no π):  Angle = {angle1_fixed:9.2f}°, Deviation = {dev1_fixed:7.2f}°")
-    print(f"   Option 2 (+π):    Angle = {angle2_fixed:9.2f}°, Deviation = {dev2_fixed:7.2f}°")
-    print(f"   SELECTED: {solution_names[debug_idx]} (Option {'2 (+π)' if solution_names[debug_idx] == 'plus_pi' else '1 (no π)'})")
-    print(f"   Selected ρ = {np.degrees(selected_rho_valid[debug_idx]):.3f}°")
+    previous_rho = selected_rho_chunk
+    previous_solution = solution_name
 
-print(f"\n{'='*100}")
-print("END DEBUGGING BLOCK")
-print(f"{'='*100}\n")
-# ============================
-# END DEBUGGING BLOCK
-# ============================
+chunk_results.reverse()
+print(f"\nPseudo-continuity analysis complete: Processed {len(chunk_results)} chunks")
 
 # ============================
 # Two-Stage Outlier Detection
@@ -1379,24 +1209,19 @@ freq_averaged_data = None
 if n_with_solution > XF_MAX_AVG_CHANNELS:
     print(f"Averaging {n_with_solution} channels → {XF_MAX_AVG_CHANNELS} bins")
     
-    # Use entire bandwidth for binning (includes flagged regions)
-    freq_min, freq_max = f_use.min(), f_use.max()
-    freq_bin_edges = np.linspace(freq_min, freq_max, XF_MAX_AVG_CHANNELS + 1)
-    freq_bin_centers = 0.5 * (freq_bin_edges[:-1] + freq_bin_edges[1:])
-    
-    print(f"  Binning across full bandwidth: {freq_min:.3f} - {freq_max:.3f} GHz")
-    
-    # Data to bin (only channels with solutions)
     freq_for_avg = f_use[has_solution]
     rho_for_avg = selected_rho_per_channel[has_solution]
     solution_for_avg = selected_solution_per_channel[has_solution]
+    
+    freq_min, freq_max = freq_for_avg.min(), freq_for_avg.max()
+    freq_bin_edges = np.linspace(freq_min, freq_max, XF_MAX_AVG_CHANNELS + 1)
+    freq_bin_centers = 0.5 * (freq_bin_edges[:-1] + freq_bin_edges[1:])
     
     freq_averaged_rho_rad = np.full(XF_MAX_AVG_CHANNELS, np.nan)
     freq_averaged_solution = np.full(XF_MAX_AVG_CHANNELS, '', dtype='U8')
     
     n_good_bins = 0
     n_flagged_bins = 0
-    n_empty_bins = 0
     
     for i in range(XF_MAX_AVG_CHANNELS):
         bin_low = freq_bin_edges[i]
@@ -1409,10 +1234,6 @@ if n_with_solution > XF_MAX_AVG_CHANNELS:
         bin_channels = np.where(in_bin)[0]
         
         if len(bin_channels) == 0:
-            # Empty bin (no channels in this frequency range)
-            freq_averaged_rho_rad[i] = np.nan
-            freq_averaged_solution[i] = 'empty'
-            n_empty_bins += 1
             continue
         
         bin_rho_rad = rho_for_avg[bin_channels]
@@ -1434,7 +1255,6 @@ if n_with_solution > XF_MAX_AVG_CHANNELS:
             
             n_good_bins += 1
         else:
-            # All channels in bin are outliers
             freq_averaged_rho_rad[i] = np.nan
             freq_averaged_solution[i] = 'outlier'
             n_flagged_bins += 1
@@ -1442,8 +1262,7 @@ if n_with_solution > XF_MAX_AVG_CHANNELS:
     freq_averaged_rho_deg = np.degrees(freq_averaged_rho_rad)
     
     print(f"  Good bins: {n_good_bins} / {XF_MAX_AVG_CHANNELS}")
-    print(f"  Flagged bins (all outliers): {n_flagged_bins} / {XF_MAX_AVG_CHANNELS}")
-    print(f"  Empty bins (no data): {n_empty_bins} / {XF_MAX_AVG_CHANNELS}")
+    print(f"  Flagged bins: {n_flagged_bins} / {XF_MAX_AVG_CHANNELS}")
     
     freq_averaged_data = {
         'freq': freq_bin_centers,
@@ -1451,8 +1270,7 @@ if n_with_solution > XF_MAX_AVG_CHANNELS:
         'solution': freq_averaged_solution,
         'n_bins': XF_MAX_AVG_CHANNELS,
         'n_good': n_good_bins,
-        'n_flagged': n_flagged_bins,
-        'n_empty': n_empty_bins
+        'n_flagged': n_flagged_bins
     }
 else:
     print(f"Skipping frequency averaging ({n_with_solution} ≤ {XF_MAX_AVG_CHANNELS} channels)")
@@ -1504,6 +1322,10 @@ if n_with_solution > 0:
             ax.scatter(freq_plot[outlier_mask], rho_deg_plot[outlier_mask], 
                       c='black', s=25, alpha=0.9, marker='x', linewidths=2,
                       label=f'Outliers ({np.sum(outlier_mask)})', zorder=4)
+        
+        for cr in chunk_results[1:]:
+            ax.axvline(cr['freq_range'][0], color='gray', alpha=0.3, 
+                      linestyle='--', linewidth=0.5, zorder=1)
         
         if freq_averaged_data is not None:
             avg_freq = freq_averaged_data['freq']
@@ -1558,7 +1380,8 @@ if n_with_solution > 0:
         'rho_deg': rho_deg_plot,
         'rho_rad': selected_rho_per_channel[has_solution],
         'solution_type': solution_plot,
-        'outlier_flags': outlier_mask
+        'outlier_flags': outlier_mask,
+        'chunk_info': [cr for cr in chunk_results]
     }
     
     if freq_averaged_data is not None:
@@ -1784,7 +1607,7 @@ else:
     tb.flush()
     tb.close()
     
-    print(f"SUCCESS: XF table populated with negated interpolated cross-hand phases: {xftab}")
+    print(f"✓ XF table populated with negated interpolated cross-hand phases: {xftab}")
 
 shutil.rmtree(temp_ms)
 print("\n=== Script Complete ===")
