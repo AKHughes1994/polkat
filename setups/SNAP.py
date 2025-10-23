@@ -180,7 +180,7 @@ def main():
                     imcall = gen.generate_syscall_wsclean(mslist = [target_ms],
                         imgname = blind_image_prefix,
                         datacol = 'DATA',
-                        chanout = cfg.WSC_MASK_CHANNELSOUT,
+                        chanout = cfg.WSC_BLIND_CHANNELSOUT,
                         nomodel = True,
                         pol = 'I',
                         intervalsout = False,
