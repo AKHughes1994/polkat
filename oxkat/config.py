@@ -57,7 +57,7 @@ USE_SINGULARITY = True
 BIND = ''
 BINDPATH = '$PWD,'+CWD+','+BIND
 
-IDIA_CONTAINER_PATH = ['/idia/software/containers/',HOME+'/containers/']
+IDIA_CONTAINER_PATH = ['/idia/software/containers/',HOME+'/containers/', CWD]
 CHPC_CONTAINER_PATH = [HOME+'/containers/']
 HIPPO_CONTAINER_PATH = None
 NODE_CONTAINER_PATH = [HOME+'/containers/', '/mnt/ephem/containers']
@@ -464,7 +464,7 @@ WSC_BLIND_CHANNELSOUT = 8
 WSC_PCAL_CHANNELSOUT = 8
 WSC_DMASK_CHANNELSOUT = WSC_PCAL_CHANNELSOUT # Incase you want a different channelisation for your datamask and pcalmask images
 WSC_CAL_CHANNELSOUT = 16
-WSC_MAX_CHANNELS = 16|
+WSC_MAX_CHANNELS = 16
 WSC_FITSPECTRALPOL = 4
 WSC_JOINCHANNELS = True
 WSC_NONEGATIVE = False
@@ -490,7 +490,7 @@ if WSC_MATCHSCALES:
     min_baseline = 29. # m 
     # Calculate the largest resovable angular scale using top of band + 10 wavelengths as padding
     if BAND == 'UHF':
-        minuvl = min_baseline / (speed_of_light / 1088.0e6) + 10. 
+        inuvl = min_baseline / (speed_of_light / 1088.0e6) + 10. 
         WSC_MINUVL = '{}.0'.format(round(minuvl))
     if BAND == 'L':
         minuvl = min_baseline / (speed_of_light / 1712.0e6) + 10. 
