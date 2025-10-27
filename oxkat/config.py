@@ -490,7 +490,7 @@ if WSC_MATCHSCALES:
     min_baseline = 29. # m 
     # Calculate the largest resovable angular scale using top of band + 10 wavelengths as padding
     if BAND == 'UHF':
-        inuvl = min_baseline / (speed_of_light / 1088.0e6) + 10. 
+        minuvl = min_baseline / (speed_of_light / 1088.0e6) + 10. 
         WSC_MINUVL = '{}.0'.format(round(minuvl))
     if BAND == 'L':
         minuvl = min_baseline / (speed_of_light / 1712.0e6) + 10. 
