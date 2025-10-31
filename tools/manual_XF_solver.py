@@ -1641,7 +1641,7 @@ else:
     if XF_USE_SMOOTHING and len(freq_good) >= 5:
         # Auto-calculate window length if not specified
         if XF_SAVGOL_WINDOW is None:
-            window_length = min(11, len(freq_good) if len(freq_good) % 2 == 1 else len(freq_good) - 1)
+            window_length = min(5, len(freq_good) if len(freq_good) % 2 == 1 else len(freq_good) - 1)
             if window_length < 5:
                 window_length = 5 if len(freq_good) >= 5 else len(freq_good)
                 if window_length % 2 == 0:
