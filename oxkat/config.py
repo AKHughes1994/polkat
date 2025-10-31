@@ -243,7 +243,7 @@ XF_MAX_AVG_CHANNELS = None # If None, auto calculate will be the same as the num
 
 # Calibration and outlier thresholds
 XF_MIN_CROSS_FLUX = 0.1  # Minimum total cross-hand flux (Jy) for reliable solutions
-XF_SIGMA_CLIP = 2.0  # N-sigma threshold for outlier flagging
+XF_SIGMA_CLIP = 3.0  # N-sigma threshold for outlier flagging
 XF_CLIP_WINDOW = 50  # Window size for local scatter analysis
 
 # Smoothing control for XF table creation and interpolation

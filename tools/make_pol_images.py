@@ -11,7 +11,7 @@ from oxkat import config as cfg
 
 def msg(txt):
     stamp = time.strftime(' %Y-%m-%d %H:%M:%S | ')
-    print(stamp+txt)
+    print(stamp+txt, flush = True)
 
 
 def get_image(fitsfile):
@@ -51,6 +51,11 @@ def main():
         image_V = image_Q.replace('-Q-', '-V-')
         image_Plin = image_Q.replace('-Q-', '-Plin-')
         image_Ptot = image_Q.replace('-Q-', '-Ptot-')
+
+        # Skip if both Plin and Ptot images already exist
+        if os.path.exists(image_Plin) and os.path.exists(image_Ptot):
+            msg(f"Skipping {image_Q}: Plin and Ptot images already exist.")
+            continue
 
         # Initialize the P image by duplicating the Q image
         subprocess.run([f'cp {image_Q} {image_Plin}'], shell = True)
