@@ -232,11 +232,6 @@ XF_MODE = 'auto' # options are: auto (RECOMMENDED: determine based on band and/o
 XF_AUTO_ANG_JUMP = 90.0 # angle in degrees where, if the CASA XF solver has adjacent solution intervals that have a discontinuity
                         # larger than this value, it will solve XF manually.
 
-# PARAMETERS TO DECIDE XF SOLVE METHOD -- DEFAULTS ARE LIKELY ALL GOOD
-XF_MODE = 'auto' # options are: auto (RECOMMENDED: determine based on band and/or if there is large phase discontinuties), casa or  manual
-XF_AUTO_ANG_JUMP = 90.0 # angle in degrees where, if the CASA XF solver has adjacent solution intervals that have a discontinuity
-                        # larger than this value, it will solve XF manually.
-
 # XF table targets
 XF_CHANINT = 16  # Channels per solution interval default is 1024 frequency channels so 1024 / 16 = 64 cross-hand phase intervals
 XF_MAX_AVG_CHANNELS = None # If None, auto calculate will be the same as the number of cross-hand solution intervals

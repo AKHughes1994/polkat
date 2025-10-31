@@ -1,8 +1,25 @@
-### Caution
+### CHANGES (October 31, 2025)
 
-**THE DEFAULT WAS RECENTLY SWITCHED FROM POLKAT_CASA TO THIS BRANCH. THE REASONS ARE: (A) THIS BRANCH HAS MORE FUNCTIONALITY (I.E., PEELING); (B) IT IS MORE INLINE WITH OKXAT WORKFLOW**
+#### Update: UHF Band and Manual Cross-Hand Solver
 
-This routine has been extensively tested for MeerKAT L- and S-bands. UHF band support is experimental: while the current version recovers correct polarization degrees, the polarization angle below 800 MHz is problematic. Please check your data carefully for UHF band reductions. We will update this documentation as we resolve these issues.
+Full UHF band support is now available. The cross-hand phase (XF) calibration has been extended with a **manual solver** that handles cases where CASA’s XF solver fails to converge or introduces large discontinuities.
+
+New configuration parameters have been introduced and must be set **per calibrator**:
+
+```python
+XF_TARGET_POLANG = 28.0  # Expected intrinsic (RM-corrected) linear polarization angle [deg]
+XF_TARGET_RM = 0.0       # Initial guess for the intrinsic rotation measure [rad/m^2]
+XF_MODE = 'auto'         # Options: 'auto' or 'manual'; auto will fall back to manual when needed
+XF_AUTO_ANG_JUMP = 90.0  # Threshold [deg]; if adjacent CASA XF solutions differ by more than this,
+                         # a manual re-solve is triggered
+```
+
+The manual solver is implemented in [`tools/manual_XF_solver.py`](tools/manual_XF_solver.py).  
+For most use cases, the default settings will suffice for UHF-thorugh-S band --- especially if you’re not deeply familiar with cross-hand calibration.
+
+This routine has been tested on standard polarization calibrators **3C286** and **3C138** for **MeerKAT L-, S-, and UHF-bands**, and now recovers stable and correct polarization angles across the full frequency range.  
+
+If you develop or know of a more robust cross-hand phase solver, please get in touch!
 
 ---
 
@@ -37,7 +54,7 @@ This routine is designed primarily for use on the ILIFU clusters operated by The
 
 ```
 # The main container 
-singularity pull polkat-0.2.0.sif docker://hughesakh/polkat:0.2.0
+singularity pull polkat-0.2.1.sif docker://hughesakh/polkat:0.2.0
 
 # ALBUS container for ionospheric corrections
 singularity pull polkat-albus.sif docker://hughesakh/polkat_albus:latest
