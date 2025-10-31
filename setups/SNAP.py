@@ -154,7 +154,7 @@ def main():
 
             # If model image(s) have been specified use it to predict [DEFAULT assumes 2GC pcalmask]
             model_image_prefix = IMAGES + '/img_' + target_ms.replace('_snapshot','') + '_' + cfg.SNAP_MODELIDENTIFIER
-            if cfg.SNAP_MODELIDENTIFIER != '' and glob.glob(model_image_prefix + '*model.fits' ) != [] and cfg.WSC_IMAGE_CHANNELSOUT == cfg.SNAP_CHANNELSOUT:
+            if cfg.SNAP_MODELIDENTIFIER != '' and glob.glob(model_image_prefix + '*model.fits' ) != [] and cfg.WSC_PCAL_CHANNELSOUT == cfg.SNAP_CHANNELSOUT:
                 pass
 
             # Say (for example) you *accidentally* removed pcalmask model, then this is necessary
@@ -180,7 +180,7 @@ def main():
                     imcall = gen.generate_syscall_wsclean(mslist = [target_ms],
                         imgname = blind_image_prefix,
                         datacol = 'DATA',
-                        chanout = cfg.WSC_MASK_CHANNELSOUT,
+                        chanout = cfg.WSC_BLIND_CHANNELSOUT,
                         nomodel = True,
                         pol = 'I',
                         intervalsout = False,

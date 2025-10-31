@@ -170,6 +170,7 @@ def main():
             cal_index   = project_info['working_ids'][project_info['working_names'].index(cal_name)]
             name_ms   = myms.replace('.ms', f'_{cal_name}.ms')
             img_prefix = f"{cfg.IMAGES}/img_{name_ms}_diagnostic"
+            mask_prefix = f"{cfg.IMAGES}/img_{name_ms}_mask"
 
             step = {}
             step['step'] = n + k
@@ -182,12 +183,12 @@ def main():
             syscall = ''
             prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
             imcall  = gen.generate_syscall_wsclean(mslist = [myms],
-                imgname = img_prefix,
+                imgname = mask_prefix,
                 datacol = 'CORRECTED_DATA',
                 field = cal_index,
                 weight=cfg.WSC_WEIGHT_CAL,
                 imsize = cfg.WSC_CAL_IMSIZE,
-                chanout = cfg.WSC_MASK_CHANNELSOUT,
+                chanout = cfg.WSC_BLIND_CHANNELSOUT,
                 pol='I',
                 multiscale = False,
                 joinpolarizations=False,
@@ -202,8 +203,8 @@ def main():
                 absmem = absmem)
             for call in imcall: 
                 syscall += prefix + call + '\n\n'
-            syscall += prefix + gen.generate_syscall_breizorro(restoredimage = f"{img_prefix}-MFS-image.fits", 
-                                                      outfile = f"{img_prefix}-MFS-image.mask.fits", thresh = 6.0)[0] + '\n\n'
+            syscall += prefix + gen.generate_syscall_breizorro(restoredimage = f"{mask_prefix}-MFS-image.fits", 
+                                                      outfile = f"{mask_prefix}-MFS-image.mask.fits", thresh = 6.0)[0] + '\n\n'
             imcall = gen.generate_syscall_wsclean(mslist = [myms],
                 imgname = img_prefix,
                 datacol = 'CORRECTED_DATA',
@@ -214,7 +215,7 @@ def main():
                 joinpolarizations=True,
                 multiscale = False,
                 splitpol = False,
-                mask = img_prefix +'-MFS-image.mask.fits',
+                mask = mask_prefix +'-MFS-image.mask.fits',
                 automask = 5.0,
                 intervalsout = False,
                 autothreshold = 1.0,
@@ -227,6 +228,23 @@ def main():
                 syscall += prefix + call + '\n\n'
             step['syscall'] = syscall
             steps.append(step)
+
+
+            if cfg.WSC_MAX_CHANNELS < cfg.WSC_CAL_CHANNELSOUT:
+                k += 1
+                step = {}
+                step['step'] = n + k
+                step['comment'] = f'Homogenize {cal_name} image resolution across frequency channels'
+                step['dependency'] = n + k - 1
+                step['id'] = 'HOCAL' + (cal_name[-3:])
+                step['slurm_config'] = cfg.SLURM_WSCLEAN
+                step['pbs_config'] = cfg.PBS_WSCLEAN
+                prefix = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
+                syscall =  prefix + f'python3 {cfg.TOOLS}/fix_image_naming.py {cfg.WSC_CAL_CHANNELSOUT} {img_prefix}\n\n'
+                syscall +=  prefix + f'python3 {cfg.TOOLS}/homogenize_beams.py {img_prefix}'
+                step['syscall'] = syscall
+                steps.append(step)
+
    
     # ------------------------------------------------------------------------------
     #

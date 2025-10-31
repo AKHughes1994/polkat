@@ -8,7 +8,11 @@ import time
 import datetime
 import subprocess
 import sys
+import numpy as np
 
+# Flush immediately for better logging
+import functools
+print = functools.partial(print, flush=True)
 
 exec(open('oxkat/config.py').read())
 exec(open('oxkat/casa_read_project_info.py').read())
@@ -36,8 +40,7 @@ myspw = CAL_1GC_FREQRANGE
 
 tt = stamp()
 
-
-# Initial Calibrators tables for the primary
+# Calibrator tables
 ktab0 = GAINTABLES+'/cal_1GC_'+myms+'.K0'
 bptab0 = GAINTABLES+'/cal_1GC_'+myms+'.B0'
 gptab0 = GAINTABLES+'/cal_1GC_'+myms+'.Gp0'
@@ -52,7 +55,6 @@ gatab = GAINTABLES+'/cal_1GC_'+myms+'.Ga'
 ftab = GAINTABLES+'/cal_1GC_'+myms+'.F'
 dftab  = GAINTABLES+'/cal_1GC_'+myms+'.Df'
 
-
 kcross  = GAINTABLES+'/cal_1GC_'+myms+'.KCROSS'
 xftab  = GAINTABLES+'/cal_1GC_'+myms+'.Xf'
 
@@ -61,6 +63,14 @@ flagmanager(vis=myms,
         mode='restore',
         versionname='autoflag_cals_data')
 
+# Remove ftabs if they exist to prevent code from breaking
+if os.path.isdir(ftab0):
+    print(f"Removing: {ftab0}")
+    shutil.rmtree(ftab0)
+
+if os.path.isdir(ftab):
+    print(f"Removing: {ftab}")
+    shutil.rmtree(ftab)
 
 # ------- Set BP calibrator models
 
@@ -94,15 +104,28 @@ elif primary_tag == '0408':
         subprocess.run([syscall],shell=True)
     
     else:
-        bpcal_mod = CAL_1GC_0408_MODEL
+        # OXKAT Version that uses config.py input
+        #bpcal_mod = CAL_1GC_0408_MODEL
+        #setjy(vis=myms,
+        #    field=bpcal_name,
+        #    standard='manual',
+        #    fluxdensity=bpcal_mod[0],
+        #    spix=bpcal_mod[1],
+        #    reffreq=bpcal_mod[2],
+        #    scalebychan=True,
+        #    usescratch=True)
+
+        # Recommendation from SARAO, i.e., https://skaafrica.atlassian.net/wiki/spaces/ESDKB/pages/1481408634/Flux+and+bandpass+calibration
+        # See script in tools/SARAO_0408_model.py to see where CASA parameters come from
         setjy(vis=myms,
             field=bpcal_name,
             standard='manual',
-            fluxdensity=bpcal_mod[0],
-            spix=bpcal_mod[1],
-            reffreq=bpcal_mod[2],
+            fluxdensity=[6.9862, 0.0, 0.0, 0.0],
+            spix=[-1.2897, -0.2353, 0.0861],
+            reffreq='2.7GHz',
             scalebychan=True,
             usescratch=True)
+
 
 elif primary_tag == 'other':
     setjy(vis=myms,
@@ -225,7 +248,7 @@ applycal(vis=myms,
     #calwt=False,
     parang=True,
     gainfield=[bpcal_name,bpcal_name,bpcal_name, bpcal_name, bpcal_name],
-    interp = ['linear','linear','linear', 'linear', 'nearest'], flagbackup=False)
+    interp = ['linear','linear','linear', 'linear', 'linear'], flagbackup=False)
 
 
 # ------- Flag primary on CORRECTED_DATA - MODEL_DATA
@@ -269,7 +292,7 @@ gaincal(vis=myms,
     solint = 'inf',
     gaintable=[bptab0,gptab0, gatab0, dftab0],
     gainfield=[bpcal_name, bpcal_name, bpcal_name, bpcal_name],
-    interp=['linear','linear', 'linear', 'nearest'])
+    interp=['linear','linear', 'linear', 'linear'])
 
 
 # ------- Gp (primary; apply K,B0, Ga0, Df0)
@@ -286,7 +309,7 @@ gaincal(vis=myms,
     minsnr=5,
     gaintable=[bptab0,ktab, gatab0, dftab0],
     gainfield=[bpcal_name, bpcal_name, bpcal_name, bpcal_name],
-    interp=['linear','linear', 'linear', 'nearest'])
+    interp=['linear','linear', 'linear', 'linear'])
 
 
 # ------- B (primary; apply K, Gp, Ga0, Df0)
@@ -306,7 +329,7 @@ bandpass(vis=myms,
     fillgaps=gapfill,
     gaintable=[ktab, gptab, gatab0, dftab0],
     gainfield=[bpcal_name, bpcal_name, bpcal_name, bpcal_name],
-    interp=['linear','linear', 'linear', 'nearest'])
+    interp=['linear','linear', 'linear', 'linear'])
 
 
 flagdata(vis=bptab,mode='tfcrop',datacolumn='CPARAM' , flagbackup=False)
@@ -326,7 +349,7 @@ gaincal(vis=myms,
     minsnr=3,
     gaintable=[ktab, gptab, bptab, dftab0],
     gainfield=[bpcal_name, bpcal_name, bpcal_name, bpcal_name],
-    interp=['linear','linear', 'linear', 'nearest'])
+    interp=['linear','linear', 'linear', 'linear'])
 
 
 # -------- Solve for Df (primary; apply K, Gp, BP, Ga)
@@ -369,7 +392,7 @@ if pacal_name != '':
         minsnr=3,
         gaintable=[ktab, bptab, dftab],
         gainfield=[bpcal_name, bpcal_name, bpcal_name],
-        interp=['nearest', 'linear', 'nearest'],
+        interp=['linear', 'linear', 'linear'],
         append=True)
 
 
@@ -388,7 +411,7 @@ if pacal_name != '':
         minsnr=3,
         gaintable=[ktab, gptab0, bptab, dftab],
         gainfield=[bpcal_name, pacal_name, bpcal_name, bpcal_name],
-        interp=['nearest', 'nearest', 'linear', 'nearest'],
+        interp=['linear', 'linear', 'linear', 'linear'],
         append=True)
 
     # ------- K0 (polcal; apply Bp, Df (primary), Gp0, Ga0 (polcal))
@@ -404,7 +427,7 @@ if pacal_name != '':
         solint='inf',
         gaintable=[gptab0, gatab0, bptab, dftab],
         gainfield=[pacal_name,pacal_name, bpcal_name, bpcal_name],
-        interp=['nearest', 'nearest', 'linear', 'nearest'],
+        interp=['linear', 'linear', 'linear', 'linear'],
         append=True)
 
 # ----- Loop over secondaries
@@ -432,7 +455,7 @@ for i in range(0,len(pcal_names)):
         minsnr=3,
         gaintable=[ktab, bptab, dftab],
         gainfield=[bpcal_name, bpcal_name, bpcal_name],
-        interp=['nearest', 'linear', 'nearest'],
+        interp=['linear', 'linear', 'linear'],
         append=True)
 
 
@@ -450,7 +473,7 @@ for i in range(0,len(pcal_names)):
         minsnr=3,
         gaintable=[ktab, gptab0, bptab, dftab],
         gainfield=[bpcal_name, pcal, bpcal_name, bpcal_name],
-        interp=['nearest', 'linear', 'linear', 'nearest'],
+        interp=['linear', 'linear', 'linear', 'linear'],
         append=True)
 
     # ------- K0 (pcal; apply Bp, Df (primary), Gp0, Ga0 (pcal))
@@ -466,7 +489,7 @@ for i in range(0,len(pcal_names)):
         solint='inf',
         gaintable=[gptab0, gatab0, bptab, dftab],
         gainfield=[pcal,pcal, bpcal_name, bpcal_name],
-        interp=['linear', 'linear', 'linear', 'nearest'],
+        interp=['linear', 'linear', 'linear', 'linear'],
         append=True)
 
 # --- Apply fluxscaling to Ga0 but only if there are calibration fields other than the primary
@@ -494,7 +517,7 @@ if pacal_name != '':
         #calwt=False,
         parang=True,
         gainfield=[pacal_name, pacal_name, pacal_name, bpcal_name, bpcal_name],
-        interp = ['nearest','nearest','nearest', 'linear', 'nearest'], 
+        interp = ['linear','linear','linear', 'linear', 'linear'], 
         flagbackup=False)
 
     flagdata(vis=myms,
@@ -530,7 +553,7 @@ for i in range(0,len(pcal_names)):
         #calwt=False,
         parang=True,
         gainfield=[pcal, pcal, pcal, bpcal_name, bpcal_name],
-        interp = ['linear','linear','linear', 'linear', 'nearest'], 
+        interp = ['linear','linear','linear', 'linear', 'linear'], 
         flagbackup=False)
 
     flagdata(vis=myms,
@@ -568,7 +591,7 @@ if pacal_name != '':
         minsnr=3,
         gaintable=[ktab, bptab, dftab],
         gainfield=[bpcal_name, bpcal_name, bpcal_name],
-        interp=['nearest', 'linear', 'nearest'],
+        interp=['linear', 'linear', 'linear'],
         append=True)
 
 
@@ -587,12 +610,11 @@ if pacal_name != '':
         minsnr=3,
         gaintable=[ktab, gptab, bptab, dftab],
         gainfield=[bpcal_name, pacal_name, bpcal_name, bpcal_name],
-        interp=['nearest', 'nearest', 'linear', 'nearest'],
+        interp=['linear', 'linear', 'linear', 'linear'],
         append=True)
 
     # ------- K (polcal; apply Bp, Df (primary), Gp, Ga (polcal))
     
-
     gaincal(vis= myms,
         field = pacal_name,
         #   uvrange = myuvrange,
@@ -603,49 +625,10 @@ if pacal_name != '':
         solint='inf',
         gaintable=[gptab, gatab, bptab, dftab],
         gainfield=[pacal_name,pacal_name, bpcal_name, bpcal_name],
-        interp=['nearest', 'nearest', 'linear', 'nearest'],
+        interp=['linear', 'linear', 'linear', 'linear'],
         append=True)
 
-    # ------- Set PA calibrator models
-
-    setjy(vis=myms,
-        field=pacal_name,
-        standard='manual',
-        fluxdensity = POLANG_MOD,
-        usescratch=True)
-
-
-    # ------- KCROSS (polcal; apply Bp, Df (primary), Ga, K, Gp (polcal))
-
-    gaincal(vis = myms,
-        field = pacal_name,
-    #    uvrange = myuvrange,
-        caltable = kcross,
-        #   spw=myspw,
-        refant = str(ref_ant),
-        solint = 'inf',
-        gaintype='KCROSS',
-        parang = True,
-        gaintable=[ktab,gptab,bptab,gatab,dftab],
-        gainfield=[pacal_name, pacal_name,bpcal_name, pacal_name, bpcal_name],
-        interp = ['nearest','nearest','linear','nearest','nearest'],
-        append = False)
-
-    # -------- Xf (polcal; apply Bp, Df (primary), Ga, Gp, K, KCROSS (polcal))
-
-    polcal(vis = myms,
-        field = pacal_name,
-        uvrange = myuvrange,
-        caltable = xftab,
-        refant = str(ref_ant),
-        solint = 'inf,64ch', # 16-channels-across in frequency (assumes 1024 channels)
-        poltype='Xf',
-        combine = '',
-        gaintable=[ktab,gptab,bptab,gatab,dftab, kcross],
-        gainfield=[pacal_name,pacal_name,bpcal_name, pacal_name, bpcal_name, pacal_name],
-        interp = ['nearest','nearest','linear','nearest','nearest', 'nearest'],
-        append = False)
-
+            
 for i in range(0,len(pcal_names)):
 
     pcal = pcal_names[i]
@@ -669,7 +652,7 @@ for i in range(0,len(pcal_names)):
         minsnr=3,
         gaintable=[ktab, bptab, dftab],
         gainfield=[bpcal_name, bpcal_name, bpcal_name],
-        interp=['nearest', 'linear', 'nearest'],
+        interp=['linear', 'linear', 'linear'],
         append=True)
 
 
@@ -687,7 +670,7 @@ for i in range(0,len(pcal_names)):
         minsnr=3,
         gaintable=[ktab, gptab0, bptab, dftab],
         gainfield=[bpcal_name, pcal, bpcal_name, bpcal_name],
-        interp=['nearest', 'linear', 'linear', 'nearest'],
+        interp=['linear', 'linear', 'linear', 'linear'],
         append=True)
 
     # ------- K (pcal; apply Bp, Df (primary), Gp, Ga (pcal))
@@ -703,13 +686,13 @@ for i in range(0,len(pcal_names)):
         solint='inf',
         gaintable=[gptab, gatab, bptab, dftab],
         gainfield=[pcal, pcal, bpcal_name, bpcal_name],
-        interp=['linear', 'linear', 'linear', 'nearest'],
+        interp=['linear', 'linear', 'linear', 'linear'],
         append=True)
 
 # --- Apply fluxscaling to Ga but only if there are calibration fields other than the primary
 if len([pcal for pcal in pcal_names if pcal != bpcal_name]) > 0 or pacal_name != '':
     
-    # --- Apply fluxscaling to Ga0
+    # --- Apply fluxscaling to Ga
     fluxscale(vis=myms,
         caltable = gatab,
         fluxtable = ftab,
@@ -720,6 +703,116 @@ if len([pcal for pcal in pcal_names if pcal != bpcal_name]) > 0 or pacal_name !=
 # If there is no need to apply flux scaling, we can set ftab0 to gatab0 as the only calibrator is the primary    
 else:
     ftab = gatab
+
+# -------------------------------------------------------------------------------------------------------- #
+# -------------------------------------------------------------------------------------------------------- #
+# --------------------------- CROSS-HAND Tables (PA CAL)  ------------------------------------------------ #
+# -------------------------------------------------------------------------------------------------------- #
+# -------------------------------------------------------------------------------------------------------- #
+
+
+if pacal_name != '':
+ 
+    # ------- Set PA calibrator models
+
+    setjy(vis=myms,
+        field=pacal_name,
+        standard='manual',
+        fluxdensity = POLANG_MOD,
+        usescratch=True)
+
+    # -------- Solve for Cross-hand phase terms
+    if XF_MODE not in ['casa', 'manual', 'auto']:
+        print(f"Cross-hand phase mode ({XF_MODE}) not a valid option, defauling to 'auto'")
+        XF_MODE = 'auto'
+
+    manual_XF = False
+    if XF_MODE == 'casa' or XF_MODE == 'auto':
+
+        print(f"Cross-hand phase mode if {XF_MODE}; solving CASA based solutions")
+        
+        # ------- KCROSS (polcal; apply Bp, Df (primary), Ga, K, Gp (polcal))
+        gaincal(vis = myms,
+            field = pacal_name,
+        #    uvrange = myuvrange,
+            caltable = kcross,
+            #   spw=myspw,
+            refant = str(ref_ant),
+            solint = 'inf',
+            gaintype='KCROSS',
+            parang = True,
+            gaintable=[ktab,gptab,bptab,gatab,dftab],
+            gainfield=[pacal_name, pacal_name,bpcal_name, pacal_name, bpcal_name],
+            interp = ['linear','linear','linear','linear','linear'],
+            append = False)
+
+        # -------- Xf (polcal; apply Bp, Df (primary), Ga, Gp, K, KCROSS (polcal))
+
+        polcal(vis = myms,
+            field = pacal_name,
+            uvrange = myuvrange,
+            caltable = xftab,
+            refant = str(ref_ant),
+            solint = f'inf,{XF_CHANINT}ch',
+            poltype='Xf',
+            combine = '',
+            gaintable=[ktab,gptab,bptab,gatab,dftab, kcross],
+            gainfield=[pacal_name,pacal_name,bpcal_name, pacal_name, bpcal_name, pacal_name],
+            interp = ['linear','linear','linear','linear','linear', 'linear'],
+            append = False)
+
+        # Cross hand calibration tables
+        cross_table = [kcross, xftab]
+        cross_field = [pacal_name, pacal_name]
+        cross_interp = ['linear', 'linear']
+
+        # Check if the cross-hand phase is continuos (if not due manual as there is likely a null crossing)
+        if XF_MODE == 'auto':
+
+            # Get the cross-hand phase            
+            tb.open(xftab)
+            gains = tb.getcol('CPARAM')
+            flags = tb.getcol('FLAG')
+            gains = np.nanmedian(gains[0,:,:], axis=-1)
+            flags = np.nanmedian(flags[0,:,:], axis=-1).astype(bool)
+            gains = gains[~flags]
+            tb.close()
+
+            # Get continuity
+            phases = np.angle(gains)
+
+            # Calculate differences between adjacent phases
+            phase_diffs = np.diff(phases)
+
+            # Wrap differences to [-π, π] range (shortest path around circle)
+            phase_diffs = np.arctan2(np.sin(phase_diffs), np.cos(phase_diffs))
+
+            # Convert to degrees
+            phase_diffs_deg = np.degrees(phase_diffs)
+
+            # Find maximum absolute jump
+            max_jump = np.max(np.abs(phase_diffs_deg))
+
+            # Check against threshold
+            is_continuous = max_jump < XF_AUTO_ANG_JUMP
+
+            print(f"Maximum phase jump: {max_jump:.2f}°")
+            print(f"Threshold: {XF_AUTO_ANG_JUMP}°")
+            print(f"Phase continuous: {is_continuous}")
+
+            if not is_continuous:
+                print("Detected large phase jump in adjacent bins; solving Xf manually")
+                manual_XF = True
+
+    if XF_MODE == 'manual' or manual_XF or band == 'UHF':
+        print(f"Cross-hand phase mode is {XF_MODE} (or auto detected a large phase jump? {manual_XF}); solving manual solutions")
+        exec(open('tools/manual_XF_solver.py').read())
+
+        # Cross hand calibration tables
+        cross_table = [xftab]
+        cross_field = [pacal_name]
+        cross_interp = ['linear']     
+
 
 # ------------------------------------------------------------------------------ #
 # ------------------------------------------------------------------------------ #
@@ -736,7 +829,7 @@ applycal(vis = myms,
     #calwt = False,
     parang = True,
     gainfield = [bpcal_name,bpcal_name, bpcal_name, bpcal_name, bpcal_name],
-    interp = ['linear','linear','linear','linear','nearest'],
+    interp = ['linear','linear','linear','linear','linear'],
     flagbackup=False)
 
 
@@ -762,7 +855,7 @@ if pacal_name == '':
             #calwt = False,
             parang = False,
             gainfield = [pcal,pcal, bpcal_name, pcal, bpcal_name],
-            interp = ['linear','linear','linear','linear','nearest'],
+            interp = ['linear','linear','linear','linear','linear'],
             flagbackup=False)
 
     # ------- Targets 
@@ -778,7 +871,7 @@ if pacal_name == '':
                 #calwt=False,
                 parang=False,
                 gainfield = [related_pcal, related_pcal, bpcal_name, related_pcal, bpcal_name],
-                interp = ['linear','linear','linear','linear','nearest'],
+                interp = ['linear','linear','linear','linear','linear'],
                 flagbackup=False)
 
         # Flag target
@@ -809,13 +902,13 @@ if pacal_name == '':
 # ------- PACAL
 
 applycal(vis = myms,
-        gaintable = [ktab,gptab,bptab,ftab,dftab, kcross, xftab],
  #       applymode='calflagstrict',
         field = pacal_name,
         #calwt = False,
         parang = True,
-        gainfield = [pacal_name,pacal_name, bpcal_name, pacal_name, bpcal_name, pacal_name, pacal_name],
-        interp = ['nearest','nearest','linear','nearest','nearest','nearest', 'nearest'],
+        gaintable = [ktab,gptab,bptab,ftab,dftab] + cross_table,
+        gainfield = [pacal_name,pacal_name, bpcal_name, pacal_name, bpcal_name] + cross_field,
+        interp = ['linear','linear','linear','linear','linear'] + cross_interp,
         flagbackup=False)
 
 # ------- Secondaries
@@ -830,13 +923,13 @@ for i in range(0,len(pcal_names)):
         continue
 
     applycal(vis = myms,
-        gaintable = [ktab,gptab,bptab,ftab,dftab, kcross, xftab],
         # applymode='calflagstrict',
         field = pcal,
         #calwt = False,
         parang = True,
-        gainfield = [pcal,pcal, bpcal_name, pcal, bpcal_name, pacal_name, pacal_name],
-        interp = ['linear','linear','linear','linear','nearest','nearest', 'nearest'],
+        gaintable = [ktab,gptab,bptab,ftab,dftab] + cross_table,
+        gainfield = [pcal,pcal, bpcal_name, pcal, bpcal_name] + cross_field,
+        interp = ['linear','linear','linear','linear','linear'] + cross_interp,
         flagbackup=False)
 
 # ------- Targets 
@@ -847,12 +940,12 @@ for i in range(0,len(targets)):
 
     applycal(vis=myms,
                 #applymode='calflagstrict',
-                gaintable = [ktab,gptab,bptab,ftab,dftab, kcross, xftab],
                 field=target,
                 #calwt=False,
                 parang=True,
-                gainfield = [related_pcal, related_pcal, bpcal_name, related_pcal, bpcal_name, pacal_name, pacal_name],
-                interp = ['linear','linear','linear','linear','nearest','nearest', 'nearest'],
+                gaintable = [ktab,gptab,bptab,ftab,dftab] + cross_table,
+                gainfield = [related_pcal, related_pcal, bpcal_name, related_pcal, bpcal_name] + cross_field,
+                interp = ['linear','linear','linear','linear','linear'] + cross_interp,
                 flagbackup=False)
 
     # Flag target

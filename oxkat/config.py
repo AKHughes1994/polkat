@@ -57,7 +57,7 @@ USE_SINGULARITY = True
 BIND = ''
 BINDPATH = '$PWD,'+CWD+','+BIND
 
-IDIA_CONTAINER_PATH = ['/idia/software/containers/',HOME+'/containers/']
+IDIA_CONTAINER_PATH = ['/idia/software/containers/',HOME+'/containers/', CWD]
 CHPC_CONTAINER_PATH = [HOME+'/containers/']
 HIPPO_CONTAINER_PATH = None
 NODE_CONTAINER_PATH = [HOME+'/containers/', '/mnt/ephem/containers']
@@ -207,19 +207,52 @@ CAL_1GC_RENAME_FEEDS = True # Turn true [Default] if you need switch feed naming
 # Pre-processing, operations applied when master MS is split to working MS
 PRE_FIELDS = ''  # Comma-separated list of fields to select from raw MS
                                      # Names or IDs, do not mix, do not use spaces
+PRE_SCANS = ''                       # Comma-separated list of scans to select from raw MS
+PRE_NCHANS = 1024                    # Integer number of channels for working MS
+PRE_TIMEBIN = '8s'                   # Integration time for working MS
+
+
 
 # Polarization calibrator info --- Must be in PRE_FIELDS, if left blank will assume no polarization angle calibration
+# https://science.nrao.edu/facilities/vla/docs/manuals/obsguide/modes/pol
 POLANG_NAME = 'J1331+3030'         # Specify the name of the field you want to use as a Polarization angle calibrator -- 3C286
 POLANG_DIR  = '13:31:08.2881,+30.30.32.959' # CASA Format
 POLANG_MOD  = [1.0, 0.0, 0.5, 0.0]
+XF_TARGET_POLANG = 28.0  # Expected INTRINSIC (i.e. correcting RM effects) linear polarization angle in degrees
+XF_TARGET_RM = 0.0 # Guess for the intrinsic RM; for 'manual' XF determination and RM trialing
 
 #POLANG_NAME = 'J0521+1638'         # Specify the name of the field you want to use as a Polarization angle calibrator -- 3C138
 #POLANG_DIR  = '05:21:09.890000,+16.38.22.10000' # CASA Format
 #POLANG_MOD  = [1.0, 0.3, -0.05, 0.0]
+#XF_TARGET_POLANG = -10.0  # Expected INTRINSIC (i.e. correcting RM effects) linear polarization angle in degrees
+#XF_TARGET_RM = 0.0 # Guess for the intrinsic RM; for 'manual' XF determination and RM trialing
 
-PRE_SCANS = ''                       # Comma-separated list of scans to select from raw MS
-PRE_NCHANS = 1024                    # Integer number of channels for working MS
-PRE_TIMEBIN = '8s'                   # Integration time for working MS
+# PARAMETERS TO DECIDE XF SOLVE METHOD -- DEFAULTS ARE LIKELY ALL GOOD
+XF_MODE = 'auto' # options are: auto (RECOMMENDED: determine based on band and/or if there is large phase discontinuties), casa or  manual
+XF_AUTO_ANG_JUMP = 90.0 # angle in degrees where, if the CASA XF solver has adjacent solution intervals that have a discontinuity
+                        # larger than this value, it will solve XF manually.
+
+# PARAMETERS TO DECIDE XF SOLVE METHOD -- DEFAULTS ARE LIKELY ALL GOOD
+XF_MODE = 'auto' # options are: auto (RECOMMENDED: determine based on band and/or if there is large phase discontinuties), casa or  manual
+XF_AUTO_ANG_JUMP = 90.0 # angle in degrees where, if the CASA XF solver has adjacent solution intervals that have a discontinuity
+                        # larger than this value, it will solve XF manually.
+
+# XF table targets
+XF_CHANINT = 16  # Channels per solution interval default is 1024 frequency channels so 1024 / 16 = 64 cross-hand phase intervals
+XF_MAX_AVG_CHANNELS = None # If None, auto calculate will be the same as the number of cross-hand solution intervals
+
+# Calibration and outlier thresholds
+XF_MIN_CROSS_FLUX = 0.1  # Minimum total cross-hand flux (Jy) for reliable solutions
+XF_SIGMA_CLIP = 2.0  # N-sigma threshold for outlier flagging
+XF_CLIP_WINDOW = 50  # Window size for local scatter analysis
+
+# Smoothing control for XF table creation and interpolation
+XF_USE_SMOOTHING = True  # Apply Savitzky-Golay smoothing before interpolation
+XF_SAVGOL_WINDOW = None  # Window length (odd integer); None=auto-calculate (recommended)
+XF_SAVGOL_POLYORDER = 3  # Polynomial order for Savitzky-Golay filter
+XF_DELTARM_TRIALS = [-7,7] # min/max atmospheric RM for trialling (21 trials between) with be XF_TARGET_RM + DeltaRM
+                           # For south/north hemisphere sources negative/positive-only is sufficient
+                           # Leaving as it to be more flexible (and it should till pick out the correct one)
 
 # Reference antennas
 CAL_1GC_REF_ANT = 'auto'             # Comma-separated list to manually specify refant(s)
@@ -251,7 +284,7 @@ if BAND == 'UHF':
 
     CAL_1GC_FREQRANGE = '*:850~900MHz'        # Clean part of the band to use for generating UHF 1GC G-solutions
     CAL_1GC_UVRANGE = '>150m'               # Selection for baselines to include during 1GC B/G solving (K excluded)
-    CAL_1GC_0408_MODEL = ([27.907,0.0,0.0,0.0],[-1.205],'850MHz')
+    CAL_1GC_0408_MODEL = ([27.907,0.0,0.0,0.0],[-1.205],'850MHz') # Defunct, Model now hardcoded into 1GC_0
 
     CAL_1GC_BAD_FREQS = ['*:540~570MHz',      # Lower band edge 
                         '*:1010~1150MHz']     # Upper band edge
@@ -263,7 +296,7 @@ elif BAND == 'L':
 
     CAL_1GC_FREQRANGE = '*:1300~1400MHz'
     CAL_1GC_UVRANGE = '>150m'
-    CAL_1GC_0408_MODEL = ([17.066,0.0,0.0,0.0],[-1.179],'1284MHz')
+    CAL_1GC_0408_MODEL = ([17.066,0.0,0.0,0.0],[-1.179],'1284MHz') # Defunct, Model now hardcoded into 1GC_05
 
     CAL_1GC_BAD_FREQS = ['*:850~900MHz',      # Lower band edge
                         '*:1650~1800MHz',     # Upper bandpass edge
@@ -291,7 +324,7 @@ elif BAND == 'S0':
 
     CAL_1GC_FREQRANGE = '*:2300~2400MHz'
     CAL_1GC_UVRANGE = '>150m'
-    CAL_1GC_0408_MODEL = ([9.193,0.0,0.0,0.0],[-1.144],'2187MHz')   
+    CAL_1GC_0408_MODEL = ([9.193,0.0,0.0,0.0],[-1.144],'2187MHz') # Defunct, Model now hardcoded into 1GC_0
     CAL_1GC_BAD_FREQS = ['*:1700~1800MHz',    # Lower band edge 
                         '*:2500~2650MHz']     # Upper band edge
     CAL_1GC_BL_FLAG_UVRANGE = '<600'
@@ -301,7 +334,7 @@ elif BAND == 'S1':
 
     CAL_1GC_FREQRANGE = ''
     CAL_1GC_UVRANGE = '>150m'
-    CAL_1GC_0408_MODEL = ([8.244,0.0,0.0,0.0],[-1.138],'2406MHz')   
+    CAL_1GC_0408_MODEL = ([8.244,0.0,0.0,0.0],[-1.138],'2406MHz')    # Defunct, Model now hardcoded into 1GC_0
     CAL_1GC_BAD_FREQS = ['*:1967~2056MHz',    # Lower band edge 
                         '*:2756~2845MHz']     # Upper band edge
     CAL_1GC_BL_FLAG_UVRANGE = '<600'
@@ -311,7 +344,7 @@ elif BAND == 'S2':
 
     CAL_1GC_FREQRANGE = ''
     CAL_1GC_UVRANGE = '>150m'
-    CAL_1GC_0408_MODEL = ([7.468,0.0,0.0,0.0],[-1.133],'2625MHz')   
+    CAL_1GC_0408_MODEL = ([7.468,0.0,0.0,0.0],[-1.133],'2625MHz')    # Defunct, Model now hardcoded into 1GC_0
     CAL_1GC_BAD_FREQS = ['*:2187~2275MHz',    # Lower band edge 
                         '*:2975~3063MHz']     # Upper band edge
     CAL_1GC_BL_FLAG_UVRANGE = '<600'
@@ -321,7 +354,7 @@ elif BAND == 'S3':
 
     CAL_1GC_FREQRANGE = ''
     CAL_1GC_UVRANGE = '>150m'
-    CAL_1GC_0408_MODEL = ([6.822,0.0,0.0,0.0],[-1.128],'2483MHz')   
+    CAL_1GC_0408_MODEL = ([6.822,0.0,0.0,0.0],[-1.128],'2483MHz')   # Defunct, Model now hardcoded into 1GC_0
     CAL_1GC_BAD_FREQS = ['*:2405~2493MHz',    # Lower band edge 
                         '*:3194~3282MHz']     # Upper band edge
     CAL_1GC_BL_FLAG_UVRANGE = '<600'
@@ -331,7 +364,7 @@ elif BAND == 'S4':
 
     CAL_1GC_FREQRANGE = '*:2900~3000MHz'
     CAL_1GC_UVRANGE = '>150m'     
-    CAL_1GC_0408_MODEL = ([6.423,0.0,0.0,0.0],[-1.124],'3000MHz')   
+    CAL_1GC_0408_MODEL = ([6.423,0.0,0.0,0.0],[-1.124],'3000MHz')   # Defunct, Model now hardcoded into 1GC_0
     CAL_1GC_BAD_FREQS = ['*:2600~2690MHz',    # Lower band edge 
                         '*:3420~3600MHz']     # Upper band edge
     CAL_1GC_BL_FLAG_UVRANGE = '<600'
@@ -427,8 +460,9 @@ WSC_CHANDECONV = False
 WSC_NITER = 800000
 WSC_GAIN = 0.15
 WSC_MGAIN = 0.9
-WSC_MASK_CHANNELSOUT = 8
-WSC_IMAGE_CHANNELSOUT = 8
+WSC_BLIND_CHANNELSOUT = 8
+WSC_PCAL_CHANNELSOUT = 8
+WSC_DMASK_CHANNELSOUT = WSC_PCAL_CHANNELSOUT # Incase you want a different channelisation for your datamask and pcalmask images
 WSC_CAL_CHANNELSOUT = 16
 WSC_MAX_CHANNELS = 16
 WSC_FITSPECTRALPOL = 4
@@ -676,7 +710,7 @@ KMS_COVQ = 0.05
 #
 
 SNAP_FIELDS = '' # Comma-separated list of field to run snapshot imaging on
-SNAP_CHANNELSOUT = WSC_IMAGE_CHANNELSOUT # Integer number of channels to perform snap-shot imaging -- by default the same as the WSC channels out
+SNAP_CHANNELSOUT = WSC_PCAL_CHANNELSOUT # Integer number of channels to perform snap-shot imaging -- by default the same as the WSC channels out
 SNAP_INTBIN = 1 # Integer number of intervals to image together during snapshot imaging (default = 1 is per intergration imaging)
 SNAP_INTEND = True # This will throw away the last interval if 'incomplete' compared to bin
     # E.G., total ints = 17, int bin = 4, will only image integrations 1 to 16 (4 total images) discarding 17

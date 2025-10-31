@@ -176,6 +176,32 @@ def check_position(fname, image, x, y, snr_thresh = 5.0):
     make_estimate(fname, image, x, y, fix_var)
 
 
+def find_mfs_images(pattern):
+    '''
+    Find MFS images with fallback to homogenized images
+    Inputs:
+        pattern = glob pattern to search for (should end with *image.fits)
+    Returns:
+        List of image paths, preferring *image.fits over *image.homogenized.fits
+    '''
+    
+    # First try to find standard image.fits files
+    images = glob.glob(pattern)
+    
+    if len(images) == 0:
+        # If no standard images found, try homogenized versions
+        homogenized_pattern = pattern.replace('image.fits', 'image.homogenized.fits')
+        images = glob.glob(homogenized_pattern)
+        
+        if len(images) > 0:
+            msg(f'Standard images not found, using homogenized images: {len(images)} files found')
+        else:
+            msg(f'No images found for pattern: {pattern} or homogenized variant')
+    else:
+        msg(f'Using standard images: {len(images)} files found')
+    
+    return images
+
         
 def get_polcal_polarization(pacal_name, pacal_pos, bpcal_sys):
     '''
@@ -193,7 +219,7 @@ def get_polcal_polarization(pacal_name, pacal_pos, bpcal_sys):
     output_dictionary['CHAN'] = {}
 
     # Get the images -- these will be in the order of I, P, Q, U, V
-    MFS_images = glob.glob(cfg.IMAGES + f'/*{pacal_name}*diagnostic-MFS-*-image.fits')
+    MFS_images = find_mfs_images(cfg.IMAGES + f'/*{pacal_name}*diagnostic-MFS-*-image.fits')
     MFS_images = sorted([im for im in MFS_images if '-Ptot-' not in im])
 
     # Extract the MFS image parameters
@@ -476,7 +502,8 @@ def get_primary_systematic(bpcal_name, bpcal_pos):
     '''
     
     # Get the pixel coordinates
-    MFS_I_image  = glob.glob(cfg.IMAGES + f'/*{bpcal_name}*diagnostic-MFS-I-image.fits')[0]
+    MFS_I_images = find_mfs_images(cfg.IMAGES + f'/*{bpcal_name}*diagnostic-MFS-I-image.fits')
+    MFS_I_image  = MFS_I_images[0]
     region = f'circle[[{bpcal_pos}],1.0pix]'
     pixel_imstat = imstat(MFS_I_image, region = region)
     x, y = pixel_imstat['maxpos'][0], pixel_imstat['maxpos'][1]
@@ -487,7 +514,8 @@ def get_primary_systematic(bpcal_name, bpcal_pos):
     flux_I = MFS_I_imfit['results']['component0']['peak']['value'] 
 
     # Get peak pixel Value from the total polarization image, theoretically should be zero, and thus, will quantify the systematic leakage
-    MFS_P_image = glob.glob(cfg.IMAGES + f'/*{bpcal_name}*diagnostic-MFS-Ptot-image.fits')[0] # Total polarization image 
+    MFS_P_images = find_mfs_images(cfg.IMAGES + f'/*{bpcal_name}*diagnostic-MFS-Ptot-image.fits')
+    MFS_P_image = MFS_P_images[0] # Total polarization image 
     flux_P = get_imstat_values(MFS_P_image, x, y, n_beams = 1.0)[0]
 
     # Caculate systematic and return it
@@ -513,7 +541,8 @@ def main():
         bpcal_pos = '04:08:20.3782,-65.45.09.080'
 
     # Check if they made Stokes images of the calibrators
-    if glob.glob(cfg.IMAGES + f'/*{bpcal_name}*diagnostic-MFS-I-image.fits') == []:
+    bpcal_check_images = find_mfs_images(cfg.IMAGES + f'/*{bpcal_name}*diagnostic-MFS-I-image.fits')
+    if len(bpcal_check_images) == 0:
         msg('ERROR: You do not have Stokes I,Q,U,V images of your calibrator(s)')
         sys.exit()
 
