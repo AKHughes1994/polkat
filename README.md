@@ -4,7 +4,7 @@
 
 Full UHF band support is now available. The cross-hand phase (XF) calibration has been extended with a **manual solver** that handles cases where CASA’s XF solver introduces large discontinuities.
 
-New configuration parameters have been introduced and must be set **per calibrator**:
+New configuration parameters have been introduced to [`oxkat/config.py`](oxkat/config.py).  and must be set **per calibrator**:
 
 ```python
 XF_TARGET_POLANG = 28.0  # Expected intrinsic (RM-corrected) linear polarization angle [deg]
