@@ -60,6 +60,13 @@ singularity pull polkat-0.2.1.sif docker://hughesakh/polkat:0.2.0
 singularity pull polkat-albus.sif docker://hughesakh/polkat_albus:latest
 ```
 
+# MF weighting READ THIS
+This pipeline has a lot of features for spectrally resolved functionality (e.g., Rotation Measure synthesis). There is a parameter in the config called `WSC_MFWEIGHT` that controls whether the final weighint in the imaging step (i.e., 2GC with `wsclean`) applied multi-frequency weighting. 
+
+It is set to `True` by default under the assumption that you want one final image combining all the frequency channels, and having the lowest RMS noise.
+
+If you want to use the spectral functionality, this need to be turned off or else you may introduce artificial spectral structure! (see [wsclean](https://wsclean.readthedocs.io/en/latest/mf_weighting.html) doc) 
+
 ---
 
 #### Standard Workflow
