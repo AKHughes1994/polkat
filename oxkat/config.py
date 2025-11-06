@@ -442,7 +442,7 @@ WSC_PARALLELGRIDDING = 8
 WSC_WEIGHT = 'briggs 0.0'
 WSC_WEIGHT_CAL = 'uniform'
 WSC_TAPERGAUSSIAN = ''
-WSC_MFWEIGHT = False
+WSC_MFWEIGHT = True
 # HIGH RES IMAGING
 WSC_UNIFORM_IMAGE = True
 WSC_WEIGHT_HIGHRES = 'uniform' # pick a more uniform weighting then WSC_WEIGHT -- uniform weight by default
