@@ -222,6 +222,7 @@ def main():
             prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
             imcall = gen.generate_syscall_wsclean(mslist = [myms],
                     imgname = data_img_prefix,
+                    mfweight = False,
                     datacol = 'DATA',
                     mask = mask,
                     chanout = cfg.WSC_DMASK_CHANNELSOUT,
