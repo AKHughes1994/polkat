@@ -1,4 +1,4 @@
-### Caution
+### Caution -- THIS VERSION IS DEPRECATED -- WHILE IT WORKS IT WILL NO LONGER BE UPDATED
 
 This routine has been extensively tested for MeerKAT L- and S-bands. UHF band support is currently experimental. While current versions recover the correct polarization degrees, the polarization angle below 800 MHz remains problematic. Please check your data carefully when reducing UHF band observations. This documentation will be updated as issues are resolved.
 
