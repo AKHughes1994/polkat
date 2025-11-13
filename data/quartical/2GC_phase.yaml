@@ -1,6 +1,6 @@
 input_ms:
   data_column: DATA
-  time_chunk: '0'
+  time_chunk: '225'
   freq_chunk: '0'
   is_bda: false
   group_by:
@@ -61,7 +61,7 @@ K:
   direction_dependent: false
   pinned_directions:
   - 0
-  time_interval: '4'
+  time_interval: '1'
   freq_interval: '0'
   interp_mode: reim
   interp_method: 2dlinear
