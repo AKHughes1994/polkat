@@ -605,55 +605,6 @@ def plot_crosshand_phase_basic(freq, U, V, rho_deg, min_flux, output_dir):
     plt.close(fig)
 
 
-def plot_phase_panel(ax, freq_plot, rho_deg_plot, raw_mask, plus_pi_mask, outlier_mask, 
-                     freq_averaged_data=None, title_suffix=""):
-    """
-    Plot cross-hand phase data on a given axis with solution type coloring.
-    
-    Inputs:
-        ax : matplotlib axis - Axis to plot on
-        freq_plot : array - Frequency array in GHz
-        rho_deg_plot : array - Cross-hand phase in degrees
-        raw_mask : array - Boolean mask for channels with no π correction
-        plus_pi_mask : array - Boolean mask for channels with +π correction
-        outlier_mask : array - Boolean mask for outlier channels
-        freq_averaged_data : dict or None - Optional frequency-averaged data with keys:
-                                             'freq', 'rho_deg', 'n_good'
-        title_suffix : str - Suffix to add to plot title
-    
-    Outputs:
-        None (modifies axis in place)
-    
-    Plots per-channel phases color-coded by solution type, with optional
-    averaged data overlay.
-    """
-    if np.any(raw_mask):
-        ax.scatter(freq_plot[raw_mask], rho_deg_plot[raw_mask], 
-                  c='blue', s=15, alpha=0.8, label='Raw (no π correction)', zorder=3)
-    if np.any(plus_pi_mask):
-        ax.scatter(freq_plot[plus_pi_mask], rho_deg_plot[plus_pi_mask], 
-                  c='red', s=15, alpha=0.8, label='+π correction', zorder=3)
-    if np.any(outlier_mask):
-        ax.scatter(freq_plot[outlier_mask], rho_deg_plot[outlier_mask], 
-                  c='black', s=25, alpha=0.9, marker='x', linewidths=2,
-                  label=f'Outliers ({np.sum(outlier_mask)})', zorder=4)
-    
-    if freq_averaged_data is not None:
-        avg_freq = freq_averaged_data['freq']
-        avg_rho = freq_averaged_data['rho_deg']
-        valid_avg_mask = ~np.isnan(avg_rho)
-        
-        if np.any(valid_avg_mask):
-            ax.scatter(avg_freq[valid_avg_mask], avg_rho[valid_avg_mask],
-                      c='purple', s=60, alpha=0.9, marker='s', edgecolors='black', linewidths=1,
-                      label=f'Averaged ({freq_averaged_data["n_good"]} bins)', zorder=5)
-    
-    ax.set_ylabel('Cross-hand phase ρ [deg]')
-    ax.grid(True, alpha=0.3, zorder=0)
-    ax.set_title(f'Cross-hand phase {title_suffix}')
-    ax.legend(fontsize=9)
-
-
 # ============================
 # MAIN SCRIPT
 # ============================
@@ -1419,6 +1370,138 @@ else:
 print("\n=== Two-Stage Outlier Detection Complete ===")
 
 # ============================
+# Post-Flagging Discontinuity Check and Correction
+# ============================
+print("\n=== Post-Flagging Discontinuity Check (Adjacent Channel Method) ===")
+
+# Work only with unflagged (good) data
+good_mask = (selected_solution_per_channel != 'outlier') & ~np.isnan(selected_rho_per_channel) & (selected_solution_per_channel != '')
+good_channels = np.where(good_mask)[0]
+n_good = len(good_channels)
+
+print(f"Working with {n_good} unflagged channels")
+print(f"Angular jump threshold: {XF_AUTO_ANG_JUMP}°")
+
+if n_good > 1 and False:  # Need at least 2 channels to check adjacency
+    # Get frequency-sorted good data
+    good_freq = f_use[good_channels]
+    good_rho_deg = np.degrees(selected_rho_per_channel[good_channels])
+    
+    # Sort by frequency (ascending order)
+    freq_sort_idx = np.argsort(good_freq)
+    sorted_freq = good_freq[freq_sort_idx]
+    sorted_rho_deg = good_rho_deg[freq_sort_idx]
+    sorted_channels = good_channels[freq_sort_idx]
+    
+    print(f"Frequency range: {sorted_freq.min():.3f} - {sorted_freq.max():.3f} GHz")
+    print(f"\nStarting from highest frequency and moving down the spectrum...")
+    print(f"Checking for phase jumps > {XF_AUTO_ANG_JUMP}° between adjacent channels")
+    
+    # Track corrections
+    corrections_applied = []
+    n_corrections = 0
+    
+    # Start from highest frequency (index n-1) and move down to lowest (index 0)
+    # We work backwards through the sorted arrays
+    for i in range(len(sorted_channels) - 1, 0, -1):
+        # Current channel (higher frequency)
+        ch_high = sorted_channels[i]
+        freq_high = sorted_freq[i]
+        phase_high = np.degrees(selected_rho_per_channel[ch_high])
+        
+        # Next channel down in frequency (lower frequency)
+        ch_low = sorted_channels[i - 1]
+        freq_low = sorted_freq[i - 1]
+        phase_low = np.degrees(selected_rho_per_channel[ch_low])
+        
+        # Calculate phase difference (low - high) with wrapping
+        phase_diff = phase_low - phase_high
+        phase_diff_wrapped = ((phase_diff + 180.0) % 360.0) - 180.0
+        
+        # Check if jump exceeds threshold
+        if abs(phase_diff_wrapped) > XF_AUTO_ANG_JUMP:
+            # Need to correct the lower frequency channel
+            # Try both ±π corrections and choose the one that minimizes the jump
+            
+            phase_low_plus_pi = phase_low + 180.0
+            phase_low_plus_pi = ((phase_low_plus_pi + 180.0) % 360.0) - 180.0
+            
+            phase_low_minus_pi = phase_low - 180.0
+            phase_low_minus_pi = ((phase_low_minus_pi + 180.0) % 360.0) - 180.0
+            
+            # Calculate jumps for both options
+            jump_plus_pi = phase_low_plus_pi - phase_high
+            jump_plus_pi = ((jump_plus_pi + 180.0) % 360.0) - 180.0
+            
+            jump_minus_pi = phase_low_minus_pi - phase_high
+            jump_minus_pi = ((jump_minus_pi + 180.0) % 360.0) - 180.0
+            
+            # Choose correction that gives smaller jump
+            if abs(jump_plus_pi) < abs(jump_minus_pi):
+                correction_deg = +180.0
+                new_phase = phase_low_plus_pi
+                new_jump = jump_plus_pi
+            else:
+                correction_deg = -180.0
+                new_phase = phase_low_minus_pi
+                new_jump = jump_minus_pi
+            
+            # Apply correction
+            new_rho_rad = np.radians(new_phase)
+            selected_rho_per_channel[ch_low] = new_rho_rad
+            
+            n_corrections += 1
+            corrections_applied.append({
+                'channel': ch_low,
+                'frequency': freq_low,
+                'old_phase': phase_low,
+                'new_phase': new_phase,
+                'correction': correction_deg,
+                'old_jump': phase_diff_wrapped,
+                'new_jump': new_jump,
+                'ref_channel': ch_high,
+                'ref_frequency': freq_high,
+                'ref_phase': phase_high
+            })
+    
+    # Print summary
+    if n_corrections > 0:
+        print(f"\n*** {n_corrections} DISCONTINUITIES DETECTED AND CORRECTED ***")
+        print(f"\nCorrected channels (showing up to first 10):")
+        print(f"{'Ch_low':>7s} {'Freq_low':>9s} {'Ch_high':>8s} {'Freq_high':>10s} {'Old_jump':>9s} {'Correction':>11s} {'New_jump':>9s} {'Old_phase':>10s} {'New_phase':>10s}")
+        print("-" * 105)
+        
+        for i, corr in enumerate(corrections_applied[:10]):
+            print(f"{corr['channel']:7d} {corr['frequency']:9.3f} {corr['ref_channel']:8d} {corr['ref_frequency']:10.3f} "
+                  f"{corr['old_jump']:9.2f}° {corr['correction']:+10.1f}° {corr['new_jump']:9.2f}° "
+                  f"{corr['old_phase']:10.2f}° {corr['new_phase']:10.2f}°")
+        
+        if n_corrections > 10:
+            print(f"... and {n_corrections - 10} more corrections")
+        
+        print(f"\n*** DISCONTINUITY CORRECTION COMPLETE ***")
+        print(f"Total corrections applied: {n_corrections} / {n_good} channels ({n_corrections/n_good*100:.1f}%)")
+        
+        # Show statistics of corrections
+        corrections_plus_pi = sum(1 for c in corrections_applied if c['correction'] > 0)
+        corrections_minus_pi = sum(1 for c in corrections_applied if c['correction'] < 0)
+        print(f"  +180° corrections: {corrections_plus_pi}")
+        print(f"  -180° corrections: {corrections_minus_pi}")
+        
+        # Show frequency range of corrections
+        corr_freqs = [c['frequency'] for c in corrections_applied]
+        print(f"  Frequency range of corrections: {min(corr_freqs):.3f} - {max(corr_freqs):.3f} GHz")
+        
+    else:
+        print(f"\nNo discontinuities detected")
+        print(f"All adjacent channel phase jumps are < {XF_AUTO_ANG_JUMP}°")
+        print(f"Cross-hand phase solutions are continuous across the band")
+else:
+    print(f"Insufficient good channels ({n_good}) for discontinuity check (need > 1)")
+
+print("\n=== Post-Flagging Discontinuity Check Complete ===")
+
+# ============================
 # Frequency Averaging
 # ============================
 print("\n=== Frequency Averaging ===")
@@ -1509,228 +1592,6 @@ else:
 print("\n=== Frequency Averaging Complete ===")
 
 # ============================
-# Gap Filling (Interpolation/Extrapolation)
-# ============================
-if XF_EX and freq_averaged_data is not None:
-    print("\n=== Gap Filling (XF_EX enabled) ===")
-    
-    freq_centers = freq_averaged_data['freq']
-    rho_rad = freq_averaged_data['rho_deg'].copy()  # Work with copy in degrees
-    solution = freq_averaged_data['solution'].copy()
-    n_bins = len(freq_centers)
-    
-    # Identify flagged/empty bins (need filling)
-    bad_mask = np.isnan(rho_rad) | (solution == 'outlier') | (solution == 'empty')
-    bad_indices = np.where(bad_mask)[0]
-    
-    # Identify good bins (available for interpolation/extrapolation)
-    good_mask = ~bad_mask
-    good_indices = np.where(good_mask)[0]
-    
-    n_bad = len(bad_indices)
-    n_good = len(good_indices)
-    
-    print(f"Bins to fill: {n_bad} / {n_bins}")
-    print(f"Good bins available: {n_good} / {n_bins}")
-    
-    if n_bad > 0 and n_good >= 2:
-        # Need at least 2 good bins for interpolation/extrapolation
-        
-        good_freqs = freq_centers[good_indices]
-        good_rho = rho_rad[good_indices]
-        
-        # Convert to complex for proper phase handling
-        good_complex = np.exp(1j * np.radians(good_rho))
-        
-        n_interpolated = 0
-        n_extrapolated_low = 0
-        n_extrapolated_high = 0
-        
-        filled_bins = []
-        
-        for idx in bad_indices:
-            bin_freq = freq_centers[idx]
-            
-            # Determine if this is an interior gap, low edge, or high edge
-            good_below = good_indices[good_indices < idx]
-            good_above = good_indices[good_indices > idx]
-            
-            if len(good_below) > 0 and len(good_above) > 0:
-                # INTERIOR GAP - Linear interpolation
-                idx_below = good_below[-1]  # Nearest good bin below
-                idx_above = good_above[0]   # Nearest good bin above
-                
-                freq_below = freq_centers[idx_below]
-                freq_above = freq_centers[idx_above]
-                rho_below = rho_rad[idx_below]
-                rho_above = rho_rad[idx_above]
-                
-                # Linear interpolation (using complex representation for phase)
-                complex_below = np.exp(1j * np.radians(rho_below))
-                complex_above = np.exp(1j * np.radians(rho_above))
-                
-                # Weight by frequency distance
-                weight_above = (bin_freq - freq_below) / (freq_above - freq_below)
-                weight_below = 1.0 - weight_above
-                
-                # Interpolate in complex plane
-                complex_interp = weight_below * complex_below + weight_above * complex_above
-                complex_interp = complex_interp / np.abs(complex_interp)  # Normalize
-                
-                rho_interp = np.degrees(np.angle(complex_interp))
-                
-                rho_rad[idx] = rho_interp
-                solution[idx] = 'interp'
-                n_interpolated += 1
-                
-                filled_bins.append({
-                    'index': idx,
-                    'freq': bin_freq,
-                    'method': 'interpolation',
-                    'rho_filled': rho_interp,
-                    'ref_below': f"{idx_below} @ {freq_below:.3f} GHz",
-                    'ref_above': f"{idx_above} @ {freq_above:.3f} GHz"
-                })
-                
-            elif len(good_above) > 0:
-                # LOW EDGE GAP - Extrapolate from higher frequencies
-                
-                # Calculate bandwidth of good data
-                good_bandwidth = good_freqs.max() - good_freqs.min()
-                extrap_bandwidth = XF_EX_FRAC * good_bandwidth
-                
-                # Find good bins within extrap_bandwidth from the low edge
-                low_edge_freq = good_freqs.min()
-                extrap_mask = (good_freqs >= low_edge_freq) & (good_freqs <= low_edge_freq + extrap_bandwidth)
-                extrap_indices = good_indices[extrap_mask]
-                
-                if len(extrap_indices) >= 2:
-                    # Use these bins for linear fit
-                    extrap_freqs = freq_centers[extrap_indices]
-                    extrap_rho = rho_rad[extrap_indices]
-                    
-                    # Convert to complex for fitting
-                    extrap_complex = np.exp(1j * np.radians(extrap_rho))
-                    extrap_real = np.real(extrap_complex)
-                    extrap_imag = np.imag(extrap_complex)
-                    
-                    # Linear fit in complex plane (real and imaginary separately)
-                    fit_real = np.polyfit(extrap_freqs, extrap_real, 1)
-                    fit_imag = np.polyfit(extrap_freqs, extrap_imag, 1)
-                    
-                    # Extrapolate to bin_freq
-                    real_extrap = np.polyval(fit_real, bin_freq)
-                    imag_extrap = np.polyval(fit_imag, bin_freq)
-                    
-                    complex_extrap = real_extrap + 1j * imag_extrap
-                    complex_extrap = complex_extrap / np.abs(complex_extrap)
-                    
-                    rho_extrap = np.degrees(np.angle(complex_extrap))
-                    
-                    rho_rad[idx] = rho_extrap
-                    solution[idx] = 'extrap'
-                    n_extrapolated_low += 1
-                    
-                    filled_bins.append({
-                        'index': idx,
-                        'freq': bin_freq,
-                        'method': 'extrapolation (low edge)',
-                        'rho_filled': rho_extrap,
-                        'ref_below': f"N/A (edge)",
-                        'ref_above': f"{len(extrap_indices)} bins in [{extrap_freqs.min():.3f}, {extrap_freqs.max():.3f}] GHz"
-                    })
-                    
-            elif len(good_below) > 0:
-                # HIGH EDGE GAP - Extrapolate from lower frequencies
-                
-                # Calculate bandwidth of good data
-                good_bandwidth = good_freqs.max() - good_freqs.min()
-                extrap_bandwidth = XF_EX_FRAC * good_bandwidth
-                
-                # Find good bins within extrap_bandwidth from the high edge
-                high_edge_freq = good_freqs.max()
-                extrap_mask = (good_freqs <= high_edge_freq) & (good_freqs >= high_edge_freq - extrap_bandwidth)
-                extrap_indices = good_indices[extrap_mask]
-                
-                if len(extrap_indices) >= 2:
-                    # Use these bins for linear fit
-                    extrap_freqs = freq_centers[extrap_indices]
-                    extrap_rho = rho_rad[extrap_indices]
-                    
-                    # Convert to complex for fitting
-                    extrap_complex = np.exp(1j * np.radians(extrap_rho))
-                    extrap_real = np.real(extrap_complex)
-                    extrap_imag = np.imag(extrap_complex)
-                    
-                    # Linear fit in complex plane (real and imaginary separately)
-                    fit_real = np.polyfit(extrap_freqs, extrap_real, 1)
-                    fit_imag = np.polyfit(extrap_freqs, extrap_imag, 1)
-                    
-                    # Extrapolate to bin_freq
-                    real_extrap = np.polyval(fit_real, bin_freq)
-                    imag_extrap = np.polyval(fit_imag, bin_freq)
-                    
-                    complex_extrap = real_extrap + 1j * imag_extrap
-                    complex_extrap = complex_extrap / np.abs(complex_extrap)
-                    
-                    rho_extrap = np.degrees(np.angle(complex_extrap))
-                    
-                    rho_rad[idx] = rho_extrap
-                    solution[idx] = 'extrap'
-                    n_extrapolated_high += 1
-                    
-                    filled_bins.append({
-                        'index': idx,
-                        'freq': bin_freq,
-                        'method': 'extrapolation (high edge)',
-                        'rho_filled': rho_extrap,
-                        'ref_below': f"{len(extrap_indices)} bins in [{extrap_freqs.min():.3f}, {extrap_freqs.max():.3f}] GHz",
-                        'ref_above': f"N/A (edge)"
-                    })
-        
-        # Update freq_averaged_data with filled values
-        freq_averaged_data['rho_deg'] = rho_rad
-        freq_averaged_data['solution'] = solution
-        
-        # Also update rho_rad (convert back from degrees)
-        freq_averaged_rho_rad_new = np.radians(rho_rad)
-        
-        # Print summary
-        n_filled = n_interpolated + n_extrapolated_low + n_extrapolated_high
-        if n_filled > 0:
-            print(f"\n*** {n_filled} BINS FILLED ***")
-            print(f"  Interpolated (interior gaps): {n_interpolated}")
-            print(f"  Extrapolated (low edge): {n_extrapolated_low}")
-            print(f"  Extrapolated (high edge): {n_extrapolated_high}")
-            
-            if n_extrapolated_low > 0 or n_extrapolated_high > 0:
-                print(f"  Extrapolation used XF_EX_FRAC = {XF_EX_FRAC} ({XF_EX_FRAC*100:.1f}% of good bandwidth)")
-            
-            # Show sample filled bins
-            print(f"\nFilled bins (showing up to first 10):")
-            print(f"{'Bin':>4s} {'Frequency':>10s} {'Method':>25s} {'Filled_phase':>12s}")
-            print("-" * 55)
-            
-            for i, fill in enumerate(filled_bins[:10]):
-                print(f"{fill['index']:4d} {fill['freq']:10.3f} {fill['method']:>25s} {fill['rho_filled']:12.2f}°")
-            
-            if len(filled_bins) > 10:
-                print(f"... and {len(filled_bins) - 10} more filled bins")
-                
-        else:
-            print(f"\nNo bins could be filled (insufficient good reference bins)")
-            
-    elif n_bad > 0 and n_good < 2:
-        print(f"\nCannot fill bins: need at least 2 good bins, but only {n_good} available")
-    else:
-        print(f"\nNo bins need filling (all bins have good data)")
-    
-    print("\n=== Gap Filling Complete ===")
-    
-elif not XF_EX and freq_averaged_data is not None:
-    print("\n=== Gap Filling Skipped (XF_EX = False) ===")
-
-# ============================
 # Three-Panel Diagnostic Plot
 # ============================
 print("\n=== Generating three-panel diagnostic plot ===")
@@ -1763,16 +1624,42 @@ if n_with_solution > 0:
     ax_top.grid(True, alpha=0.3)
     ax_top.legend()
     
+    # Function to plot phase data
+    def plot_phase_panel(ax, title_suffix=""):
+        if np.any(raw_mask):
+            ax.scatter(freq_plot[raw_mask], rho_deg_plot[raw_mask], 
+                      c='blue', s=15, alpha=0.8, label='Raw (no π correction)', zorder=3)
+        if np.any(plus_pi_mask):
+            ax.scatter(freq_plot[plus_pi_mask], rho_deg_plot[plus_pi_mask], 
+                      c='red', s=15, alpha=0.8, label='+π correction', zorder=3)
+        if np.any(outlier_mask):
+            ax.scatter(freq_plot[outlier_mask], rho_deg_plot[outlier_mask], 
+                      c='black', s=25, alpha=0.9, marker='x', linewidths=2,
+                      label=f'Outliers ({np.sum(outlier_mask)})', zorder=4)
+        
+        if freq_averaged_data is not None:
+            avg_freq = freq_averaged_data['freq']
+            avg_rho = freq_averaged_data['rho_deg']
+            valid_avg_mask = ~np.isnan(avg_rho)
+            
+            if np.any(valid_avg_mask):
+                ax.scatter(avg_freq[valid_avg_mask], avg_rho[valid_avg_mask],
+                          c='purple', s=60, alpha=0.9, marker='s', edgecolors='black', linewidths=1,
+                          label=f'Averaged ({freq_averaged_data["n_good"]} bins)', zorder=5)
+        
+        ax.set_ylabel('Cross-hand phase ρ [deg]')
+        ax.grid(True, alpha=0.3, zorder=0)
+        ax.set_title(f'Cross-hand phase {title_suffix}')
+        ax.legend(fontsize=9)
+    
     # Middle: Full range
-    plot_phase_panel(ax_middle, freq_plot, rho_deg_plot, raw_mask, plus_pi_mask, 
-                     outlier_mask, freq_averaged_data, "(Full Range)")
+    plot_phase_panel(ax_middle, "(Full Range)")
     y_min_full, y_max_full = rho_deg_plot.min(), rho_deg_plot.max()
     y_margin_full = 0.05 * (y_max_full - y_min_full)
     ax_middle.set_ylim(y_min_full - y_margin_full, y_max_full + y_margin_full)
     
     # Bottom: Zoomed to good data
-    plot_phase_panel(ax_bottom, freq_plot, rho_deg_plot, raw_mask, plus_pi_mask, 
-                     outlier_mask, freq_averaged_data, "(Zoomed to Good Data)")
+    plot_phase_panel(ax_bottom, "(Zoomed to Good Data)")
     
     if np.any(good_mask):
         good_rho = rho_deg_plot[good_mask]

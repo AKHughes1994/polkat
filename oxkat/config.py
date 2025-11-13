@@ -237,9 +237,12 @@ XF_CHANINT = 16  # Channels per solution interval default is 1024 frequency chan
 XF_MAX_AVG_CHANNELS = None # If None, auto calculate will be the same as the number of cross-hand solution intervals
 
 # Calibration and outlier thresholds
-XF_MIN_CROSS_FLUX = 0.1  # Minimum total cross-hand flux (Jy) for reliable solutions
+# Calibration and outlier thresholds
+XF_MIN_CROSS_FLUX = 0.07  # Minimum total cross-hand flux (Jy) for reliable solutions
 XF_SIGMA_CLIP = 3.0  # N-sigma threshold for outlier flagging
-XF_CLIP_WINDOW = 50  # Window size for local scatter analysis
+XF_CLIP_WINDOW = 32  # Window size for local scatter analysis
+XF_EX = True          # Enable gap filling
+XF_EX_FRAC = 0.3      # Use 30% of good bandwidth for extrapolation
 
 # Smoothing control for XF table creation and interpolation
 XF_USE_SMOOTHING = True  # Apply Savitzky-Golay smoothing before interpolation
