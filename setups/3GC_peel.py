@@ -401,32 +401,33 @@ def main():
                 steps.append(step)
                 n += 1
 
-            step = {}
-            step['step'] = n
-            step['comment'] = 'Apply primary beam correction to '+targetname+'(PEEL) image'
-            step['dependency'] = n - 1
-            step['id'] = 'PBPPE'+code
-            syscall = ''
-            images = []
-            for stoke_i in cfg.WSC_POL:
-                stoke = f'-{stoke_i}'
-                if len(cfg.WSC_POL) == 1:
-                    stoke = ''
-                if cfg.WSC_INTERVALSOUT:
-                    for t in range(cfg.WSC_INTERVALSOUT):
-                        images.append(f'{peel_img_prefix}-t{t:04d}-MFS{stoke}-image.fits')
+            if not cfg.SKIP_PB:
+                step = {}
+                step['step'] = n
+                step['comment'] = 'Apply primary beam correction to '+targetname+'(PEEL) image'
+                step['dependency'] = n - 1
+                step['id'] = 'PBPPE'+code
+                syscall = ''
+                images = []
+                for stoke_i in cfg.WSC_POL:
+                    stoke = f'-{stoke_i}'
+                    if len(cfg.WSC_POL) == 1:
+                        stoke = ''
+                    if cfg.WSC_INTERVALSOUT:
+                        for t in range(cfg.WSC_INTERVALSOUT):
+                            images.append(f'{peel_img_prefix}-t{t:04d}-MFS{stoke}-image.fits')
+                            if cfg.WSC_MAX_CHANNELS < cfg.WSC_IMAGE_CHANNELSOUT or cfg.WSC_HOMOGENIZEBEAM:
+                                images.append(f'{peel_img_prefix}-t{t:04d}-MFS{stoke}-image.homogenized.fits')
+                    else:
+                        images.append(f'{peel_img_prefix}-MFS{stoke}-image.fits')
                         if cfg.WSC_MAX_CHANNELS < cfg.WSC_IMAGE_CHANNELSOUT or cfg.WSC_HOMOGENIZEBEAM:
-                            images.append(f'{peel_img_prefix}-t{t:04d}-MFS{stoke}-image.homogenized.fits')
-                else:
-                    images.append(f'{peel_img_prefix}-MFS{stoke}-image.fits')
-                    if cfg.WSC_MAX_CHANNELS < cfg.WSC_IMAGE_CHANNELSOUT or cfg.WSC_HOMOGENIZEBEAM:
-                        images.append(f'{peel_img_prefix}-MFS{stoke}-image.homogenized.fits')
-            for image in images:
-                syscall += CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
-                syscall += 'python3 '+TOOLS+'/pbcor_katbeam.py --band '+band[0]+f' {image}\n\n'
-            step['syscall'] = syscall
-            steps.append(step)
-            n += 1
+                            images.append(f'{peel_img_prefix}-MFS{stoke}-image.homogenized.fits')
+                for image in images:
+                    syscall += CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
+                    syscall += 'python3 '+TOOLS+'/pbcor_katbeam.py --band '+band[0]+f' {image}\n\n'
+                step['syscall'] = syscall
+                steps.append(step)
+                n += 1
 
             if cfg.WSC_POL != 'I':
                 step = {}

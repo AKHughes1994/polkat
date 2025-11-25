@@ -8,13 +8,12 @@ from oxkat import config as cfg
 
 def msg(txt):
     stamp = time.strftime(' %Y-%m-%d %H:%M:%S | ')
-    print(stamp+txt)
+    print(stamp+txt, flush=True)
 
 def calculate_P0(flux_P, rms_Q, rms_U, Aq = 0.8):
     '''
     Calculate the de-biased linearly polarized flux
     '''    
-
 
     # Get the noise ratio coeffs, and calculate noise, from Hales 2012. https://arxiv.org/abs/1205.5310
     if rms_Q >= rms_U:
@@ -178,11 +177,11 @@ def check_position(fname, image, x, y, snr_thresh = 5.0):
 
 def find_mfs_images(pattern):
     '''
-    Find MFS images with fallback to homogenized images
+    Find MFS images with fallback to homogenized images and diagnostic_zoom
     Inputs:
         pattern = glob pattern to search for (should end with *image.fits)
     Returns:
-        List of image paths, preferring *image.fits over *image.homogenized.fits
+        List of image paths, preferring *image.fits over *image.homogenized.fits or diagnostic_zoom
     '''
     
     # First try to find standard image.fits files
@@ -196,7 +195,21 @@ def find_mfs_images(pattern):
         if len(images) > 0:
             msg(f'Standard images not found, using homogenized images: {len(images)} files found')
         else:
-            msg(f'No images found for pattern: {pattern} or homogenized variant')
+            # Try diagnostic_zoom if diagnostic doesn't exist
+            zoom_pattern = pattern.replace('diagnostic', 'diagnostic_zoom')
+            images = glob.glob(zoom_pattern)
+            
+            if len(images) > 0:
+                msg(f'Diagnostic images not found, using diagnostic_zoom images: {len(images)} files found')
+            else:
+                # Try homogenized version of diagnostic_zoom
+                zoom_homogenized_pattern = zoom_pattern.replace('image.fits', 'image.homogenized.fits')
+                images = glob.glob(zoom_homogenized_pattern)
+                
+                if len(images) > 0:
+                    msg(f'Using diagnostic_zoom homogenized images: {len(images)} files found')
+                else:
+                    msg(f'No images found for pattern: {pattern}, homogenized variant, diagnostic_zoom, or diagnostic_zoom homogenized')
     else:
         msg(f'Using standard images: {len(images)} files found')
     
@@ -260,22 +273,30 @@ def get_polcal_polarization(pacal_name, pacal_pos, bpcal_sys):
     MFS_U_ra_pix = MFS_U_imfit['pixelcoords'][0] 
     MFS_U_dec_pix = MFS_U_imfit['pixelcoords'][1]  
 
+    # Fit Stokes V using the same procedure as Q and U
+    check_position('estimate_V.txt', MFS_images[4], MFS_I_ra_pix, MFS_I_dec_pix)
+    MFS_V_imfit  = get_imfit_values('estimate_V.txt', MFS_images[4], MFS_I_ra_pix, MFS_I_dec_pix)['results']['component0']
+    MFS_V_ra_pix = MFS_V_imfit['pixelcoords'][0] 
+    MFS_V_dec_pix = MFS_V_imfit['pixelcoords'][1]
+
     # For ease of readability define the desired quantities as variables
     flux_I = MFS_I_imfit['peak']['value'] * 1e3
     flux_P = MFS_P_imfit['peak']['value'] * 1e3
     flux_Q = MFS_Q_imfit['peak']['value'] * 1e3
     flux_U = MFS_U_imfit['peak']['value'] * 1e3
-    flux_V = get_imstat_values(MFS_images[4], MFS_I_ra_pix, MFS_I_dec_pix, n_beams = 1.0)[0] * 1e3
+    flux_V = MFS_V_imfit['peak']['value'] * 1e3
+    # flux_V = get_imstat_values(MFS_images[4], MFS_I_ra_pix, MFS_I_dec_pix, n_beams = 1.0)[0] * 1e3  # Old max/min approach
 
     err_I = MFS_I_imfit['peak']['error'] * 1e3
     err_P = MFS_P_imfit['peak']['error'] * 1e3
     err_Q = MFS_Q_imfit['peak']['error'] * 1e3
     err_U = MFS_U_imfit['peak']['error'] * 1e3
+    err_V = MFS_V_imfit['peak']['error'] * 1e3
     
     rms_I = get_imstat_values(MFS_images[0], MFS_I_ra_pix, MFS_I_dec_pix)[3] * 1e3
     rms_Q = get_imstat_values(MFS_images[2], MFS_Q_ra_pix, MFS_Q_dec_pix)[3] * 1e3
     rms_U = get_imstat_values(MFS_images[3], MFS_U_ra_pix, MFS_U_dec_pix)[3] * 1e3
-    rms_V = get_imstat_values(MFS_images[4], MFS_I_ra_pix, MFS_I_dec_pix)[3] * 1e3
+    rms_V = get_imstat_values(MFS_images[4], MFS_V_ra_pix, MFS_V_dec_pix)[3] * 1e3
     flux_P0, rms_P = calculate_P0(flux_P, rms_Q, rms_U)
 
     RA_I = MFS_I_imfit['shape']['direction']['m0']['value'] * 180 / np.pi
@@ -311,10 +332,11 @@ def get_polcal_polarization(pacal_name, pacal_pos, bpcal_sys):
     output_dictionary['MFS']['U_rms_mJy'] = rms_U
     output_dictionary['MFS']['V_rms_mJy'] = rms_V
 
-    output_dictionary['MFS']['I_rms_mJy'] = err_I
+    output_dictionary['MFS']['I_err_mJy'] = err_I
     output_dictionary['MFS']['P_err_mJy'] = err_P
     output_dictionary['MFS']['Q_err_mJy'] = err_Q
     output_dictionary['MFS']['U_err_mJy'] = err_U
+    output_dictionary['MFS']['V_err_mJy'] = err_V
 
     output_dictionary['MFS']['P_RA_deg'] = RA_P
     output_dictionary['MFS']['P_DEC_deg'] = DEC_P
@@ -335,6 +357,9 @@ def get_polcal_polarization(pacal_name, pacal_pos, bpcal_sys):
 
     # Extract channelized data
     CHAN_images = sorted(glob.glob(cfg.IMAGES + f'/*{pacal_name}*diagnostic-[!MFS]*-image.fits'))
+    if len(CHAN_images) == 0:
+        msg(f'Diagnostic channel images not found, trying diagnostic_zoom for {pacal_name}')
+        CHAN_images = sorted(glob.glob(cfg.IMAGES + f'/*{pacal_name}*diagnostic_zoom-[!MFS]*-image.fits'))
     CHAN_images = sorted([im for im in CHAN_images if im.split('-')[-2] in ['I', 'Q', 'U', 'V', 'Plin']])
     CHAN_images_arr = np.array(CHAN_images).reshape(int(len(CHAN_images) / 5), 5) 
 
@@ -379,22 +404,30 @@ def get_polcal_polarization(pacal_name, pacal_pos, bpcal_sys):
             CHAN_U_ra_pix = CHAN_U_imfit['pixelcoords'][0] 
             CHAN_U_dec_pix = CHAN_U_imfit['pixelcoords'][1]  
 
+            # Fit Stokes V using the same procedure as Q and U
+            check_position('estimate_V.txt', CHAN_images[4], CHAN_I_ra_pix, CHAN_I_dec_pix)
+            CHAN_V_imfit  = get_imfit_values('estimate_V.txt', CHAN_images[4], CHAN_I_ra_pix, CHAN_I_dec_pix)['results']['component0']
+            CHAN_V_ra_pix = CHAN_V_imfit['pixelcoords'][0] 
+            CHAN_V_dec_pix = CHAN_V_imfit['pixelcoords'][1]
+
             # For ease of readability define the desired quantities as variables
             flux_I = CHAN_I_imfit['peak']['value'] * 1e3
             flux_P = CHAN_P_imfit['peak']['value'] * 1e3
             flux_Q = CHAN_Q_imfit['peak']['value'] * 1e3
             flux_U = CHAN_U_imfit['peak']['value'] * 1e3
-            flux_V = get_imstat_values(CHAN_images[4], CHAN_I_ra_pix, CHAN_I_dec_pix, n_beams = 1.0)[0] * 1e3
+            flux_V = CHAN_V_imfit['peak']['value'] * 1e3
+            # flux_V = get_imstat_values(CHAN_images[4], CHAN_I_ra_pix, CHAN_I_dec_pix, n_beams = 1.0)[0] * 1e3  # Old max/min approach
     
             err_I = CHAN_I_imfit['peak']['error'] * 1e3
             err_P = CHAN_P_imfit['peak']['error'] * 1e3
             err_Q = CHAN_Q_imfit['peak']['error'] * 1e3
             err_U = CHAN_U_imfit['peak']['error'] * 1e3
+            err_V = CHAN_V_imfit['peak']['error'] * 1e3
     
             rms_I = get_imstat_values(CHAN_images[0], CHAN_I_ra_pix, CHAN_I_dec_pix)[3] * 1e3
             rms_Q = get_imstat_values(CHAN_images[2], CHAN_Q_ra_pix, CHAN_Q_dec_pix)[3] * 1e3
             rms_U = get_imstat_values(CHAN_images[3], CHAN_U_ra_pix, CHAN_U_dec_pix)[3] * 1e3
-            rms_V = get_imstat_values(CHAN_images[4], CHAN_I_ra_pix, CHAN_I_dec_pix)[3] * 1e3
+            rms_V = get_imstat_values(CHAN_images[4], CHAN_V_ra_pix, CHAN_V_dec_pix)[3] * 1e3
             flux_P0, rms_P = calculate_P0(flux_P, rms_Q, rms_U)
         
             # Calculate extra parameters
@@ -428,6 +461,7 @@ def get_polcal_polarization(pacal_name, pacal_pos, bpcal_sys):
                 output_dictionary['CHAN']['P_err_mJy'].append(err_P)
                 output_dictionary['CHAN']['Q_err_mJy'].append(err_Q)
                 output_dictionary['CHAN']['U_err_mJy'].append(err_U)
+                output_dictionary['CHAN']['V_err_mJy'].append(err_V)
 
                 output_dictionary['CHAN']['LP_frac'].append(LP_frac)
                 output_dictionary['CHAN']['LP_frac_err'].append(LP_frac_err)
@@ -459,6 +493,7 @@ def get_polcal_polarization(pacal_name, pacal_pos, bpcal_sys):
                 output_dictionary['CHAN']['P_err_mJy'] = [err_P]
                 output_dictionary['CHAN']['Q_err_mJy'] = [err_Q]
                 output_dictionary['CHAN']['U_err_mJy'] = [err_U]
+                output_dictionary['CHAN']['V_err_mJy'] = [err_V]
 
                 output_dictionary['CHAN']['LP_frac'] = [LP_frac]
                 output_dictionary['CHAN']['LP_frac_err'] = [LP_frac_err]

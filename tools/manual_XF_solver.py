@@ -1027,14 +1027,18 @@ threshold_dev = median_dev + 3.0 * 1.4826 * mad_dev  # 1.4826 converts MAD to st
 # Alternative: Use percentile-based threshold
 percentile_threshold = np.percentile(all_min_deviations, 75)
 
-# Use the more conservative (stricter) threshold
-quality_threshold = min(threshold_dev, percentile_threshold)
+# Absolute threshold (degrees maximum)
+absolute_threshold = XF_RM_ANG_MAX
+
+# Use the most conservative (stricter) threshold
+quality_threshold = min(threshold_dev, percentile_threshold, absolute_threshold)
 
 print(f"Deviation statistics:")
 print(f"  Median deviation: {median_dev:.2f}°")
 print(f"  MAD-based threshold: {threshold_dev:.2f}°")
 print(f"  75th percentile: {percentile_threshold:.2f}°")
-print(f"  Using quality threshold: {quality_threshold:.2f}° (more conservative)")
+print(f"  Absolute threshold: {absolute_threshold:.2f}°")
+print(f"  Using quality threshold: {quality_threshold:.2f}° (most conservative)")
 
 # Filter to only "good" solutions
 good_solutions = all_min_deviations < quality_threshold
@@ -1138,20 +1142,25 @@ ax2.set_title(f'Filtered Delta_RM Values (N = {len(filtered_delta_rms)}, deviati
 ax2.legend()
 ax2.grid(True, alpha=0.3)
 
-# Bottom panel: Separate histograms for each option (filtered)
+# Bottom panel: Scatter plot of derotated angles vs delta_RM (filtered)
 good_opt1 = min_dev_opt1 < quality_threshold
 good_opt2 = min_dev_opt2 < quality_threshold
 filtered_delta_rm_opt1 = best_delta_rm_opt1[good_opt1]
 filtered_delta_rm_opt2 = best_delta_rm_opt2[good_opt2]
 
-ax3.hist(filtered_delta_rm_opt1, bins=30, alpha=0.5, color='blue', 
-         edgecolor='black', label=f'Option 1 (no π) - {np.sum(good_opt1)} good')
-ax3.hist(filtered_delta_rm_opt2, bins=30, alpha=0.5, color='orange', 
-         edgecolor='black', label=f'Option 2 (+π) - {np.sum(good_opt2)} good')
+# Get the derotated angles for each option at their best delta_RM
+derotated_angles_opt1 = np.array([angles_opt1_at_delta_rm[drm][i] for i, drm in enumerate(best_delta_rm_opt1[good_opt1])])
+derotated_angles_opt2 = np.array([angles_opt2_at_delta_rm[drm][i] for i, drm in enumerate(best_delta_rm_opt2[good_opt2])])
+
+ax3.scatter(filtered_delta_rm_opt1, derotated_angles_opt1, alpha=0.5, s=20, color='blue', 
+            label=f'Option 1 (no π) - {np.sum(good_opt1)} good')
+ax3.scatter(filtered_delta_rm_opt2, derotated_angles_opt2, alpha=0.5, s=20, color='orange', 
+            label=f'Option 2 (+π) - {np.sum(good_opt2)} good')
 ax3.axvline(global_delta_rm, color='red', linestyle='--', linewidth=2, label=f'Mode: {global_delta_rm:.2f} rad/m²')
+ax3.axhline(XF_TARGET_POLANG, color='green', linestyle='--', linewidth=2, alpha=0.7, label=f'Target: {XF_TARGET_POLANG:.1f}°')
 ax3.set_xlabel('Delta RM (rad/m²)')
-ax3.set_ylabel('Count')
-ax3.set_title('Filtered Delta_RM Distribution by Option')
+ax3.set_ylabel('Derotated Angle (degrees)')
+ax3.set_title('Derotated Angles vs Delta_RM (Filtered Solutions)')
 ax3.legend()
 ax3.grid(True, alpha=0.3)
 

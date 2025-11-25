@@ -33,9 +33,9 @@ def fix_names(prefix, totchan):
         msg('Found "part" naming; removing MFS files and standardizing naming convention')
 
         # Remove the bad MFS images:
-        subprocess.run([f'rm -rf {prefix}*-MFS-*'], shell = True)
+        subprocess.run([f'rm -rf {prefix}_part*-MFS-*'], shell = True)
 
-        images = glob.glob(f'{prefix}*.fits')
+        images = glob.glob(f'{prefix}_part*.fits')
         images = np.array([images, images])  
 
         # There has to be a better way to do this -- AKH

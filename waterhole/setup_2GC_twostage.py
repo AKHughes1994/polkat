@@ -211,13 +211,13 @@ def main():
             prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
             imcall = gen.generate_syscall_wsclean(mslist = [myms],
                     imgname = data_img_prefix,
-                    mfweight = False,
                     datacol = 'DATA',
                     mask = mask,
                     chanout = cfg.WSC_DMASK_CHANNELSOUT,
                     intervalsout = False,
                     tukeytaper=tukeytaper,
                     minuvl = minuvl,
+                    automask = cfg.WSC_SHALLOWMASK,
                     nomodel = True,
                     sourcelist = False,
                     absmem = absmem)
@@ -259,33 +259,74 @@ def main():
             steps.append(step)
             n += 1
 
-            if not cfg.SKIP_PB:
+            step = {}
+            step['step'] = n
+            step['comment'] = 'Run Quartical self-calibration on the target {}'.format(targetname)
+            step['dependency'] = n - 1
+            step['id'] = 'C02G2'+code
+            syscall = CONTAINER_RUNNER + QUARTICAL_CONTAINER+' ' if USE_SINGULARITY else ''
+            syscall += gen.generate_syscall_quartical(yaml = cfg.CAL_2GC_YAML,
+                    myms = myms,
+                    extra_args = f'output.gain_directory={gain_outdir_2GC} output.log_directory={log_outdir_2GC}')
+            step['syscall'] = syscall
+            steps.append(step)
+            n += 1
+
+            step = {}
+            step['step'] = n
+            step['comment'] = f'Run wsclean, masked deconvolution of the CORRECTED_DATA (self-calibrated, v0) for {targetname}'
+            step['dependency'] = n - 1
+            step['id'] = 'WSCMI'+code
+            step['slurm_config'] = cfg.SLURM_WSCLEAN
+            step['pbs_config'] = cfg.PBS_WSCLEAN
+            absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
+            syscall = ''
+            prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
+            imcall = gen.generate_syscall_wsclean(mslist = [myms],
+                    imgname = pcal_img_prefix + 'v0',
+                    datacol = 'CORRECTED_DATA',
+                    mask = mask,
+                    chanout = cfg.WSC_PCAL_CHANNELSOUT,
+                    nomodel=True,
+                    sourcelist = False,
+                    absmem = absmem)
+            for call in imcall: 
+                syscall += prefix + call + '\n\n'
+            step['syscall'] = syscall
+            steps.append(step)
+            n += 1
+
+            if cfg.WSC_MAX_CHANNELS < cfg.WSC_PCAL_CHANNELSOUT or cfg.WSC_HOMOGENIZEBEAM:
                 step = {}
                 step['step'] = n
-                step['comment'] = f'Apply primary beam correction to {targetname} (MASK) image'
+                step['comment'] = f'Homogenize the PCAL resolution across frequency channels'
                 step['dependency'] = n - 1
-                step['id'] = 'PBDMA'+code
-                syscall = ''
-                images = []
-                for stoke_i in cfg.WSC_POL:
-                    stoke = f'-{stoke_i}'
-                    if len(cfg.WSC_POL) == 1:
-                        stoke = ''
-                    if cfg.WSC_INTERVALSOUT:
-                        for t in range(cfg.WSC_INTERVALSOUT):
-                            images.append(f'{data_img_prefix}-t{t:04d}-MFS{stoke}-image.fits')
-                            if cfg.WSC_MAX_CHANNELS < cfg.WSC_DMASK_CHANNELSOUT or cfg.WSC_HOMOGENIZEBEAM:
-                                images.append(f'{data_img_prefix}-t{t:04d}-MFS{stoke}-image.homogenized.fits')
-                    else:
-                        images.append(f'{data_img_prefix}-MFS{stoke}-image.fits')
-                        if cfg.WSC_MAX_CHANNELS < cfg.WSC_DMASK_CHANNELSOUT or cfg.WSC_HOMOGENIZEBEAM:
-                            images.append(f'{data_img_prefix}-MFS{stoke}-image.homogenized.fits')
-                for image in images:
-                    syscall += CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
-                    syscall += 'python3 '+TOOLS+'/pbcor_katbeam.py --band '+band[0]+f' {image}\n\n'
+                step['id'] = 'HOCMI' + code
+                step['slurm_config'] = cfg.SLURM_WSCLEAN
+                step['pbs_config'] = cfg.PBS_WSCLEAN
+                prefix = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
+                syscall =  prefix + f'python3 {cfg.TOOLS}/fix_image_naming.py {cfg.WSC_PCAL_CHANNELSOUT} {pcal_img_prefix}v0\n\n'
+                syscall +=  prefix + f'python3 {cfg.TOOLS}/homogenize_beams.py {pcal_img_prefix}v0'
                 step['syscall'] = syscall
                 steps.append(step)
                 n += 1
+
+            step = {}
+            step['step'] = n
+            step['comment'] = 'Run wsclean-predict on masked deconvolution of the model for source {}'.format(targetname)
+            step['dependency'] = n - 1 
+            step['id'] = 'PRCMI'+code
+            step['slurm_config'] = cfg.SLURM_PREDICT
+            step['pbs_config'] = cfg.PBS_WSCLEAN
+            absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
+            prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
+            syscall = prefix + 'python3 '+TOOLS+'/fix_nan_models.py ' + pcal_img_prefix + 'v0\n\n'
+            syscall += prefix + gen.generate_syscall_predict(msname = myms,
+                    imgname = data_img_prefix,
+                    absmem = absmem)
+            step['syscall'] = syscall
+            steps.append(step)
+            n += 1
 
             step = {}
             step['step'] = n
@@ -302,7 +343,7 @@ def main():
 
             step = {}
             step['step'] = n
-            step['comment'] = f'Run wsclean, masked deconvolution of the CORRECTED_DATA (self-calibrated) for {targetname}'
+            step['comment'] = f'Run wsclean, masked deconvolution of the CORRECTED_DATA (self-calibrated, working) for {targetname}'
             step['dependency'] = n - 1
             step['id'] = 'WSCMA'+code
             step['slurm_config'] = cfg.SLURM_WSCLEAN
@@ -335,34 +376,6 @@ def main():
                 prefix = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
                 syscall =  prefix + f'python3 {cfg.TOOLS}/fix_image_naming.py {cfg.WSC_PCAL_CHANNELSOUT} {pcal_img_prefix}\n\n'
                 syscall +=  prefix + f'python3 {cfg.TOOLS}/homogenize_beams.py {pcal_img_prefix}'
-                step['syscall'] = syscall
-                steps.append(step)
-                n += 1
-
-            if not cfg.SKIP_PB:
-                step = {}
-                step['step'] = n
-                step['comment'] = 'Apply primary beam correction to '+targetname+'(PCAL) image'
-                step['dependency'] = n - 1
-                step['id'] = 'PBPCL'+code
-                syscall = ''
-                images = []
-                for stoke_i in cfg.WSC_POL:
-                    stoke = f'-{stoke_i}'
-                    if len(cfg.WSC_POL) == 1:
-                        stoke = ''
-                    if cfg.WSC_INTERVALSOUT:
-                        for t in range(cfg.WSC_INTERVALSOUT):
-                            images.append(f'{pcal_img_prefix}-t{t:04d}-MFS{stoke}-image.fits')
-                            if cfg.WSC_MAX_CHANNELS < cfg.WSC_PCAL_CHANNELSOUT or cfg.WSC_HOMOGENIZEBEAM:
-                                images.append(f'{pcal_img_prefix}-t{t:04d}-MFS{stoke}-image.homogenized.fits')
-                    else:
-                        images.append(f'{pcal_img_prefix}-MFS{stoke}-image.fits')
-                        if cfg.WSC_MAX_CHANNELS < cfg.WSC_PCAL_CHANNELSOUT or cfg.WSC_HOMOGENIZEBEAM:
-                            images.append(f'{pcal_img_prefix}-MFS{stoke}-image.homogenized.fits')
-                for image in images:
-                    syscall += CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
-                    syscall += 'python3 '+TOOLS+'/pbcor_katbeam.py --band '+band[0]+f' {image}\n\n'
                 step['syscall'] = syscall
                 steps.append(step)
                 n += 1

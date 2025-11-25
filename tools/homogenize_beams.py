@@ -912,7 +912,7 @@ def get_homogenized_beam(identifier: str, sigma_threshold: float = 3.0) -> Tuple
     Tuple[float, float, float]
         (semi_major, semi_minor, position_angle) of homogenized beam
     """
-    images = glob.glob(f'{identifier}*[!MFS]-psf.fits')
+    images = glob.glob(f'{identifier}-*[!MFS]-psf.fits')
     
     if not images:
         raise FileNotFoundError(f"No PSF files found for identifier: {identifier}")
@@ -1685,7 +1685,7 @@ def compute_median_chunked(images: List[str],
                     loaded_count += 1
                 
                 if (i + 1) % 10 == 0:
-                    msg(f"Loaded {loaded_count}/{i+1} images into shared memory")
+                    msg(f"Loaded {loaded_count}/{len(images)} images into shared memory")
             
             if loaded_count == 0:
                 raise ValueError("Could not load any images")
@@ -1875,7 +1875,7 @@ def homogenize_images(identifier: str, beam: Tuple[float, float, float],
     msg(f"Target beam: semi-major={a:.2e}, semi-minor={b:.2e}, angle={np.degrees(p):.1f}°")
             
     # Get list of PSF files
-    psfs = sorted(glob.glob(f'{identifier}*-psf.fits'))
+    psfs = sorted(glob.glob(f'{identifier}-*-psf.fits'))
     if not psfs:
         msg(f"Warning: No PSF files found for {identifier}")
         return

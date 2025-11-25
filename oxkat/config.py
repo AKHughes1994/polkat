@@ -237,12 +237,13 @@ XF_CHANINT = 16  # Channels per solution interval default is 1024 frequency chan
 XF_MAX_AVG_CHANNELS = None # If None, auto calculate will be the same as the number of cross-hand solution intervals
 
 # Calibration and outlier thresholds
-# Calibration and outlier thresholds
 XF_MIN_CROSS_FLUX = 0.07  # Minimum total cross-hand flux (Jy) for reliable solutions
 XF_SIGMA_CLIP = 3.0  # N-sigma threshold for outlier flagging
-XF_CLIP_WINDOW = 32  # Window size for local scatter analysis
+XF_CLIP_WINDOW = 16  # Window size for local scatter analysis
 XF_EX = True          # Enable gap filling
-XF_EX_FRAC = 0.3      # Use 30% of good bandwidth for extrapolation
+XF_EX_FRAC = 0.2      # Use 20% of good bandwidth for extrapolation
+XF_RM_ANG_MAX = 20.0  # Maximum separation an angle [deg] from a trial RM can have from XF_TARGET_POLANG to be considered a good solution
+XF_AVG_SCAN = True # If multi-scan, average XF solutions over all scans to increase SNR
 
 # Smoothing control for XF table creation and interpolation
 XF_USE_SMOOTHING = True  # Apply Savitzky-Golay smoothing before interpolation
@@ -380,8 +381,8 @@ CAL_1GC_LINE_FILLGAPS = 48
 
 # CASA gaincal settings
 CAL_2GC_UVRANGE = '>150m'            # Selection for baselines to include during G solving
-CAL_2GC_PSOLINT = '32s'              # Solution interval for phase-only selfcal
-CAL_2GC_APSOLINT = 'inf'             # Solution interval for amplitude and phase selfcal
+CAL_2GC_PSOLINT = '32s'              # Solution interval for phase-only selfcal (DOES NOTHIN IN QC VERSION)
+CAL_2GC_APSOLINT = 'inf'             # Solution interval for amplitude and phase selfcal (DOES NOTHING IN QC VERSION)
 
 # Quartical
 CAL_2GC_YAML = DATA+'/quartical/2GC_phase.yaml'  # Frequency-dependent, phase-only self-calibration (diagonal terms: XX/YY only)
@@ -398,6 +399,8 @@ CAL_2GC_YAML = DATA+'/quartical/2GC_phase.yaml'  # Frequency-dependent, phase-on
 # CAL_2GC_YAML = DATA+'/quartical/2GC_fullpol.yaml'
 # CAL_2GC_YAML = DATA+'/quartical/2GC_amppol.yaml'
 
+# Flag to skip PB corrections
+SKIP_PB = False
 
 # ------------------------------------------------------------------------
 #
@@ -475,7 +478,8 @@ WSC_SQUAREPOLARIZATIONS = False
 # Masking
 WSC_MASK = False
 WSC_THRESHOLD = False
-WSC_AUTOMASK = 3.0
+WSC_SHALLOWMASK = 75.0
+WSC_AUTOMASK = 4.0
 WSC_AUTOTHRESHOLD = 1.0
 WSC_LOCALRMS = False
 # Determines if you want to Homogenize the resolution
