@@ -218,7 +218,7 @@ PRE_TIMEBIN = '8s'                   # Integration time for working MS
 POLANG_NAME = 'J1331+3030'         # Specify the name of the field you want to use as a Polarization angle calibrator -- 3C286
 POLANG_DIR  = '13:31:08.2881,+30.30.32.959' # CASA Format
 POLANG_MOD  = [1.0, 0.0, 0.5, 0.0]
-XF_TARGET_POLANG = 28.0  # Expected INTRINSIC (i.e. correcting RM effects) linear polarization angle in degrees
+XF_TARGET_POLANG = 30.0  # Expected INTRINSIC (i.e. correcting RM effects) linear polarization angle in degrees
 XF_TARGET_RM = 0.0 # Guess for the intrinsic RM; for 'manual' XF determination and RM trialing
 
 #POLANG_NAME = 'J0521+1638'         # Specify the name of the field you want to use as a Polarization angle calibrator -- 3C138
