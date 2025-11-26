@@ -1,6 +1,6 @@
 input_ms:
   data_column: DATA
-  time_chunk: '225'
+  time_chunk: '230'
   freq_chunk: '0'
   is_bda: false
   group_by:

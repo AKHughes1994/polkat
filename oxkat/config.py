@@ -229,7 +229,7 @@ XF_TARGET_RM = 0.0 # Guess for the intrinsic RM; for 'manual' XF determination a
 
 # PARAMETERS TO DECIDE XF SOLVE METHOD -- DEFAULTS ARE LIKELY ALL GOOD
 XF_MODE = 'auto' # options are: auto (RECOMMENDED: determine based on band and/or if there is large phase discontinuties), casa or  manual
-XF_AUTO_ANG_JUMP = 90.0 # angle in degrees where, if the CASA XF solver has adjacent solution intervals that have a discontinuity
+XF_AUTO_ANG_JUMP = 60.0 # angle in degrees where, if the CASA XF solver has adjacent solution intervals that have a discontinuity
                         # larger than this value, it will solve XF manually.
 
 # XF table targets

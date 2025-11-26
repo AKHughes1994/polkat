@@ -254,6 +254,7 @@ def main():
             syscall = prefix + 'python3 '+TOOLS+'/fix_nan_models.py ' + data_img_prefix + '\n\n'
             syscall += prefix + gen.generate_syscall_predict(msname = myms,
                     imgname = data_img_prefix,
+                    chanout = cfg.WSC_DMASK_CHANNELSOUT,
                     absmem = absmem)
             step['syscall'] = syscall
             steps.append(step)
@@ -286,7 +287,7 @@ def main():
                     imgname = pcal_img_prefix + 'v0',
                     datacol = 'CORRECTED_DATA',
                     mask = mask,
-                    chanout = cfg.WSC_PCAL_CHANNELSOUT,
+                    chanout = cfg.WSC_DMASK_CHANNELSOUT,
                     nomodel=True,
                     sourcelist = False,
                     absmem = absmem)
@@ -296,7 +297,7 @@ def main():
             steps.append(step)
             n += 1
 
-            if cfg.WSC_MAX_CHANNELS < cfg.WSC_PCAL_CHANNELSOUT or cfg.WSC_HOMOGENIZEBEAM:
+            if cfg.WSC_MAX_CHANNELS < cfg.WSC_DMASK_CHANNELSOUT or cfg.WSC_HOMOGENIZEBEAM:
                 step = {}
                 step['step'] = n
                 step['comment'] = f'Homogenize the PCAL resolution across frequency channels'
@@ -305,7 +306,7 @@ def main():
                 step['slurm_config'] = cfg.SLURM_WSCLEAN
                 step['pbs_config'] = cfg.PBS_WSCLEAN
                 prefix = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
-                syscall =  prefix + f'python3 {cfg.TOOLS}/fix_image_naming.py {cfg.WSC_PCAL_CHANNELSOUT} {pcal_img_prefix}v0\n\n'
+                syscall =  prefix + f'python3 {cfg.TOOLS}/fix_image_naming.py {cfg.WSC_DMASK_CHANNELSOUT} {pcal_img_prefix}v0\n\n'
                 syscall +=  prefix + f'python3 {cfg.TOOLS}/homogenize_beams.py {pcal_img_prefix}v0'
                 step['syscall'] = syscall
                 steps.append(step)
@@ -322,7 +323,8 @@ def main():
             prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
             syscall = prefix + 'python3 '+TOOLS+'/fix_nan_models.py ' + pcal_img_prefix + 'v0\n\n'
             syscall += prefix + gen.generate_syscall_predict(msname = myms,
-                    imgname = data_img_prefix,
+                    imgname = pcal_img_prefix + 'v0',
+                    chanout = cfg.WSC_DMASK_CHANNELSOUT,
                     absmem = absmem)
             step['syscall'] = syscall
             steps.append(step)
