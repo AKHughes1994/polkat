@@ -96,6 +96,8 @@ Assume a Linux-based OS (e.g., Ubuntu).
    singularity exec /point/to/container/polkat-[version].sif python3 tools/ms_info.py [ms-file.ms]
    ```
 
+**NOTE**: I recommend to download a version and use it throughout multi-epoch campaign; I fix problems as they arise (and can change defaults as new/better ones are suggested) so its best to fix your version in time to avoid me changing the defaults out from under you!! 
+
 ---
 
 ## INFO
