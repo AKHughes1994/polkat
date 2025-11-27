@@ -41,7 +41,7 @@ def get_imfit_values(fname, image, xpix, ypix):
     pixel_asec  = imhead(image, mode='get', hdkey='cdelt2')['value'] * 3600 * 180.0 / np.pi # pixel size in asecs
 
 
-    # Get the numnber of components
+    # Get the number of components
     n_comp = len(xpix)
   
     # For single components
@@ -53,7 +53,7 @@ def get_imfit_values(fname, image, xpix, ypix):
     
     # For multi-components (this won't work if there are components that are VERY far from eachother largely because it will just time out)
     else:
-        # Define an array of coorindates [[x1,y1], [x2,y2], etc.])
+        # Define an array of coordinates [[x1,y1], [x2,y2], etc.])
         point_array =  np.array([xpix, ypix]).T
 
         # Get maximum distance between points
@@ -74,7 +74,7 @@ def calculate_P0(flux_P, rms_Q, rms_U, rms_V, pol_flag, Aq = 0.8):
     Calculate the de-biased linearly polarized flux
     '''    
 
-    # If polarization angle calibrator incluided
+    # If polarization angle calibrator included
     if pol_flag:
 
         # Get the noise ratio coeffs, and calculate noise, from Hales 2012. https://arxiv.org/abs/1205.5310
@@ -110,7 +110,7 @@ def calculate_P0(flux_P, rms_Q, rms_U, rms_V, pol_flag, Aq = 0.8):
 def return_max(im, region):
     '''
     Return the value that has the higher absolute magnitude
-    Necessary for fluxes that are non-positive definate
+    Necessary for fluxes that are non-positive definite
     '''
 
     ims = imstat(im, region=region)
@@ -162,7 +162,7 @@ def check_position(fname, image, xpix, ypix, snr_thresh = 5.0, P_image = False, 
     Code to check whether there is sufficient flux at a position to allow 
     imfit to fit for position, or if said position should be frozen
     Inputs:
-        fname = string containing name of ouput estimate file
+        fname = string containing name of output estimate file
         xpix = RA pixel position(s)
         ypix = Dec pixel position(s)
         image = name of the image to fit
@@ -227,9 +227,9 @@ def make_estimate(fname, image, xpix, ypix, fix_var):
     Inputs:
         fname  = string containing name of estimate file
         image  = string containing name of image to fit
-        xpix    = Right acension (pixel) estimate of source(s)
+        xpix    = Right ascension (pixel) estimate of source(s)
         ypix  = Declination (pixel) estimate of source(s)
-        fix = paramters to fix, default is assume a point source (abp) other revelant example is fixing position (xyabp)
+        fix = parameters to fix, default is assume a point source (abp) other relevant example is fixing position (xyabp)
     '''
 
     # Get the beam parameters
@@ -267,25 +267,25 @@ def extract_polarization_properties(src_name,
 
     input parameters:
         src_name       = name of source 
-        src_im_prefix  = identifier for images that will have fluxe extraction
-        src_im_suffix  = image suffix, included to differentiate between standard WSCLEAN image products (image.fits) and homogenized produces (image.homogenized.fits)
-        src_ra   = Estimated right acension of source(s) pixel units
+        src_im_identifier  = identifier for images that will have flux extraction
+        src_im_suffix  = image suffix, included to differentiate between standard WSCLEAN image products (image.fits) and homogenized products (image.homogenized.fits)
+        src_ra   = Estimated right ascension of source(s) pixel units
         src_dec  = Estimated declination of  source(s) pixel units
         pol_flag = determines whether or not to solve for total or linear/circular polarization (depending on if cross-hand calibrator was included)
-        manual_rms_region = option to specify the rms region, otherwise use an annuls centerd on the source(s) with a ~100xPSF area
-        fix_addition_comps[default=True] = option to fix the Q,U,V,P position to Stokes I (primarily for faint partially unresolved ejecta)
+        manual_rms_region = option to specify the rms region, otherwise use an annulus centered on the source(s) with a ~100xPSF area
+        fix_additional_comps[default=False] = option to fix the Q,U,V,P position to Stokes I (primarily for faint partially unresolved ejecta)
 
     Output parametres:
         flux_dict = Dictionary containing all MFS and per-channel information for the IQUV fluxes
         rmsynth_arr = Array containing the necessary information to run RM synthesis on each image
     ''' 
 
-    # Initilaize dictionary to contain the output parameters
+    # Initialize dictionary to contain the output parameters
     output_dictionary = {'name' : src_name}
     output_dictionary['MFS'] = {}
     output_dictionary['CHAN'] = {}
 
-    # Check if the MFS image exists for the suffix, if not, use homgenized one
+    # Check if the MFS image exists for the suffix, if not, use homogenized one
     mfs_im_suffix = src_im_suffix[:]
     if glob.glob(f'{src_im_identifier}*-MFS*{src_im_suffix}') == []:
         msg(f'WARNING: {src_im_suffix} does not exist in MFS image due to channel splitting; Using: image.homogenized.fits')
@@ -555,7 +555,7 @@ def extract_polarization_properties(src_name,
             else:
                CHAN_images = sorted([im for im in CHAN_images if '-Plin-' not in im])
 
-            CHAN_images_arr = np.array(CHAN_images).reshape(int(len(CHAN_images) / 5), 5) # reshape to group in frequency for each set of Stokes paramete
+            CHAN_images_arr = np.array(CHAN_images).reshape(int(len(CHAN_images) / 5), 5) # reshape to group in frequency for each set of Stokes parameters
 
         # Iterate through the frequency channels, fit, and append to output dictionary
         for CHAN_images in CHAN_images_arr[:]:
@@ -581,7 +581,7 @@ def extract_polarization_properties(src_name,
                 CHAN_I_ra_pix = [CHAN_I_imfit['results'][key]['pixelcoords'][0] for key in components]
                 CHAN_I_dec_pix = [CHAN_I_imfit['results'][key]['pixelcoords'][1] for key in components]
 
-                # Initialize arrays if they don't exist, else append values to existsing arrays
+                # Initialize arrays if they don't exist, else append values to existing arrays
                 for component in components:
         
                     # For ease of readability define the desired quantities as variables
@@ -790,7 +790,7 @@ def main():
                                                                                             rmsynth_info["source_name"][k], 
                                                                                             rmsynth_info["image_identifier"][k])
         else:
-            src_im_identifier = cfg.CWD +'/{}/*{}*.ms_{}'.format(rmsynth_info["image_directory"][k], 
+            src_im_identifier = cfg.CWD +'/{}/*{}*.ms_{}-'.format(rmsynth_info["image_directory"][k], 
                                                                                             rmsynth_info["source_name"][k], 
                                                                                            rmsynth_info["image_identifier"][k])                                                                                           
         # Separate out source positions

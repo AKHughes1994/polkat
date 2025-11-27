@@ -332,9 +332,22 @@ def job_handler(syscall,
 
     elif infrastructure == 'node':
 
-        node_logfile = cfg.LOGS+'/oxk_'+jobname+'.log'
-        run_command = syscall
-        
+        node_logfile = cfg.LOGS + '/oxk_' + jobname + '.log'
+
+        lines = []
+        first = True
+
+        for line in syscall.splitlines():
+            if line.strip():  # non-blank
+                if first:
+                    lines.append(f"{line} |& tee {node_logfile}")
+                    first = False
+                else:
+                    lines.append(f"{line} |& tee -a {node_logfile}")
+            else:
+                lines.append("")
+
+        run_command = "\n".join(lines)
 
     run_command += '\n'
 

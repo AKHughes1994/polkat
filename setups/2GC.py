@@ -155,7 +155,7 @@ def main():
 
                 step = {}
                 step['step'] = n
-                step['comment'] = 'Shallow blind wsclean on CORRECTED_DATA column for source {}'.format(targetname)
+                step['comment'] = 'Shallow blind wsclean on DATA column for source {}'.format(targetname)
                 step['dependency'] = n - 1
                 step['id'] = 'WSDBL'+code
                 step['slurm_config'] = cfg.SLURM_WSCLEAN
