@@ -285,20 +285,27 @@ def extract_polarization_properties(src_name,
     output_dictionary['MFS'] = {}
     output_dictionary['CHAN'] = {}
 
+    # Check if any images exist matching the identifier
+    test_images = glob.glob(f'{src_im_identifier}*{src_im_suffix}')
+    if not test_images:
+        raise FileNotFoundError(f"Cannot find any images with prefix: {src_im_identifier} and suffix: {src_im_suffix}. Please check the image identifier.")
+    else:
+        msg(f"Found images of form: {test_images[0]}")
+
     # Check if the MFS image exists for the suffix, if not, use homogenized one
     mfs_im_suffix = src_im_suffix[:]
-    if glob.glob(f'{src_im_identifier}*-MFS*{src_im_suffix}') == []:
+    if glob.glob(f'{src_im_identifier}MFS*{src_im_suffix}') == []:
         msg(f'WARNING: {src_im_suffix} does not exist in MFS image due to channel splitting; Using: image.homogenized.fits')
         mfs_im_suffix = 'image.homogenized.fits' # if this doesn't work you don't have the images required for this analysis
     
     # Determine if there are multiple stokes parameters or if its strictly Stokes I (suffixes will be, e.g., MFS-image)
-    if glob.glob(f'{src_im_identifier}*-MFS-I-{mfs_im_suffix}') == []:
+    if glob.glob(f'{src_im_identifier}MFS-I-{mfs_im_suffix}') == []:
         only_intensity = True
     else:
         only_intensity = False
     
     # Get unique prefixes, this will now iterate in time (if applicable) if not it will just return arrays of length 1:
-    prefix_arr = glob.glob(f'{src_im_identifier}*-MFS*{mfs_im_suffix}')
+    prefix_arr = glob.glob(f'{src_im_identifier}MFS*{mfs_im_suffix}')
     prefix_arr = sorted(list(set([x.split('-MFS')[0] for x in prefix_arr])))
     
     for k, prefix in enumerate(prefix_arr[:]):
@@ -757,8 +764,10 @@ def extract_polarization_properties(src_name,
                 np.savetxt('{}_{}_rmsynth.txt'.format(prefix, component).replace(image_directory, 'RESULTS'), rmsynth_arr.T)
 
     # Save the full dictionary with all times, etc.
-    if len(prefix.split(f'{image_identifier}-t')) > 1:
-        file_name = prefix.split(f'{image_identifier}-t')[0] + image_identifier
+    # Remove trailing dash from image_identifier for splitting if present
+    split_identifier = image_identifier.rstrip('-')
+    if len(prefix.split(f'{split_identifier}-t')) > 1:
+        file_name = prefix.split(f'{split_identifier}-t')[0] + split_identifier
     else:
         file_name = prefix
     with open('{}_polarization.json'.format(file_name).replace(image_directory, 'RESULTS'), 'w') as j:
