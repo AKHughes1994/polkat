@@ -587,10 +587,36 @@ def extract_polarization_properties(src_name,
                 CHAN_I_imfit = get_imfit_values('estimate_I.txt', CHAN_images[0], MFS_I_ra_pix, MFS_I_dec_pix)
                 CHAN_I_ra_pix = [CHAN_I_imfit['results'][key]['pixelcoords'][0] for key in components]
                 CHAN_I_dec_pix = [CHAN_I_imfit['results'][key]['pixelcoords'][1] for key in components]
+            
+                # Fit Polarization intensity if not only_intensity (do ALL fitting before appending to dictionary)
+                if not only_intensity:
 
-                # Initialize arrays if they don't exist, else append values to existing arrays
+                    check_position('estimate_P.txt', CHAN_images[1], MFS_P_ra_pix, MFS_P_dec_pix, P_image = True, fix_additional_comps = fix_additional_comps, manual_rms_region = manual_rms_region)
+                    CHAN_P_imfit  = get_imfit_values('estimate_P.txt', CHAN_images[1], CHAN_I_ra_pix, CHAN_I_dec_pix)
+                    CHAN_P_ra_pix = [CHAN_P_imfit['results'][key]['pixelcoords'][0] for key in components]
+                    CHAN_P_dec_pix = [CHAN_P_imfit['results'][key]['pixelcoords'][1] for key in components]   
+                
+                    # Make estimate and fit for Q/U -- checking against position of Lin. Pol. components
+                    check_position('estimate_Q.txt', CHAN_images[2], CHAN_P_ra_pix, CHAN_P_dec_pix, P_image = False, fix_additional_comps = fix_additional_comps, manual_rms_region = manual_rms_region)
+                    CHAN_Q_imfit  = get_imfit_values('estimate_Q.txt', CHAN_images[2], CHAN_P_ra_pix, CHAN_P_dec_pix)
+                    CHAN_Q_ra_pix = [CHAN_Q_imfit['results'][key]['pixelcoords'][0] for key in components]
+                    CHAN_Q_dec_pix = [CHAN_Q_imfit['results'][key]['pixelcoords'][1] for key in components]   
+   
+                    check_position('estimate_U.txt', CHAN_images[3], CHAN_P_ra_pix, CHAN_P_dec_pix, P_image = False, fix_additional_comps = fix_additional_comps, manual_rms_region = manual_rms_region)
+                    CHAN_U_imfit  = get_imfit_values('estimate_U.txt', CHAN_images[3], CHAN_P_ra_pix, CHAN_P_dec_pix)
+                    CHAN_U_ra_pix = [CHAN_U_imfit['results'][key]['pixelcoords'][0] for key in components]
+                    CHAN_U_dec_pix = [CHAN_U_imfit['results'][key]['pixelcoords'][1] for key in components]   
+
+                    # Make estimate and fit Stokes V  -- checking against position of stokes I components
+                    check_position('estimate_V.txt', CHAN_images[4], CHAN_I_ra_pix, CHAN_I_dec_pix, P_image = False, fix_additional_comps = fix_additional_comps, manual_rms_region = manual_rms_region)
+                    CHAN_V_imfit  = get_imfit_values('estimate_V.txt', CHAN_images[4], CHAN_I_ra_pix, CHAN_I_dec_pix)
+                    CHAN_V_ra_pix = [CHAN_V_imfit['results'][key]['pixelcoords'][0] for key in components]
+                    CHAN_V_dec_pix = [CHAN_V_imfit['results'][key]['pixelcoords'][1] for key in components]   
+  
+                # All fitting complete - now append to output dictionary
+                # For Stokes I only or full polarization
                 for component in components:
-        
+
                     # For ease of readability define the desired quantities as variables
                     flux_I = CHAN_I_imfit['results'][component]['peak']['value'] * 1e3
                     err_I = CHAN_I_imfit['results'][component]['peak']['error'] * 1e3
@@ -600,7 +626,7 @@ def extract_polarization_properties(src_name,
                     DEC_pix_I = CHAN_I_imfit['results'][component]['pixelcoords'][1]
                     rms_I = get_imstat_values(CHAN_images[0], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3
         
-                    # Append values to the ouput dictionary
+                    # Append Stokes I values to the output dictionary
                     if component not in output_dictionary['CHAN']:
 
                         output_dictionary['CHAN'][component] = {}
@@ -626,41 +652,9 @@ def extract_polarization_properties(src_name,
                         output_dictionary['CHAN'][component]['I_RA_deg'][k].append(RA_I)
                         output_dictionary['CHAN'][component]['I_DEC_deg'][k].append(DEC_I)
 
+                    # Append polarization values if applicable
+                    if not only_intensity:
 
-            
-                # Next fit Polarization intensity and check if source is bright enough to allow positions to vary freely
-                if not only_intensity:
-
-                    check_position('estimate_P.txt', CHAN_images[1], MFS_P_ra_pix, MFS_P_dec_pix, P_image = True, fix_additional_comps = fix_additional_comps, manual_rms_region = manual_rms_region)
-                    CHAN_P_imfit  = get_imfit_values('estimate_P.txt', CHAN_images[1], CHAN_I_ra_pix, CHAN_I_dec_pix)
-                    CHAN_P_ra_pix = [CHAN_P_imfit['results'][key]['pixelcoords'][0] for key in components]
-                    CHAN_P_dec_pix = [CHAN_P_imfit['results'][key]['pixelcoords'][1] for key in components]   
-                
-                    # Make estimate and fit for Q/U -- checking against position of Lin. Pol. components
-                    check_position('estimate_Q.txt', CHAN_images[2], CHAN_P_ra_pix, CHAN_P_dec_pix, P_image = False, fix_additional_comps = fix_additional_comps, manual_rms_region = manual_rms_region)
-                    CHAN_Q_imfit  = get_imfit_values('estimate_Q.txt', CHAN_images[2], CHAN_P_ra_pix, CHAN_P_dec_pix)
-                    CHAN_Q_ra_pix = [CHAN_Q_imfit['results'][key]['pixelcoords'][0] for key in components]
-                    CHAN_Q_dec_pix = [CHAN_Q_imfit['results'][key]['pixelcoords'][1] for key in components]   
-   
-                    check_position('estimate_U.txt', CHAN_images[3], CHAN_P_ra_pix, CHAN_P_dec_pix, P_image = False, fix_additional_comps = fix_additional_comps, manual_rms_region = manual_rms_region)
-                    CHAN_U_imfit  = get_imfit_values('estimate_U.txt', CHAN_images[3], CHAN_P_ra_pix, CHAN_P_dec_pix)
-                    CHAN_U_ra_pix = [CHAN_U_imfit['results'][key]['pixelcoords'][0] for key in components]
-                    CHAN_U_dec_pix = [CHAN_U_imfit['results'][key]['pixelcoords'][1] for key in components]   
-
-                    # Make estimate and fit Stokes V  -- checking against position of stokes I components
-                    check_position('estimate_V.txt', CHAN_images[4], CHAN_I_ra_pix, CHAN_I_dec_pix, P_image = False, fix_additional_comps = fix_additional_comps, manual_rms_region = manual_rms_region)
-                    CHAN_V_imfit  = get_imfit_values('estimate_V.txt', CHAN_images[4], CHAN_I_ra_pix, CHAN_I_dec_pix)
-                    CHAN_V_ra_pix = [CHAN_V_imfit['results'][key]['pixelcoords'][0] for key in components]
-                    CHAN_V_dec_pix = [CHAN_V_imfit['results'][key]['pixelcoords'][1] for key in components]   
-  
-                    # Once again initialize arrays that don't exist
-                    for component in components:
-
-                        RA_pix_I = CHAN_I_imfit['results'][component]['pixelcoords'][0]
-                        DEC_pix_I = CHAN_I_imfit['results'][component]['pixelcoords'][1]
-            
-                        # For ease and readability separate out the parameters for calculations and rms extraction
-                        flux_I = CHAN_I_imfit['results'][component]['peak']['value'] * 1e3
                         flux_P = CHAN_P_imfit['results'][component]['peak']['value'] * 1e3
                         flux_Q = CHAN_Q_imfit['results'][component]['peak']['value'] * 1e3
                         flux_U = CHAN_U_imfit['results'][component]['peak']['value'] * 1e3
@@ -674,7 +668,6 @@ def extract_polarization_properties(src_name,
                         RA_P   = CHAN_P_imfit['results'][component]['shape']['direction']['m0']['value'] * 180 / np.pi
                         DEC_P = CHAN_P_imfit['results'][component]['shape']['direction']['m1']['value'] * 180 / np.pi
                     
-                        rms_I = get_imstat_values(CHAN_images[0], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3                
                         rms_Q = get_imstat_values(CHAN_images[2], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3                
                         rms_U = get_imstat_values(CHAN_images[3], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3                
                         rms_V = get_imstat_values(CHAN_images[4], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3                
@@ -744,7 +737,7 @@ def extract_polarization_properties(src_name,
                             output_dictionary['CHAN'][component]['LP_frac'][k].append(LP_frac)
                             output_dictionary['CHAN'][component]['LP_frac_err'][k].append(LP_frac_err)
                             output_dictionary['CHAN'][component]['LP_EVPA'][k].append(LP_EVPA)
-                            output_dictionary['CHAN'][component]['LP_EVPA_err'][k].append(LP_EVPA_err)     
+                            output_dictionary['CHAN'][component]['LP_EVPA_err'][k].append(LP_EVPA_err)
 
             except:
                 msg('Fitting Failed: Channel is likely flagged')

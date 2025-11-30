@@ -133,8 +133,8 @@ def main():
             # Create search pattern: *identifier*suffix
             pattern = os.path.join(full_dir, f"*{identifier}*{suffix}")
             
-            # Find matching files
-            matching_files = glob.glob(pattern)
+            # Find matching files, excluding those that already have _zoom in the name
+            matching_files = [f for f in glob.glob(pattern) if '_zoom' not in os.path.basename(f)]
             
             if not matching_files:
                 print(f"No files found matching pattern: {pattern}")

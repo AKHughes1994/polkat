@@ -151,13 +151,14 @@ def main():
 
     
     # Check for existing mask file, if doesn't exist make one
+    # Define mask_img_prefix for potential re-masking later
+    mask_img_prefix = f"{cfg.IMAGES}/img_{polms}_mask"
+    
     if mask_exists:
         mask = existing_mask
-        print(gen.col('Using existing mask')+mask)
+        print(gen.col('Initially using existing mask')+mask)
     else:
         # Create new mask
-        mask_img_prefix = f"{cfg.IMAGES}/img_{polms}_mask"
-        
         step = {}
         step['step'] = n
         step['comment'] = 'Shallow blind wsclean on DATA column for polarization angle calibrator'
