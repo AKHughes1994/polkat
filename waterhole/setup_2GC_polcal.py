@@ -132,23 +132,6 @@ def main():
     step['syscall'] = syscall
     steps.append(step)
     n += 1
-
-    step = {}
-    step['step'] = n
-    step['comment'] = 'Run Tricolour on polarization angle calibrator'
-    step['dependency'] = n - 1
-    step['id'] = 'TRPAC'+code
-    step['slurm_config'] = cfg.SLURM_TRICOLOUR
-    step['pbs_config'] = cfg.PBS_TRICOLOUR
-    syscall = CONTAINER_RUNNER+TRICOLOUR_CONTAINER+' ' if USE_SINGULARITY else ''
-    syscall += gen.generate_syscall_tricolour(myms = polms,
-            config = DATA+'/tricolour/target_flagging_1_narrow.yaml',
-            datacol = 'DATA',
-            strategy = 'polarisation')
-    step['syscall'] = syscall
-    steps.append(step)
-    n += 1
-
     
     # Check for existing mask file, if doesn't exist make one
     # Define mask_img_prefix for potential re-masking later
