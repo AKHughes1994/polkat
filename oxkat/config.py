@@ -215,7 +215,7 @@ PRE_TIMEBIN = '8s'                   # Integration time for working MS
 
 # Polarization calibrator info --- Must be in PRE_FIELDS, if left blank will assume no polarization angle calibration
 # https://science.nrao.edu/facilities/vla/docs/manuals/obsguide/modes/pol
-POLANG_NAME = 'J1331+3030'         # Specify the name of the field you want to use as a Polarization angle calibrator -- 3C286
+POLANG_NAME = ''         # Specify the name of the field you want to use as a Polarization angle calibrator -- 3C286
 POLANG_DIR  = '13:31:08.2881,+30.30.32.959' # CASA Format
 POLANG_MOD  = [1.0, 0.0, 0.5, 0.0]
 XF_TARGET_POLANG = 30.0  # Expected INTRINSIC (i.e. correcting RM effects) linear polarization angle in degrees
@@ -422,7 +422,7 @@ WSC_MINUVL = ''
 WSC_MAXUVL = ''
 WSC_EVEN = False
 WSC_ODD = False
-WSC_TUKEYTAPER = False
+WSC_TUKEYTAPER = 3000.0
 WSC_TAPERMASK = False
 WSC_INTERVAL0 = None
 WSC_INTERVAL1 = None
@@ -448,7 +448,7 @@ WSC_PARALLELGRIDDING = 8
 WSC_WEIGHT = 'briggs 0.0'
 WSC_WEIGHT_CAL = 'uniform'
 WSC_TAPERGAUSSIAN = ''
-WSC_MFWEIGHT = True
+WSC_MFWEIGHT = False
 # HIGH RES IMAGING
 WSC_UNIFORM_IMAGE = True
 WSC_WEIGHT_HIGHRES = 'uniform' # pick a more uniform weighting then WSC_WEIGHT -- uniform weight by default
@@ -462,8 +462,8 @@ WSC_NITER = 800000
 WSC_GAIN = 0.15
 WSC_MGAIN = 0.9
 WSC_BLIND_CHANNELSOUT = 8
-WSC_PCAL_CHANNELSOUT = 8
-WSC_DMASK_CHANNELSOUT = WSC_PCAL_CHANNELSOUT # Incase you want a different channelisation for your datamask and pcalmask images
+WSC_PCAL_CHANNELSOUT = 64
+WSC_DMASK_CHANNELSOUT = 16 # Incase you want a different channelisation for your datamask and pcalmask images
 WSC_CAL_CHANNELSOUT = 16
 WSC_MAX_CHANNELS = 16
 WSC_FITSPECTRALPOL = 4

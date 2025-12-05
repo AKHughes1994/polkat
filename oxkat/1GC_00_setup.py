@@ -442,6 +442,38 @@ def target_ms_list(working_ms,target_names):
     return target_ms
 
 
+def secondary_ms_list(master_ms, working_ms, secondary_names, secondary_ids):
+
+    """ Return a list of MS names for secondary calibrators with scan numbering """
+
+    main_tab = table(master_ms, ack=False)
+    secondary_ms = []
+
+    for i, sec_id in enumerate(secondary_ids):
+        sec_name = secondary_names[i]
+        
+        # Query for this secondary field to get unique scans
+        sub_tab = main_tab.query(query=f'FIELD_ID=={sec_id}')
+        scans = numpy.unique(sub_tab.getcol('SCAN_NUMBER'))
+        sub_tab.close()
+        
+        # Determine zero-padding width based on total number of scans
+        max_scan = numpy.max(scans)
+        num_digits = len(str(max_scan))
+        
+        # Create MS names for each scan
+        sec_ms_list = []
+        for scan in scans:
+            scan_str = str(scan).zfill(num_digits)
+            ms_name = working_ms.replace('.ms', f'_{sec_name.replace(" ", "_")}_scan{scan_str}.ms')
+            sec_ms_list.append(ms_name)
+        
+        secondary_ms.append(sec_ms_list)
+    
+    main_tab.close()
+    return secondary_ms
+
+
 def main():
 
     master_ms = sys.argv[1].rstrip('/')
@@ -626,6 +658,13 @@ def main():
 
     # ------------------------------------------------------------------------------
     #
+    # GENERATE LIST OF SECONDARY MS NAMES
+
+    secondary_ms = secondary_ms_list(master_ms, working_ms, secondary_names, secondary_ids)
+
+
+    # ------------------------------------------------------------------------------
+    #
     # PRINT FIELD SUMMARY
 
 
@@ -658,6 +697,14 @@ def main():
         mylogger.info('%-24s %-50s' % (targ, target_ms[i]))
     
     mylogger.info('')
+    mylogger.info('Secondary                Eventual MS names')
+    for i in range(0,len(secondary_names)):
+        sec = str(secondary_ids[i])+': '+secondary_names[i]
+        mylogger.info('%-24s' % (sec))
+        for ms_name in secondary_ms[i]:
+            mylogger.info('  - %-50s' % (ms_name))
+    
+    mylogger.info('')
     mylogger.info('Writing '+outfile)
 
     project_info['master_ms'] = master_ms
@@ -673,6 +720,7 @@ def main():
     project_info['secondary_names'] = secondary_names
     project_info['secondary_ids'] = secondary_ids
     project_info['secondary_dirs'] = secondary_dirs
+    project_info['secondary_ms'] = secondary_ms
     project_info['target_names'] = target_names
     project_info['target_dirs'] = target_dirs
     project_info['target_ids'] = target_ids

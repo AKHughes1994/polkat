@@ -74,6 +74,20 @@ if os.path.isdir(ftab):
 
 # ------- Set BP calibrator models
 
+# Check if MODEL_DATA column exists, if not initialize it
+tb.open(myms)
+if 'MODEL_DATA' not in tb.colnames():
+    tb.close()
+    # Dummy setjy call to initialize non-existing model data column
+    setjy(vis=myms,
+        standard='manual',
+        field=bpcal_name,
+        fluxdensity=[1.0, 0, 0, 0],
+        reffreq='1000MHz',
+        usescratch=True)
+else:
+    tb.close()
+
 if primary_tag == '1934':
     
     # MeerKAT specific crystalball models for 1939 from B.Hugo: https://archive-gw-1.kat.ac.za/public/repository/10.48479/hhhy-4r55/index.htmlV
