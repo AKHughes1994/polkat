@@ -1,27 +1,3 @@
-### CHANGES (October 31, 2025)
-
-#### Update: UHF Band and Manual Cross-Hand Solver
-
-Full UHF band support is now available. The cross-hand phase (XF) calibration has been extended with a **manual solver** that handles cases where CASA’s XF solver introduces large discontinuities.
-
-New configuration parameters have been introduced to [`oxkat/config.py`](oxkat/config.py).  and must be set **per calibrator** (I've put in defaults for 3C286 and 3C138):
-
-```python
-XF_TARGET_POLANG = 28.0  # Expected intrinsic (RM-corrected) linear polarization angle [deg]
-XF_TARGET_RM = 0.0       # Initial guess for the intrinsic rotation measure [rad/m^2]
-XF_MODE = 'auto'         # Options: 'auto' or 'manual'; auto will fall back to manual when needed
-XF_AUTO_ANG_JUMP = 90.0  # Threshold [deg]; if adjacent CASA XF solutions differ by more than this,
-                         # a manual re-solve is triggered
-```
-
-The manual solver is implemented in [`tools/manual_XF_solver.py`](tools/manual_XF_solver.py).  
-For most use cases, the default settings will suffice for UHF-thorugh-S band --- especially if you’re not deeply familiar with cross-hand calibration.
-
-This routine has been tested on standard polarization calibrators **3C286** and **3C138** for **MeerKAT L-, S-, and UHF-bands**, and now recovers stable and correct polarization angles across the full frequency range.  
-
-If you develop or know of a more robust cross-hand phase solver, please get in touch!
-
----
 
 If you make use of this software, please cite:
 
@@ -40,11 +16,25 @@ If you make use of this software, please cite:
 
 ---
 
+
+### Latest modification (December 9, 2025)
+
+#### Update: UHF Band and Manual Cross-Hand Solver
+
+Full UHF band support is now available. The cross-hand phase (XF) calibration has been extended with a **manual solver** that handles cases where CASA’s XF solver introduces large discontinuities, discussed more under INFO.
+
+This routine has been tested on standard polarization calibrators **3C286** and **3C138** for **MeerKAT L-, S-, and UHF-bands**, and now recovers stable and correct polarization angles across the full frequency range.  
+
+
+---
+
 ### What is this?
 
 This repository contains a modified version of the MeerKAT semi-automated data processing routine [oxkat](https://github.com/IanHeywood/oxkat), enhanced to support full polarization calibration and Stokes I, Q, U, V imaging. It is assumed that you are already familiar with the oxkat workflow and file system, and that you configure data processing options by editing `oxkat/config.py`. This guide walks you through a standard use case, highlighting changes to `config.py` and introducing new options.
 
 This branch, `polkat_QC_selfcal`, is designed to closely mimic the main `oxkat` branch, with the primary change being the upgrade from Cubical to Quartical for self-calibration. Unlike the main `polkat` branch (which uses CASA for self-calibration and does not split out the target field), this version is a near one-to-one adaptation, but with additional features and the ability to handle full polarization observations. An added benefit is that this branch includes the capability to perform the 3GC peeling step.
+
+**IMPORTANT: For time series or multi-epoch campaigns**, it is strongly recommended that you download a local branch and use it consistently throughout your project. This repository is actively maintained, and improvements to flux density calibration or other processing steps may introduce global offsets or systematic differences between epochs processed with different versions. To ensure consistency across your dataset, fix your version at the start of your campaign.
 
 ---
 
@@ -59,13 +49,6 @@ singularity pull polkat-0.2.1.sif docker://hughesakh/polkat:0.2.0
 # ALBUS container for ionospheric corrections
 singularity pull polkat-albus.sif docker://hughesakh/polkat_albus:latest
 ```
-
-# MF weighting READ THIS
-This pipeline has a lot of features for spectrally resolved functionality (e.g., Rotation Measure synthesis). There is a parameter in the config called `WSC_MFWEIGHT` that controls whether the final weighint in the imaging step (i.e., 2GC with `wsclean`) applied multi-frequency weighting. 
-
-It is set to `True` by default under the assumption that you want one final image combining all the frequency channels, and having the lowest RMS noise.
-
-If you want to use the spectral functionality, this need to be turned off or else you may introduce artificial spectral structure! (see [wsclean](https://wsclean.readthedocs.io/en/latest/mf_weighting.html) doc) 
 
 ---
 
@@ -96,8 +79,6 @@ Assume a Linux-based OS (e.g., Ubuntu).
    singularity exec /point/to/container/polkat-[version].sif python3 tools/ms_info.py [ms-file.ms]
    ```
 
-**NOTE**: I recommend to download a version and use it throughout multi-epoch campaign; I fix problems as they arise (and can change defaults as new/better ones are suggested) so its best to fix your version in time to avoid me changing the defaults out from under you!! 
-
 ---
 
 ## INFO
@@ -116,19 +97,46 @@ This step extracts info for targets/calibrators from your ms-file, storing it in
 
 **Commonly customized `config.py` variables:**
 
-- `POLANG_NAME = 'J1331+3030'` — Name of the polarization angle calibrator as it appears in the ms-file (default: J1331+3030/3C286). Leave blank if you do not wish to perform polarization angle calibration.
-- `POLANG_DIR  = '13:31:08.2881,+30.30.32.959'` — Coordinates of the polarization angle calibrator (default: 3C286).
-- `PRE_FIELDS = ''` — Specify fields of interest. For multi-target ms-files, polkat will process each target. To process only a specific target, provide the names of the target, phase calibrator, primary calibrator, and (if applicable) polarization angle calibrator. **If you use `PRE_FIELDS`, be sure to include the polarization calibrator in the string.**
+```python
+POLANG_NAME = 'J1331+3030'  # Name of the polarization angle calibrator as it appears in the ms-file
+                             # (default: J1331+3030/3C286). Leave blank if you do not wish to 
+                             # perform polarization angle calibration.
+POLANG_DIR = '13:31:08.2881,+30.30.32.959'  # Coordinates of the polarization angle calibrator 
+                                             # (default: 3C286)
+PRE_FIELDS = ''  # Specify fields of interest. For multi-target ms-files, polkat will process 
+                 # each target. To process only a specific target, provide the names of the 
+                 # target, phase calibrator, primary calibrator, and (if applicable) polarization 
+                 # angle calibrator. If you use PRE_FIELDS, be sure to include the polarization 
+                 # calibrator in the string.
+
+# Cross-hand phase (XF) calibration parameters (must be set per calibrator; defaults for 3C286 and 3C138 provided)
+XF_TARGET_POLANG = 30.0  # Expected intrinsic (RM-corrected) linear polarization angle [deg]
+XF_TARGET_RM = 0.0       # Initial guess for the intrinsic rotation measure [rad/m^2]
+XF_MODE = 'auto'         # Options: 'auto', 'casa', or 'manual'
+                         # 'auto' (RECOMMENDED): uses CASA solver by default, switches to manual 
+                         # if large phase discontinuities are detected (almost certainly due to 
+                         # low cross-hand flux in some channels)
+XF_AUTO_ANG_JUMP = 60.0  # Threshold [deg]; if adjacent CASA XF solutions differ by more than this,
+                         # a manual re-solve is triggered
+```
+
+**Cross-hand phase (XF) calibration parameters** have been introduced to [`oxkat/config.py`](oxkat/config.py) and must be set **per calibrator** (defaults provided for 3C286 and 3C138).
+
+The manual solver is implemented in [`tools/manual_XF_solver.py`](tools/manual_XF_solver.py).  
+For most use cases, the default settings will suffice for UHF-through-S band --- especially if you're not deeply familiar with cross-hand calibration.
+If you develop or know of a more robust cross-hand phase solver, please get in touch!
 
 - ### Note: No Polarization Angle Calibrator?
 
-If no polang calibrator is available, make sure `POLANG_NAME = ''`. The primary (e.g., J1939) must be unpolarized. You can recover total polarization (but not separate linear from circular).
+If no polang calibrator is available, make sure `POLANG_NAME = ''`. The primary (e.g., J1939) must be unpolarized, so you can still solve for leakage terms.
 
-SARAO/MeerKAT provides two polarization angle calibrators: J1331+3030 (3C286, default) and J0521+1638 (3C138). Parameters for 3C138 are also included in the config file. Using a non-standard calibrator is possible, but intended for expert users.
+SARAO/MeerKAT provides two polarization angle calibrators: J1331+3030 (3C286, default) and J0521+1638 (3C138). Using a non-standard calibrator strategies is possible, even without a standard calibrator but will be added later and is intended for expert users.
 
-A block of code has been added to `oxkat/PRE_casa_average_to_1k_add_wtspec.py` to address a known metadata issue:
+**Metadata bug workaround:**
 
-```
+A block of code has been added to `oxkat/PRE_casa_average_to_1k_add_wtspec.py` to address a known metadata issue with 2-second integration observations:
+
+```python
 # Remove short scans that arise from metadata error from 2s integration observations
 bad_scans = []
 good_scans = []
@@ -136,10 +144,10 @@ good_scans = []
 tb.open(master_ms)
 scans = np.unique(tb.getcol('SCAN_NUMBER'))
 for scan in scans:
-    subtab = tb.query(query='SCAN_NUMBER=='+str(scan)) # scan info
-    scan_times = np.unique(subtab.getcol('TIME')) # scan integration times
-    scan_dt = scan_times[-1] - scan_times[0] # total scan length (s)
-    integration = scan_times[1] - scan_times[0] # integration length (s)
+    subtab = tb.query(query='SCAN_NUMBER=='+str(scan))  # scan info
+    scan_times = np.unique(subtab.getcol('TIME'))  # scan integration times
+    scan_dt = scan_times[-1] - scan_times[0]  # total scan length (s)
+    integration = scan_times[1] - scan_times[0]  # integration length (s)
     if scan_dt < 10.0 and integration < 2.5:
         bad_scans.append(str(scan))
     else:
@@ -168,49 +176,114 @@ python3 setups/1GC.py idia
 ./submit_1GC_job.sh
 ```
 
-**Important:** As of May 22, 2025, MeerKAT ms-files made using the SARAO archive (i.e., using the download button) have mislabelled X/Y feeds. This results in incorrect polarization properties if not corrected (see EVLA Memo 219). polkat corrects this mislabelling in its first two steps. **CAUTION:** Other (less common) archive download methods may already correct this; do not double-correct. polkat assumes you used the button. If polarization properties of diagnostic images strongly disagree with archival values (see [here](https://science.nrao.edu/facilities/vla/docs/manuals/obsguide/modes/pol)), you may have missed or double-applied this correction.
+**Important:** As of LAST UPDATE, MeerKAT ms-files made using the SARAO archive (i.e., using the download button) have mislabelled X/Y feeds. This results in incorrect polarization properties if not corrected (see EVLA Memo 219). polkat corrects this mislabelling in its first two steps. **CAUTION:** Other (less common) archive download methods may already correct this; do not double-correct. polkat assumes you used the button. If polarization properties of diagnostic images strongly disagree with archival values (see [here](https://science.nrao.edu/facilities/vla/docs/manuals/obsguide/modes/pol)), you may have missed or double-applied this correction.
 
 **Commonly customized `config.py` variables:**
 
-- `CAL_1GC_DIAGNOSTICS = True` — (default: on) Images calibrators in Stokes I, Q, U, V. The primary (typically J1939) should be unpolarized; the polarization angle calibrator should match catalogue values. Leave this on for calibration checks.
-- `CAL_1GC_AGGRESSIVE_FLAGS = False` — (default: off) More aggressive baseline flagging. Default flags RFI on short baselines; turning this on flags RFI on all baselines, improving polarimetry at the cost of some S/N.
-- `POLANG_MOD  = [1.0, 0.0, 0.5, 0.0]` — Initialization model for the polarization angle calibrator (default: 3C286); used by `setjy` in casa. The config file also includes a model for 3C138.
+```python
+CAL_1GC_DIAGNOSTICS = True  # (default: on) Images calibrators in Stokes I, Q, U, V. The primary 
+                             # (typically J1939) should be unpolarized; the polarization angle 
+                             # calibrator should match catalogue values. Leave this on for 
+                             # calibration checks.
+CAL_1GC_AGGRESSIVE_FLAGS = False  # (default: off) More aggressive baseline flagging. Default flags 
+                                   # RFI on short baselines; turning this on flags RFI on all 
+                                   # baselines, can remove RFI inducing low-fractional polarisation 
+                                   # structure.
+POLANG_MOD = [1.0, 0.0, 0.5, 0.0]  # Initialization model for the polarization angle calibrator 
+                                    # (default: 3C286); used by setjy in CASA. The config file also 
+                                    # includes a model for 3C138. This model is used by the default 
+                                    # CASA cross-hand phase (XF) solver.
+```
 
-**Note:** For linear feed instruments, the casa cross-hand phase solver only needs the angle quadrant approximately correct (see EVLA Memo 219). The polarization angle calibrator also acts as a polarization check source. All testing converges on the correct solution despite the input model, allowing you to estimate systematic errors by comparing measured and expected values.
+**Note:** For linear feed instruments, the CASA cross-hand phase solver only needs the angle quadrant approximately correct (see EVLA Memo 219). The polarization angle calibrator also acts as a polarization check source. All testing converges on the correct solution despite the input model, allowing you to estimate systematic errors by comparing measured and expected values.
 
-If 1GC is successful, check the visibility/gain solutions. Polarization can be finicky. You can now move on to 2GC (self-calibration and target imaging), and the pipeline will split out inidvidual MS files for you target field(s). 
+If 1GC is successful, check the visibility/gain solutions. Polarization can be finicky. You can now move on to 2GC (self-calibration and target imaging), and the pipeline will split out individual MS files for your target field(s). 
 
 ---
 
 ## 2GC
 
-After completing 1GC, move on to the 2GC step. This stage performs final flagging, imaging (using WSCLEAN), and direction-independent phase self-calibration. The 2GC process produces both channelized images and a single MFS (multi-frequency synthesis) image. The MFS image maximizes sensitivity, but may be affected by bandwidth depolarization.
+After completing 1GC, move on to the 2GC step. This stage performs final flagging, imaging (using [wsclean](https://wsclean.readthedocs.io/en/latest/)), and direction-independent phase self-calibration. The 2GC process produces both channelized images and a single MFS (multi-frequency synthesis) image. The MFS image maximizes sensitivity, but may be affected by bandwidth depolarization.
 
 **To run 2GC:**
 
 ```bash
-python setups/2GC.py idia
+python3 setups/2GC.py idia
 ./submit_2GC_job.sh
 ```
 
-**Key configurable options for 2GC include:**
+For fields with clear artefacts around bright sources (possibly due to calibration errors or residual RFI), an alternative two-stage self-calibration approach is available via `python3 waterhole/setup_2GC_twostage.py idia`. This performs iterative self-calibration first on pixels meeting the `WSC_SHALLOWMASK` threshold before proceeding to the full imaging workflow.
 
-- `WSC_WEIGHT = briggs 0.0` — Imaging weighting scheme (default: Briggs robustness 0.0). This maximizes sensitivity before the MeerKAT synthesized beam becomes non-Gaussian.
-- `WSC_UNIFORM_IMAGE = True` — Also generates a high-angular-resolution image using `WSC_WEIGHT_HIGHRES`. Useful for tracking proper motion.
-- `WSC_POL = 'IQUV'` — Stokes parameters to image. The pipeline is designed for either Stokes I or full IQUV imaging. Atypical subsets (e.g., QUV, UV) may work, but other parts of the pipeline (such as RMSYNTH) may fail.
-- `WSC_IMAGE_CHANNELSOUT = 8` — Number of frequency channels to image. Increase this value for sources with high rotation measure.
-- `WSC_MAX_CHANNELS = 16` — Maximum number of frequency channels imaged at once (memory limit). If `WSC_IMAGE_CHANNELSOUT > WSC_MAX_CHANNELS`, imaging is performed in steps. In this case, the MFS image is created by stacking in the image plane (qualitative only; **do not report fluxes from this MFS image**).
-- `WSC_HOMOGENIZEBEAM = False` — Produces `.homogenized.fits` images with a frequency-homogenized beam using the Welzl algorithm. Also homogenizes residuals using [pypher](https://pypher.readthedocs.io/en/latest/).  
-  **Experimental:** Residual homogenization can reduce RMS in the upper-frequency band, but interpret S/N with caution. In most cases, it is preferable to specify the maximum uvdist with `WSC_MAXUVL = ''` (automation for this may be added in the future).
+Most imaging parameters for 2GC are found in `config.py` after the comment `# wsclean and 2GC defaults`, and correspond directly to [wsclean](https://wsclean.readthedocs.io/en/latest/) options. **Please consult the wsclean documentation for detailed explanations of all available parameters.** The variables listed below are the ones most commonly adjusted for typical use cases (but note that the defaults are generally suitable for standard MeerKAT observations).:
 
-**Self-calibration control:**  
-You can adjust self-calibration solutions via the Quartical YAML files in `data/quartical`. The default file is phase-only self-calibration, which includes a frequency slope (e.g., `2GC_phase.yaml`).  
-Quartical parameter documentation can be found [here](https://quartical.readthedocs.io/en/latest/). The key parameter is `time_interval='4'`, which sets the number of integration times per solution interval. By default, this is 4 (matching `oxkat`), but you may decrease it to 1 for well-behaved fields with bright point sources.
+**Commonly customized `config.py` variables:**
 
-**Warning:**  
-The QC routine does not account for parallactic angle rotation/de-rotation during self-calibration, since the DATA column has the parallactic angle rotation applied after 1GC. While there was initial concern this could reduce the fidelity of self-calibrated data (due to feed-frame vs. sky-frame calibration issues), in practice this effect appears to be minor—much smaller than measurement errors or other systematics. If you ever find a case where this makes a significant difference, please let me know.
+```python
+# Data selection
+WSC_MINUVL = ''  # Minimum uv-distance in wavelengths (leave empty for no restriction)
+WSC_MAXUVL = ''  # Maximum uv-distance in wavelengths (leave empty for no restriction)
+                 # Useful for matching angular scales across frequency
+WSC_TUKEYTAPER = False  # Apply Tukey taper to reduce edge effects in uv-coverage
+WSC_TAPERMASK = False   # Apply taper/uvcuts to blind and mask images (not just final images)
 
-Most imaging parameters for 2GC are found in `config.py` after the comment `# wsclean and 2GC defaults`, and correspond directly to [wsclean](https://wsclean.readthedocs.io/en/latest/) options.
+# Weighting
+WSC_WEIGHT = 'briggs 0.0'  # Imaging weighting scheme (default: Briggs robustness 0.0)
+                            # Maximizes sensitivity before MeerKAT beam becomes non-Gaussian
+WSC_UNIFORM_IMAGE = True   # Also generate high-resolution image using WSC_WEIGHT_HIGHRES
+                           # Useful for tracking proper motion
+
+# Polarization and spectral settings
+WSC_POL = 'IQUV'  # Stokes parameters to image. Pipeline designed for either Stokes I or 
+                  # full IQUV. Atypical subsets (e.g., QUV, UV) may work but other pipeline 
+                  # steps (e.g., RMSYNTH) may fail.
+WSC_SPLITPOL = False  # Image V/I and Q/U separately (necessary for high RM and MFS fitting)
+WSC_JOINPOLARIZATIONS = True  # Join polarizations during deconvolution
+WSC_SQUAREPOLARIZATIONS = False  # Use squared polarization during deconvolution
+
+# Frequency channels
+WSC_BLIND_CHANNELSOUT = 8  # Number of channels for initial blind imaging
+WSC_PCAL_CHANNELSOUT = 8   # Number of channels for final post-calibration imaging
+                           # Increase for sources with high rotation measure
+WSC_DMASK_CHANNELSOUT = WSC_PCAL_CHANNELSOUT  # Channels for datamask image (in case you want 
+                                               # different channelization than pcalmask)
+WSC_CAL_CHANNELSOUT = 16   # Number of channels for calibrator imaging
+WSC_MAX_CHANNELS = 16      # Maximum channels imaged at once (memory limit). If 
+                           # WSC_PCAL_CHANNELSOUT > WSC_MAX_CHANNELS, imaging is performed 
+                           # in steps and MFS is created by stacking in image plane 
+                           # (qualitative only; do not report fluxes from this MFS image)
+WSC_FITSPECTRALPOL = 4     # Polynomial order for spectral polarization fitting
+WSC_JOINCHANNELS = True    # Join channels during deconvolution
+
+# Deconvolution constraints
+WSC_NONEGATIVE = False     # Enforce non-negative constraint during deconvolution
+WSC_STOPNEGATIVE = False   # Stop deconvolution when negative components appear
+WSC_CIRCULARBEAM = False   # Force circular restoring beam
+
+# Masking for blind imaging (initial image to create mask)
+WSC_AUTOMASK_BLIND = 10.0        # Auto-masking sigma threshold for blind image
+WSC_AUTOTHRESHOLD_BLIND = 2.0    # Auto-threshold sigma for blind cleaning
+WSC_THRESHOLD_BLIND = False      # Manual threshold for blind image (False = auto)
+WSC_LOCALRMS_BLIND = False       # Use local RMS for blind image masking (False = global RMS)
+
+# Masking for science imaging (final images)
+WSC_MASK = False            # Use existing mask file (False = auto-generate from blind image)
+WSC_THRESHOLD = False       # Manual cleaning threshold (False = auto)
+WSC_SHALLOWMASK = 50.0      # Shallow mask sigma threshold for initial mask creation
+WSC_AUTOMASK = 4.0          # Auto-masking sigma threshold for science imaging
+WSC_AUTOTHRESHOLD = 1.0     # Auto-threshold sigma for final cleaning
+WSC_LOCALRMS = False        # Use local RMS for masking (False = global RMS)
+```
+
+
+**Multi-frequency weighting (IMPORTANT):**
+
+This pipeline supports spectrally resolved functionality (e.g., Rotation Measure synthesis). The `WSC_MFWEIGHT` parameter controls whether multi-frequency weighting is applied during imaging. It is set to `True` by default, optimized for a single combined MFS image with the lowest RMS noise. **If you plan to use spectral functionality, set this to `False` to avoid introducing artificial spectral structure** (see [wsclean MF weighting documentation](https://wsclean.readthedocs.io/en/latest/mf_weighting.html)).
+
+**Self-calibration control:**
+
+Self-calibration solutions are controlled via Quartical YAML files in `data/quartical`. The default configuration (`2GC_phase.yaml`) performs phase-only self-calibration with a frequency-dependent slope. See the [Quartical documentation](https://quartical.readthedocs.io/en/latest/) for details. The key parameter is `time_interval='1'`, which sets the solution interval to 1 integration time by default.
+
+**Note on parallactic angle:** The QC routine does not de-rotate or re-apply parallactic angle corrections during self-calibration, as the DATA column already has parallactic angle rotation applied after 1GC. While there was initial concern this could reduce calibration fidelity (due to feed-frame vs. sky-frame issues), in practice this effect appears minor—much smaller than measurement errors or other systematics. If you encounter a case where this makes a significant difference, please report it.
 
 **Output:**  
 Final images will have suffixes such as `pcalmask-MFS-I-image.fits` or `pcalmask-[CHAN_NUMBER]-I-image.fits` (`I` for Stokes I). In addition to Stokes images, 2GC also produces linear polarization intensity (`Plin`, $\sqrt{Q^2+U^2}$) and total polarization intensity (`Ptot`, $\sqrt{Q^2+U^2+V^2}$) images.
@@ -225,7 +298,7 @@ The 3GC (Third Generation Calibration) "peeling" step is an advanced calibration
 
 - Peeling directions are defined using DS9 region files (one region per source/direction). You can specify these manually by setting the `CAL_3GC_PEEL_REGION` variable in `config.py` to a comma-separated list of region file paths. Alternatively, you can place region files in your working directory using the naming convention `[SOURCE_NAME]_peel[PEEL_NUMBER].reg` (e.g., `CygX1_peel1.reg`, `CygX1_peel2.reg`, etc.).
 - The pipeline supports an arbitrary number of peel directions, but note that each direction adds a new data column to your MS file, which can rapidly increase its size.
-- Peeling involves amplitude and phase self-calibration in each direction and therefore may have weird interactions with instrumental, off-axis Leakage (which MeerKAT has a lot of). In my tests, peeling generally preserves source fidelity (including polarization fluxes), but if you notice significant changes in target flux densities—especially for polarization—please report these cases.
+- Peeling involves amplitude and phase self-calibration in each direction and therefore may have weird interactions with instrumental, off-axis leakage (which MeerKAT has a lot of). In my tests, peeling generally preserves source fidelity (including polarization fluxes), but if you notice significant changes in target flux densities, especially for polarization, please report these cases.
 
 **What does 3GC_peel do?**
 
@@ -237,7 +310,7 @@ The 3GC (Third Generation Calibration) "peeling" step is an advanced calibration
 **To run 3GC_peel:**
 
 ```bash
-python setups/3GC_peel.py idia
+python3 setups/3GC_peel.py idia
 ./submit_3GC_peel_job.sh
 ```
 
@@ -259,23 +332,48 @@ For more details on the theory and practice of peeling and direction-dependent c
 
 ## SNAP
 
-This step performs snapshot imaging following the Heywood-ian approach, efficiently making short-timescale images by subtracting a time-averaged model and searching for image-plane variability. Run with:
+This step performs snapshot imaging following the Heywood-ian approach, efficiently producing short-timescale images by subtracting a time-averaged model and searching for image-plane variability. This is particularly useful for detecting transient or variable sources.
+
+**To run SNAP:**
 
 ```bash
-python setups/SNAP.py idia
+python3 setups/SNAP.py idia
 ./submit_snap_job.sh
 ```
 
-Key `config.py` variables (see `Snapshot imaging defaults`):
+**Commonly customized `config.py` variables** (see `# Snapshot imaging defaults` section):
 
-- `SNAP_FIELDS = ''` — Fields to perform snapshot imaging on (default: all fields; specify your target).
-- `SNAP_INTBIN = 1` — Number of dump times per snapshot image (default: 1).
-- `SNAP_INTEND = True` — If true, discards edge bins that don't fit `SNAP_INTBIN` for equispaced snapshots.
-- `SNAP_Pol = True` — Default: IQUV snapshots; set to False for Stokes I only.
+```python
+SNAP_FIELDS = ''  # Fields to perform snapshot imaging on (comma-separated). 
+                  # Leave empty to process all target fields; specify field names 
+                  # to process only specific targets.
+SNAP_CHANNELSOUT = WSC_PCAL_CHANNELSOUT  # Number of frequency channels for snapshot images 
+                                          # (default: same as WSC_PCAL_CHANNELSOUT)
+SNAP_INTBIN = 1   # Number of integration times to bin together per snapshot image 
+                  # (default: 1 = per-integration imaging)
+SNAP_INTEND = True  # If True, discard incomplete bins at the end of the observation 
+                    # to ensure all snapshot images have equal time spacing
+                    # Example: 17 integrations with INTBIN=4 → images 1-16, discard 17
+SNAP_POL = True   # If True, produce full IQUV snapshot images; if False, Stokes I only
+SNAP_IMSIZE = 2560  # Image size in pixels for snapshot images (not the model image)
+SNAP_MODELIDENTIFIER = 'pcalmask'  # Identifier for the model image used for subtraction 
+                                    # (follows oxkat/polkat naming conventions)
+SNAP_MODELMASK = ''  # Path to mask for initial model creation (or leave empty to use 
+                     # existing pcalmask model from 2GC)
+SNAP_DECONV = False  # If True, perform deconvolution during snapshot imaging 
+                     # (rarely necessary for typical variability studies)
+SNAP_DECONVMASK = ''  # Mask to use if SNAP_DECONV=True
+```
 
-Other options are self-explanatory. Reach out if anything is unclear.
+**Optional post-processing:**
 
-Once snapshot finishing running there is an optional setup: `python3 waterhole/setup_movie.py idia` that should make mp4s in you `INTERVAL` directories to visually look for variables in your snapshot images
+Once snapshot imaging completes, you can generate movies to visually inspect for variables:
+
+```bash
+python3 waterhole/setup_movie.py idia
+```
+
+This creates MP4 files in your `INTERVALS/` directories, providing a convenient way to identify variable sources in your snapshot images.
 
 ---
 
