@@ -93,8 +93,7 @@ if primary_tag == '1934':
     # MeerKAT specific crystalball models for 1939 from B.Hugo: https://archive-gw-1.kat.ac.za/public/repository/10.48479/hhhy-4r55/index.htmlV
     if band == 'L':
         syscall = f"crystalball {myms} -f {bpcal_name} -sm {DATA}/crystalball/fitted.PKS1934.LBand.wsclean.cat.txt"
-        #subprocess.run([syscall],shell=True)
-        pass
+        subprocess.run([syscall],shell=True)
 
     elif band == 'UHF':
         syscall = f"crystalball {myms} -f {bpcal_name} -sm {DATA}/crystalball/fitted.PKS1934.UBand.wsclean.cat.txt"
