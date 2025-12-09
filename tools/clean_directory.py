@@ -34,7 +34,12 @@ patterns = [
     f"{cfg.CWD}/*.skel",
     f"{cfg.CWD}/*.html",
     f"{cfg.IMAGES}/*datablind-0*",
-    f"{cfg.IMAGES}/*datablind-MFS*",
+    f"{cfg.IMAGES}/*datablind-0*",
+    f"{cfg.IMAGES}/*datablind-MFS-*image.fits",
+    f"{cfg.IMAGES}/*datablind-MFS-*residual.fits",
+    f"{cfg.IMAGES}/*datablind-MFS-*model.fits",
+    f"{cfg.IMAGES}/*datablind-MFS-*dirty.fits",
+    f"{cfg.IMAGES}/*datablind-MFS-*psf.fits",
     f"{cfg.IMAGES}/*datamask-0*",
     f"{cfg.IMAGES}/*datamask-MFS*",
     f"{cfg.IMAGES}/*uniform-0*",
@@ -42,7 +47,7 @@ patterns = [
     f"{cfg.IMAGES}/*uniform-MFS-*model*",
     f"{cfg.IMAGES}/*uniform-MFS-*dirty*",
     f"{cfg.IMAGES}/*uniform-MFS-*psf*",
-    f"{cfg.IMAGES}/*pcalmaskv0*",
+    f"{cfg.IMAGES}/*intermask*",
     f"{cfg.IMAGES}/*pcalmask-0*",
     f"{cfg.IMAGES}/*pcalmask-MFS-*residual*",
     f"{cfg.IMAGES}/*pcalmask-MFS-*model*",
@@ -61,6 +66,7 @@ patterns = [
     f"{cfg.INTERVALS}/*psf*",
     f"{cfg.INTERVALS}/*modelsub*.fits",
     f"{cfg.INTERVALS}/*-psf*.fits",
+    f"{cfg.RESULTS}/meerkat_gps_data",
 ]
 
 # Run deletions

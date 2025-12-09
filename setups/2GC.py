@@ -71,9 +71,13 @@ def main():
     if not cfg.WSC_TAPERMASK:
         tukeytaper = False
         minuvl = ''
+        maxuvl = ''
+        print(gen.col('UV Range')+f'Full UV range will be used for masking/self-calibration')
     else:
         tukeytaper = cfg.WSC_TUKEYTAPER
         minuvl = cfg.WSC_MINUVL   
+        maxuvl = cfg.WSC_MAXUVL
+        print(gen.col('UV Range')+f'Restricted UV range will be used for masking/self-calibration: [{minuvl}, {maxuvl}]')
 
     # ------------------------------------------------------------------------------
     #
@@ -171,11 +175,13 @@ def main():
                         pol = 'I',
                         intervalsout = False,
                         mfweight = True,
-                        localrms = False,
-                        automask = 10.0,
-                        autothreshold = 3.0,
+                        localrms = cfg.WSC_LOCALRMS_BLIND,
+                        automask = cfg.WSC_AUTOMASK_BLIND,
+                        autothreshold = cfg.WSC_AUTOTHRESHOLD_BLIND,
+                        threshold = cfg.WSC_THRESHOLD_BLIND,
                         tukeytaper=tukeytaper,
                         minuvl = minuvl,
+                        maxuvl = maxuvl,
                         absmem = absmem)
                 for call in imcall: 
                     syscall += prefix + call + '\n\n'
@@ -218,6 +224,7 @@ def main():
                     intervalsout = False,
                     tukeytaper=tukeytaper,
                     minuvl = minuvl,
+                    maxuvl = maxuvl,
                     nomodel = True,
                     sourcelist = False,
                     absmem = absmem)
@@ -293,9 +300,14 @@ def main():
             step['dependency'] = n - 1
             step['id'] = 'CL2GC'+code
             syscall = CONTAINER_RUNNER + QUARTICAL_CONTAINER+' ' if USE_SINGULARITY else ''
+            extra_args = f'output.gain_directory={gain_outdir_2GC} output.log_directory={log_outdir_2GC}'
+            if maxuvl != '' or minuvl != '':
+                minuv_val = minuvl if minuvl != '' else '0'
+                maxuv_val = maxuvl if maxuvl != '' else '0'
+                extra_args += f' input_ms.select_uv_range=[{minuv_val},{maxuv_val}]'
             syscall += gen.generate_syscall_quartical(yaml = cfg.CAL_2GC_YAML,
                     myms = myms,
-                    extra_args = f'output.gain_directory={gain_outdir_2GC} output.log_directory={log_outdir_2GC}')
+                    extra_args = extra_args)
             step['syscall'] = syscall
             steps.append(step)
             n += 1
@@ -389,6 +401,7 @@ def main():
                     mfweight=True,
                     tukeytaper=False,
                     minuvl = '',
+                    maxuvl = '',
                     pol='I',
                     sourcelist = False,
                     absmem = absmem)

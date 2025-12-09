@@ -739,19 +739,18 @@ def generate_syscall_wsclean(mslist,
     # Add option to split the deconvolution into IV and QU steps
     # Sources with large rotation measures may not want polynomial fitting to the QU channels
     if splitpol and pol != 'I':
-        spectralpol = ''
-
-        pol_QU = pol.replace('I', '').replace('V','')
+        pol_IQU = pol.replace('V','')
         pol_IV  = pol.replace('Q', '').replace('U','')
 
+        spectralpol_IV = ''
         if fitspectralpol != 0:
-            spectralpol = '-fit-spectral-pol '+str(fitspectralpol) + ' '
+            spectralpol_IV = '-fit-spectral-pol '+str(fitspectralpol) + ' '
 
-        joinpol_QU = ''
+        joinpol_IQU = ''
         squarepol = ''
 
-        if joinpolarizations and len(pol.replace('I', '').replace('V','')) >= 2:
-            joinpol_QU     = '-join-polarizations '
+        if joinpolarizations and len(pol.replace('V','')) >= 2:
+            joinpol_IQU     = '-join-polarizations '
             if squarepolarizations:
                 squarepol = '-squared-channel-joining '    
 
@@ -763,8 +762,8 @@ def generate_syscall_wsclean(mslist,
         syscall_arr += syscall_arr
 
         for _k in range(k):
-            syscall_arr[_k] += f'-pol {pol_IV} {spectralpol} {joinpol_IV} '
-            syscall_arr[_k + k] += f'-pol {pol_QU} {joinpol_QU} {squarepol} '
+            syscall_arr[_k] += f'-pol {pol_IQU} {joinpol_IQU} {squarepol} '
+            syscall_arr[_k + k] += f'-pol {pol_IV} {spectralpol_IV} {joinpol_IV} '
 
     else:
         joinpol = ''

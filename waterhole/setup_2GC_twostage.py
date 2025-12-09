@@ -71,9 +71,13 @@ def main():
     if not cfg.WSC_TAPERMASK:
         tukeytaper = False
         minuvl = ''
+        maxuvl = ''
+        print(gen.col('UV Range')+f'Full UV range will be used for masking/self-calibration')
     else:
         tukeytaper = cfg.WSC_TUKEYTAPER
-        minuvl = cfg.WSC_MINUVL   
+        minuvl = cfg.WSC_MINUVL
+        maxuvl = cfg.WSC_MAXUVL
+        print(gen.col('UV Range')+f'Restricted UV range will be used for masking/self-calibration: [{minuvl}, {maxuvl}]')   
 
     # ------------------------------------------------------------------------------
     #
@@ -120,6 +124,7 @@ def main():
             # Image prefixes
             img_prefix = IMAGES+f'/img_{myms}_datablind'
             data_img_prefix = IMAGES+f'/img_{myms}_datamask'
+            inter_img_prefix = IMAGES+f'/img_{myms}_intermask'
             pcal_img_prefix = IMAGES+f'/img_{myms}_pcalmask'
             uniform_img_prefix = IMAGES+f'/img_{myms}_uniform'
 
@@ -171,11 +176,13 @@ def main():
                         pol = 'I',
                         intervalsout = False,
                         mfweight = True,
-                        localrms = False,
-                        automask = 10.0,
-                        autothreshold = 3.0,
+                        localrms = cfg.WSC_LOCALRMS_BLIND,
+                        automask = cfg.WSC_AUTOMASK_BLIND,
+                        autothreshold = cfg.WSC_AUTOTHRESHOLD_BLIND,
+                        threshold = cfg.WSC_THRESHOLD_BLIND,
                         tukeytaper=tukeytaper,
                         minuvl = minuvl,
+                        maxuvl = maxuvl,
                         absmem = absmem)
                 for call in imcall: 
                     syscall += prefix + call + '\n\n'
@@ -217,6 +224,7 @@ def main():
                     intervalsout = False,
                     tukeytaper=tukeytaper,
                     minuvl = minuvl,
+                    maxuvl = maxuvl,
                     automask = cfg.WSC_SHALLOWMASK,
                     nomodel = True,
                     sourcelist = False,
@@ -266,16 +274,21 @@ def main():
             step['dependency'] = n - 1
             step['id'] = 'C02G2'+code
             syscall = CONTAINER_RUNNER + QUARTICAL_CONTAINER+' ' if USE_SINGULARITY else ''
+            extra_args = f'output.gain_directory={gain_outdir_2GC} output.log_directory={log_outdir_2GC}'
+            if maxuvl != '' or minuvl != '':
+                minuv_val = minuvl if minuvl != '' else '0'
+                maxuv_val = maxuvl if maxuvl != '' else '0'
+                extra_args += f' input_ms.select_uv_range=[{minuv_val},{maxuv_val}]'
             syscall += gen.generate_syscall_quartical(yaml = cfg.CAL_2GC_YAML,
                     myms = myms,
-                    extra_args = f'output.gain_directory={gain_outdir_2GC} output.log_directory={log_outdir_2GC}')
+                    extra_args = extra_args)
             step['syscall'] = syscall
             steps.append(step)
             n += 1
 
             step = {}
             step['step'] = n
-            step['comment'] = f'Run wsclean, masked deconvolution of the CORRECTED_DATA (self-calibrated, v0) for {targetname}'
+            step['comment'] = f'Run wsclean, masked deconvolution of the CORRECTED_DATA (self-calibrated, stage 1) for {targetname}'
             step['dependency'] = n - 1
             step['id'] = 'WSCMI'+code
             step['slurm_config'] = cfg.SLURM_WSCLEAN
@@ -284,10 +297,13 @@ def main():
             syscall = ''
             prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
             imcall = gen.generate_syscall_wsclean(mslist = [myms],
-                    imgname = pcal_img_prefix + 'v0',
+                    imgname = inter_img_prefix,
                     datacol = 'CORRECTED_DATA',
                     mask = mask,
                     chanout = cfg.WSC_DMASK_CHANNELSOUT,
+                    tukeytaper=tukeytaper,
+                    minuvl = minuvl,
+                    maxuvl = maxuvl,
                     nomodel=True,
                     sourcelist = False,
                     absmem = absmem)
@@ -297,33 +313,32 @@ def main():
             steps.append(step)
             n += 1
 
-            if cfg.WSC_MAX_CHANNELS < cfg.WSC_DMASK_CHANNELSOUT or cfg.WSC_HOMOGENIZEBEAM:
+            if cfg.WSC_MAX_CHANNELS < cfg.WSC_DMASK_CHANNELSOUT:
                 step = {}
                 step['step'] = n
-                step['comment'] = f'Homogenize the PCAL resolution across frequency channels'
+                step['comment'] = f'Fix image naming for INTER images'
                 step['dependency'] = n - 1
-                step['id'] = 'HOCMI' + code
+                step['id'] = 'FXCMI' + code
                 step['slurm_config'] = cfg.SLURM_WSCLEAN
                 step['pbs_config'] = cfg.PBS_WSCLEAN
                 prefix = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
-                syscall =  prefix + f'python3 {cfg.TOOLS}/fix_image_naming.py {cfg.WSC_DMASK_CHANNELSOUT} {pcal_img_prefix}v0\n\n'
-                syscall +=  prefix + f'python3 {cfg.TOOLS}/homogenize_beams.py {pcal_img_prefix}v0'
+                syscall =  prefix + f'python3 {cfg.TOOLS}/fix_image_naming.py {cfg.WSC_DMASK_CHANNELSOUT} {inter_img_prefix}'
                 step['syscall'] = syscall
                 steps.append(step)
                 n += 1
 
             step = {}
             step['step'] = n
-            step['comment'] = 'Run wsclean-predict on masked deconvolution of the model for source {}'.format(targetname)
+            step['comment'] = 'Run wsclean-predict on intermask model for source {}'.format(targetname)
             step['dependency'] = n - 1 
             step['id'] = 'PRCMI'+code
             step['slurm_config'] = cfg.SLURM_PREDICT
             step['pbs_config'] = cfg.PBS_WSCLEAN
             absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
             prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
-            syscall = prefix + 'python3 '+TOOLS+'/fix_nan_models.py ' + pcal_img_prefix + 'v0\n\n'
+            syscall = prefix + 'python3 '+TOOLS+'/fix_nan_models.py ' + inter_img_prefix + '\n\n'
             syscall += prefix + gen.generate_syscall_predict(msname = myms,
-                    imgname = pcal_img_prefix + 'v0',
+                    imgname = inter_img_prefix,
                     chanout = cfg.WSC_DMASK_CHANNELSOUT,
                     absmem = absmem)
             step['syscall'] = syscall
@@ -336,9 +351,14 @@ def main():
             step['dependency'] = n - 1
             step['id'] = 'CL2GC'+code
             syscall = CONTAINER_RUNNER + QUARTICAL_CONTAINER+' ' if USE_SINGULARITY else ''
+            extra_args = f'output.gain_directory={gain_outdir_2GC} output.log_directory={log_outdir_2GC}'
+            if maxuvl != '' or minuvl != '':
+                minuv_val = minuvl if minuvl != '' else '0'
+                maxuv_val = maxuvl if maxuvl != '' else '0'
+                extra_args += f' input_ms.select_uv_range=[{minuv_val},{maxuv_val}]'
             syscall += gen.generate_syscall_quartical(yaml = cfg.CAL_2GC_YAML,
                     myms = myms,
-                    extra_args = f'output.gain_directory={gain_outdir_2GC} output.log_directory={log_outdir_2GC}')
+                    extra_args = extra_args)
             step['syscall'] = syscall
             steps.append(step)
             n += 1
@@ -404,6 +424,7 @@ def main():
                     mfweight=True,
                     tukeytaper=False,
                     minuvl = '',
+                    maxuvl = '',
                     pol='I',
                     sourcelist = False,
                     absmem = absmem)
