@@ -376,7 +376,7 @@ def main():
                     imgname = peel_img_prefix,
                     datacol = 'CORRECTED_DATA',
                     mask = mask,
-                    chanout = cfg.WSC_IMAGE_CHANNELSOUT,
+                    chanout = cfg.WSC_PCAL_CHANNELSOUT,
                     nomodel=True,
                     sourcelist = False,
                     absmem = absmem)
@@ -386,7 +386,7 @@ def main():
             steps.append(step)
             n += 1
 
-            if cfg.WSC_MAX_CHANNELS < cfg.WSC_IMAGE_CHANNELSOUT or cfg.WSC_HOMOGENIZEBEAM:
+            if cfg.WSC_MAX_CHANNELS < cfg.WSC_PCAL_CHANNELSOUT or cfg.WSC_HOMOGENIZEBEAM:
                 step = {}
                 step['step'] = n
                 step['comment'] = f'Homogenize the PCAL resolution across frequency channels'
@@ -395,7 +395,7 @@ def main():
                 step['slurm_config'] = cfg.SLURM_WSCLEAN
                 step['pbs_config'] = cfg.PBS_WSCLEAN
                 prefix = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
-                syscall =  prefix + f'python3 {cfg.TOOLS}/fix_image_naming.py {cfg.WSC_IMAGE_CHANNELSOUT} {peel_img_prefix}\n\n'
+                syscall =  prefix + f'python3 {cfg.TOOLS}/fix_image_naming.py {cfg.WSC_PCAL_CHANNELSOUT} {peel_img_prefix}\n\n'
                 syscall +=  prefix + f'python3 {cfg.TOOLS}/homogenize_beams.py {peel_img_prefix}'
                 step['syscall'] = syscall
                 steps.append(step)
@@ -416,11 +416,11 @@ def main():
                     if cfg.WSC_INTERVALSOUT:
                         for t in range(cfg.WSC_INTERVALSOUT):
                             images.append(f'{peel_img_prefix}-t{t:04d}-MFS{stoke}-image.fits')
-                            if cfg.WSC_MAX_CHANNELS < cfg.WSC_IMAGE_CHANNELSOUT or cfg.WSC_HOMOGENIZEBEAM:
+                            if cfg.WSC_MAX_CHANNELS < cfg.WSC_PCAL_CHANNELSOUT or cfg.WSC_HOMOGENIZEBEAM:
                                 images.append(f'{peel_img_prefix}-t{t:04d}-MFS{stoke}-image.homogenized.fits')
                     else:
                         images.append(f'{peel_img_prefix}-MFS{stoke}-image.fits')
-                        if cfg.WSC_MAX_CHANNELS < cfg.WSC_IMAGE_CHANNELSOUT or cfg.WSC_HOMOGENIZEBEAM:
+                        if cfg.WSC_MAX_CHANNELS < cfg.WSC_PCAL_CHANNELSOUT or cfg.WSC_HOMOGENIZEBEAM:
                             images.append(f'{peel_img_prefix}-MFS{stoke}-image.homogenized.fits')
                 for image in images:
                     syscall += CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''

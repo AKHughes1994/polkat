@@ -38,13 +38,30 @@ def flush_fits(newimage,fitsfile):
 
 def main():
 
-    # Read in directory
-    if len(sys.argv) != 2:
-        sys.exit('ERROR: Please include directory to parse for images (e.g., IMAGES or INTERVALS)')
+    # Read in arguments
+    if len(sys.argv) < 2 or len(sys.argv) > 3:
+        sys.exit('ERROR: Usage: python make_pol_images.py <directory> [target_name]\n'
+                 '  directory   - Directory to parse for images (e.g., IMAGES or INTERVALS)\n'
+                 '  target_name - (Optional) Target name to filter images')
     
-    directory = sys.argv[-1]
+    directory = sys.argv[1]
+    target_name = sys.argv[2] if len(sys.argv) == 3 else None
     
-    for image_Q in sorted(glob.glob(directory + '/*-Q-*image.fits') + glob.glob(directory + '/*-Q-*image.homogenized.fits')):
+    # Validate directory exists
+    if not os.path.isdir(directory):
+        sys.exit(f'ERROR: Directory "{directory}" does not exist')
+    
+    # Build glob patterns based on whether target_name is provided
+    if target_name:
+        pattern1 = f'{directory}/*{target_name}*-Q-*image.fits'
+        pattern2 = f'{directory}/*{target_name}*-Q-*image.homogenized.fits'
+        msg(f'Searching for images matching target: {target_name}')
+    else:
+        pattern1 = f'{directory}/*-Q-*image.fits'
+        pattern2 = f'{directory}/*-Q-*image.homogenized.fits'
+        msg(f'Searching for all images in: {directory}')
+    
+    for image_Q in sorted(glob.glob(pattern1) + glob.glob(pattern2)):
 
         # Get the other image names
         image_U = image_Q.replace('-Q-', '-U-')

@@ -449,11 +449,11 @@ def main():
             if cfg.WSC_POL != 'I':
                 step = {}
                 step['step'] = n
-                step['comment'] = 'Make Polarization Intensity Images'
+                step['comment'] = 'Make Polarization Intensity Images for '+targetname
                 step['dependency'] = n - 1
                 step['id'] = 'MKLPI'+code
                 syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
-                syscall += f"python3 {cfg.TOOLS}/make_pol_images.py {cfg.IMAGES}"
+                syscall += f"python3 {cfg.TOOLS}/make_pol_images.py {cfg.IMAGES} {targetname}"
                 step['syscall'] = syscall
                 steps.append(step)
                 n += 1
