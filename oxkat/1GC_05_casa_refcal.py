@@ -682,7 +682,7 @@ for i in range(0,len(pcal_names)):
         solint='inf',
         calmode='a',
         minsnr=3,
-        gaintable=[ktab, gptab0, bptab, dftab],
+        gaintable=[ktab, gptab, bptab, dftab],
         gainfield=[bpcal_name, pcal, bpcal_name, bpcal_name],
         interp=['linear', 'linear', 'linear', 'linear'],
         append=True)
