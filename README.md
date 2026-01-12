@@ -61,7 +61,7 @@ Assume a Linux-based OS (e.g., Ubuntu).
    ```bash
    mkdir working_directory
    cd working_directory
-   git clone -b polkat_casa https://github.com/AKHughes1994/polkat.git
+   git clone -b polkat_QC_selfcal https://github.com/AKHughes1994/polkat.git
    ln -s /idia/raw/point/to/your/file.ms .
    ```
 
