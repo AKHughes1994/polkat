@@ -63,14 +63,14 @@ HIPPO_CONTAINER_PATH = None
 NODE_CONTAINER_PATH = [HOME+'/containers/', '/mnt/ephem/containers']
 
 
-PYTHON3_PATTERN = 'polkat-0.1.2'
-CASA_PATTERN = 'polkat-0.1.2'
-QUARTICAL_PATTERN = 'polkat-0.1.2'
-WSCLEAN_PATTERN = 'polkat-0.1.2'
-SHADEMS_PATTERN = 'polkat-0.1.2'
+PYTHON3_PATTERN = 'polkat-0.2.1'
+CASA_PATTERN = 'polkat-0.2.1'
+QUARTICAL_PATTERN = 'polkat-0.2.1'
+WSCLEAN_PATTERN = 'polkat-0.2.1'
+SHADEMS_PATTERN = 'polkat-0.2.1'
 ALBUS_PATTERN = 'polkat-albus'
-TRICOLOUR_PATTERN = 'polkat-0.1.2'
-MOVIE_PATTERN = 'polkat-0.1.2'
+TRICOLOUR_PATTERN = 'polkat-0.2.1'
+MOVIE_PATTERN = 'polkat-0.2.1'
 
 
 # ------------------------------------------------------------------------
@@ -243,7 +243,7 @@ CAL_1GC_PRIMARY_MODEL = 'auto'       # setjy = use setjy component model only
 
 # GBK settings
 CAL_1GC_DELAYCUT = 2.5               # [now defunct] Jy at central freq. Do not solve for K on secondaries weaker than this
-CAL_1GC_FILLGAPS = 24                # Maximum channel gap over which to interpolate bandpass solutions
+CAL_1GC_FILLGAPS = 0                # Maximum channel gap over which to interpolate bandpass solutions
 
 # Band specific options
 

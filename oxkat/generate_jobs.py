@@ -17,9 +17,9 @@ from oxkat import config as cfg
 def preamble():
     print('---------------------+----------------------------------------------------------')
     print('                     |')
-    print('                     | v0.1')  
+    print('                     | v1.0')  
     print('   p o l  k  a  t    | The poorly coded, younger brother of oxkat:')
-    print('                     | Feel free to email questions/concerns to:')
+    print('      C A S A        | Feel free to email questions/concerns to:')
     print('                     | hughesakh@gmail.com')
     print('                     | fraser.cowie@physics.ox.ac.uk')
     print('                     |')
@@ -407,6 +407,11 @@ def generate_syscall_casa(casascript,casalogfile='',extra_args=''):
 
     return syscall
 
+def generate_syscall_casa_short(casascript):
+
+    syscall = 'casa --nogui -c ' + casascript
+    return syscall
+
 
 def generate_syscall_cubical(parset,myms,extra_args=''):
 
@@ -465,16 +470,22 @@ def generate_syscall_predict(msname,
 #                            cellsize = cfg.WSC_CELLSIZE,
 #                            predictchannels = cfg.WSC_PREDICTCHANNELS,
                             mem = cfg.WSC_MEM,
-                            absmem = cfg.WSC_ABSMEM):
+                            absmem = cfg.WSC_ABSMEM,
+                            parallelreordering = cfg.WSC_PARALLELREORDERING,
+                            parallelgridding = cfg.WSC_PARALLELGRIDDING):
 
     # Generate system call to run wsclean in predict mode
     syscall = 'wsclean '
     syscall += '-predict '
     syscall += '-field '+str(field)+' '
     syscall += '-pol ' + str(pol) + ' '
+
+    if parallelreordering != 0:
+        syscall += '-parallel-reordering '+str(parallelreordering)+' '
+    if parallelgridding != 0:
+        syscall += '-parallel-gridding '+str(parallelgridding)+' '
     if intervalsout:
         syscall += '-intervals-out ' + str(intervalsout) + ' '
-
     syscall += '-channels-out '+str(chanout)+' '
     syscall += '-name '+imgname+' '
     if absmem < 0:
@@ -484,7 +495,7 @@ def generate_syscall_predict(msname,
 #    syscall += '-predict-channels '+str(predictchannels)+' '
     syscall += msname + ' '
 
-    return syscall 
+    return syscall
 
 def generate_syscall_wsclean(mslist,
                           imgname,

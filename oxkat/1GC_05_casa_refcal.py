@@ -65,26 +65,44 @@ flagmanager(vis=myms,
 # ------- Set BP calibrator models
 
 if primary_tag == '1934':
-    if band != 'L':
+    
+    # MeerKAT specific crystalball models for 1939 from B.Hugo: https://archive-gw-1.kat.ac.za/public/repository/10.48479/hhhy-4r55/index.htmlV
+    if band == 'L':
+        syscall = f"crystalball {myms} -f {bpcal_name} -sm {DATA}/crystalball/fitted.PKS1934.LBand.wsclean.cat.txt"
+        subprocess.run([syscall],shell=True)
+
+    elif band == 'UHF':
+        syscall = f"crystalball {myms} -f {bpcal_name} -sm {DATA}/crystalball/fitted.PKS1934.UBand.wsclean.cat.txt"
+        subprocess.run([syscall],shell=True)
+
+    else:
         setjy(vis=myms,
             field=bpcal_name,
             standard='Stevens-Reynolds 2016',
             scalebychan=True,
             usescratch=True)
-    else:
-        syscall = f"crystalball {myms} -f {bpcal_name} -sm {DATA}/crystalball/fitted.PKS1934.LBand.wsclean.cat.txt"
+
+elif primary_tag == '0408':
+
+    # MeerKAT specific crystalball models for 0408 from B.Hugo: https://archive-gw-1.kat.ac.za/public/repository/10.48479/ez63-vx81/index.html
+    if band == 'L':
+        syscall = f"crystalball {myms} -f {bpcal_name} -sm {DATA}/crystalball/fitted.PKS0407.LBand.wsclean.cat.txt"
+        subprocess.run([syscall],shell=True)
+
+    elif band == 'UHF':
+        syscall = f"crystalball {myms} -f {bpcal_name} -sm {DATA}/crystalball/fitted.PKS0407.UBand.wsclean.cat.txt"
         subprocess.run([syscall],shell=True)
     
-elif primary_tag == '0408':
-    bpcal_mod = CAL_1GC_0408_MODEL
-    setjy(vis=myms,
-        field=bpcal_name,
-        standard='manual',
-        fluxdensity=bpcal_mod[0],
-        spix=bpcal_mod[1],
-        reffreq=bpcal_mod[2],
-        scalebychan=True,
-        usescratch=True)
+    else:
+        bpcal_mod = CAL_1GC_0408_MODEL
+        setjy(vis=myms,
+            field=bpcal_name,
+            standard='manual',
+            fluxdensity=bpcal_mod[0],
+            spix=bpcal_mod[1],
+            reffreq=bpcal_mod[2],
+            scalebychan=True,
+            usescratch=True)
 
 elif primary_tag == 'other':
     setjy(vis=myms,
@@ -620,7 +638,7 @@ if pacal_name != '':
         uvrange = myuvrange,
         caltable = xftab,
         refant = str(ref_ant),
-        solint = 'inf,64ch', # 16-channels-across in frequency
+        solint = 'inf,64ch', # 16-channels-across in frequency (assumes 1024 channels)
         poltype='Xf',
         combine = '',
         gaintable=[ktab,gptab,bptab,gatab,dftab, kcross],
@@ -742,7 +760,7 @@ if pacal_name == '':
             # applymode='calflagstrict',
             field = pcal,
             #calwt = False,
-            parang = True,
+            parang = False,
             gainfield = [pcal,pcal, bpcal_name, pcal, bpcal_name],
             interp = ['linear','linear','linear','linear','nearest'],
             flagbackup=False)
@@ -758,7 +776,7 @@ if pacal_name == '':
                 gaintable = [ktab,gptab,bptab,ftab,dftab],
                 field=target,
                 #calwt=False,
-                parang=True,
+                parang=False,
                 gainfield = [related_pcal, related_pcal, bpcal_name, related_pcal, bpcal_name],
                 interp = ['linear','linear','linear','linear','nearest'],
                 flagbackup=False)
@@ -847,6 +865,16 @@ for i in range(0,len(targets)):
         mode='tfcrop',
         datacolumn='corrected',
         field=target, flagbackup=False)
+
+# ---- Apply aggressive flags if desired
+if CAL_1GC_AGGRESSIVE_FLAGS and CAL_1GC_BL_FREQS != []:
+
+    flagspw = ','.join(CAL_1GC_BL_FREQS)
+
+    flagdata(vis = myms,
+        mode = 'manual',
+        spw = flagspw,
+        flagbackup=False)
 
 # ---- Save flags
 

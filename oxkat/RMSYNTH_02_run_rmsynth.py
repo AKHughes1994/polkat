@@ -12,7 +12,7 @@ def main():
     fnames = glob.glob(cfg.RESULTS + '/*_rmsynth.txt')
 
     for fname in fnames:
-        syscall = f'rmsynth1d {fname} -S -v -o 4'
+        syscall = f'rmsynth1d {fname} -S -v -o 4 -l 2500'
         subprocess.run([syscall], shell=True)
 
         syscall = f'rmclean1d {fname} -S -v'

@@ -43,7 +43,7 @@ def get_imfit_values(fname, image, xpix, ypix):
 
     # Get the numnber of components
     n_comp = len(xpix)
-   
+  
     # For single components
     if n_comp == 1: 
         x = xpix[0]
@@ -62,9 +62,9 @@ def get_imfit_values(fname, image, xpix, ypix):
         # Take either twice the maximum distance or 10 times the bmaj axis as the bounding region radius
         x = xpix[0]
         y = ypix[0]
-        r = np.amax((10 * bmaj, 2.0 * max_dist))
+        r = np.amax((5 * bmaj, 2.0 * max_dist))
         src_region = f'circle[[{x}pix,{y}pix],{r}arcsec]'
-    
+   
     return imfit(image, estimates = fname, region = src_region)
     
     
@@ -182,7 +182,6 @@ def check_position(fname, image, xpix, ypix, snr_thresh = 5.0, P_image = False, 
     bmin = imhead(image, mode='get', hdkey='bmin')['value']
     bpa  = imhead(image, mode='get', hdkey='bpa')['value']
 
-
     for x, y in zip(xpix, ypix):
         region = f'circle[[{x}pix,{y}pix],{2 * bmaj}arcsec]'
 
@@ -195,6 +194,7 @@ def check_position(fname, image, xpix, ypix, snr_thresh = 5.0, P_image = False, 
 
         # If its a P-image don't use the image plane noise as the check criteria as it is (very) non-gaussian
         rms = get_imstat_values(image, x, y, manual_rms_region = manual_rms_region)[3]
+        
         if P_image is True:
             # msg(f'Check image: {image}')
             image_Q = image.replace('-Plin-', '-Q-').replace('-Ptot-', '-Q-')
@@ -204,13 +204,16 @@ def check_position(fname, image, xpix, ypix, snr_thresh = 5.0, P_image = False, 
             rms = np.amax((ims_Q[3],ims_U[3]))
         if fix_additional_comps is True and k > 0:
             fix_var.append('xyabp')
+            msg(f'Fixing position of component {k} because manual flag set: {image}')
         elif fix_additional_comps is True and k == 0 and test_flux > snr_thresh * rms:
             fix_var.append('abp')
+            msg(f'Free fitting position of component {k} with S/N = {test_flux/rms:.2f}: {image}')
         elif fix_additional_comps is False and test_flux > snr_thresh * rms:
             fix_var.append('abp')
+            msg(f'Free fitting position of component {k} with S/N = {test_flux/rms:.2f}: {image}')
         else:
             fix_var.append('xyabp')
-            msg(f'Fixing position of image: {image}')
+            msg(f'Fixing position of component {k} due to S/N = {test_flux/rms:.2f}: {image}')
         k+=1
 
     # Make the estimate file
@@ -283,32 +286,32 @@ def extract_polarization_properties(src_name,
     output_dictionary['CHAN'] = {}
 
     # Check if the MFS image exists for the suffix, if not, use homgenized one
-    og_src_im_suffix = src_im_suffix[:]
+    mfs_im_suffix = src_im_suffix[:]
     if glob.glob(f'{src_im_identifier}*-MFS*{src_im_suffix}') == []:
         msg(f'WARNING: {src_im_suffix} does not exist in MFS image due to channel splitting; Using: image.homogenized.fits')
-        src_im_suffix = 'image.homogenized.fits' # if this doesn't work you don't have the images required for this analysis
+        mfs_im_suffix = 'image.homogenized.fits' # if this doesn't work you don't have the images required for this analysis
     
     # Determine if there are multiple stokes parameters or if its strictly Stokes I (suffixes will be, e.g., MFS-image)
-    if glob.glob(f'{src_im_identifier}*-MFS-I-{src_im_suffix}') == []:
+    if glob.glob(f'{src_im_identifier}*-MFS-I-{mfs_im_suffix}') == []:
         only_intensity = True
     else:
         only_intensity = False
     
     # Get unique prefixes, this will now iterate in time (if applicable) if not it will just return arrays of length 1:
-    prefix_arr = glob.glob(f'{src_im_identifier}*-MFS*{src_im_suffix}')
+    prefix_arr = glob.glob(f'{src_im_identifier}*-MFS*{mfs_im_suffix}')
     prefix_arr = sorted(list(set([x.split('-MFS')[0] for x in prefix_arr])))
     
-    for k, prefix in enumerate(prefix_arr):
+    for k, prefix in enumerate(prefix_arr[:]):
     
         # Extract the MFS image parameters
         msg(f'Fitting MFS image(s) for prefix {k}: {prefix}')
         
         # This is to get the image into an array
         if only_intensity:
-            MFS_images = [f'{prefix}-MFS-{src_im_suffix}']
+            MFS_images = [f'{prefix}-MFS-{mfs_im_suffix}']
         else:
             # The sorted function will make order the images as I, P, Q, U, V
-            MFS_images = glob.glob(f'{prefix}-MFS-*-{src_im_suffix}')
+            MFS_images = glob.glob(f'{prefix}-MFS-*-{mfs_im_suffix}')
             if pol_flag:
                 MFS_images = sorted([im for im in MFS_images if '-Ptot-' not in im])
             else:
@@ -337,7 +340,7 @@ def extract_polarization_properties(src_name,
         # First fit Stokes I -- also extract pixel coordinates
         fix = []
         for z, boolean in enumerate(src_ulims):        
-            msg(f'For source {src_name} component {k} has upper limit = {boolean}')
+            msg(f'For source {src_name} component {z} has upper limit = {boolean}')
             if boolean:
                 fix.append('xyabp')
             else:
@@ -345,12 +348,12 @@ def extract_polarization_properties(src_name,
     
         make_estimate('estimate_I.txt', MFS_images[0], src_ra_pix, src_dec_pix,  fix)
         MFS_I_imfit = get_imfit_values('estimate_I.txt', MFS_images[0], src_ra_pix, src_dec_pix)
-       
+
         # Get number of components
         components = [key for key in MFS_I_imfit['results'].keys() if 'component' in key]              
         MFS_I_ra_pix = [MFS_I_imfit['results'][key]['pixelcoords'][0] for key in components]
         MFS_I_dec_pix = [MFS_I_imfit['results'][key]['pixelcoords'][1] for key in components]
-        
+       
         # Initialize arrays if they don't exist, else append values to existsing arrays
         for z, component in enumerate(components):
         
@@ -362,7 +365,7 @@ def extract_polarization_properties(src_name,
             RA_pix_I = MFS_I_imfit['results'][component]['pixelcoords'][0]
             DEC_pix_I = MFS_I_imfit['results'][component]['pixelcoords'][1]
             rms_I = get_imstat_values(MFS_images[0], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3
-        
+       
             if component not in output_dictionary['MFS']:
 
                 output_dictionary['MFS'][component] = {}
@@ -394,11 +397,36 @@ def extract_polarization_properties(src_name,
         
         # Next fit Polarization intensity and check if source is bright enough to allow positions to vary freely
         if not only_intensity:
-            check_position('estimate_P.txt', MFS_images[1], MFS_I_ra_pix, MFS_I_dec_pix, P_image = True, fix_additional_comps = fix_additional_comps, manual_rms_region = manual_rms_region)
-            MFS_P_imfit  = get_imfit_values('estimate_P.txt', MFS_images[1], MFS_I_ra_pix, MFS_I_dec_pix)
-            MFS_P_ra_pix = [MFS_P_imfit['results'][key]['pixelcoords'][0] for key in components]
-            MFS_P_dec_pix = [MFS_P_imfit['results'][key]['pixelcoords'][1] for key in components]   
             
+            # Run a first pass
+            try:
+                check_position('estimate_P.txt', MFS_images[1], MFS_I_ra_pix, MFS_I_dec_pix, P_image = True, fix_additional_comps = False, manual_rms_region = manual_rms_region)
+                MFS_P_imfit  = get_imfit_values('estimate_P.txt', MFS_images[1], MFS_I_ra_pix, MFS_I_dec_pix)
+                MFS_P_ra_pix = [MFS_P_imfit['results'][key]['pixelcoords'][0] for key in components]
+                MFS_P_dec_pix = [MFS_P_imfit['results'][key]['pixelcoords'][1] for key in components]   
+           
+                # If any of the P components are very far from Stokes I refit fixing the additional comps 
+                dist_check = False
+                dist_max = 0.0
+                for z in range(len(MFS_P_ra_pix)):
+                    dist = ((MFS_I_ra_pix[z] - MFS_P_ra_pix[z]) ** 2 + (MFS_I_dec_pix[z] - MFS_P_dec_pix[z]) ** 2) ** 0.5
+                    if dist > 3.0: # should not be >3 pixels
+                        dist_check = True
+                        if dist > dist_max:
+                            dist_max = dist
+                            
+            except Exception as e:
+                msg(f'Free fitting failed, assuming multi-component fit to complex re-trying fixing the secondary component positions to Stokes I: {e}')
+                dist_max = -1.0
+                dist_check = True
+
+            if dist_check:
+                msg(f'Significant offset between Stokes I and P {dist_max:.1f} pix, re-fitting while fixing multi-component')
+                check_position('estimate_P.txt', MFS_images[1], MFS_I_ra_pix, MFS_I_dec_pix, P_image = True, fix_additional_comps = fix_additional_comps, manual_rms_region = manual_rms_region)
+                MFS_P_imfit  = get_imfit_values('estimate_P.txt', MFS_images[1], MFS_I_ra_pix, MFS_I_dec_pix)
+                MFS_P_ra_pix = [MFS_P_imfit['results'][key]['pixelcoords'][0] for key in components]
+                MFS_P_dec_pix = [MFS_P_imfit['results'][key]['pixelcoords'][1] for key in components]   
+
             # Make estimate and fit for Q/U -- checking against position of Lin. Pol. components
             check_position('estimate_Q.txt', MFS_images[2], MFS_P_ra_pix, MFS_P_dec_pix, P_image = False, fix_additional_comps = fix_additional_comps, manual_rms_region = manual_rms_region)
             MFS_Q_imfit  = get_imfit_values('estimate_Q.txt', MFS_images[2], MFS_P_ra_pix, MFS_P_dec_pix)
@@ -417,9 +445,10 @@ def extract_polarization_properties(src_name,
             MFS_V_dec_pix = [MFS_V_imfit['results'][key]['pixelcoords'][1] for key in components]   
   
             # Once again initialize arrays that don't exist
-            for component in components:
+            for component in components[:]:
             
                 # For ease and readability separate out the parameters for calculations and rms extraction
+                flux_I = MFS_I_imfit['results'][component]['peak']['value'] * 1e3
                 flux_P = MFS_P_imfit['results'][component]['peak']['value'] * 1e3
                 flux_Q = MFS_Q_imfit['results'][component]['peak']['value'] * 1e3
                 flux_U = MFS_U_imfit['results'][component]['peak']['value'] * 1e3
@@ -433,6 +462,7 @@ def extract_polarization_properties(src_name,
                 RA_P   = MFS_P_imfit['results'][component]['shape']['direction']['m0']['value'] * 180 / np.pi
                 DEC_P = MFS_P_imfit['results'][component]['shape']['direction']['m1']['value'] * 180 / np.pi
                 
+                rms_I = get_imstat_values(MFS_images[1], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3                
                 rms_Q = get_imstat_values(MFS_images[2], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3                
                 rms_U = get_imstat_values(MFS_images[3], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3                
                 rms_V = get_imstat_values(MFS_images[4], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3                
@@ -510,7 +540,6 @@ def extract_polarization_properties(src_name,
         # Extract the CHAN image parameters  #
         ###########################
 
-        src_im_suffix = og_src_im_suffix[:]
         msg(f'Fitting CHAN image(s) for prefix {k} with {src_im_suffix}: {prefix}')
 
         # Glob the images
@@ -595,7 +624,7 @@ def extract_polarization_properties(src_name,
                 # Next fit Polarization intensity and check if source is bright enough to allow positions to vary freely
                 if not only_intensity:
 
-                    check_position('estimate_P.txt', CHAN_images[1], CHAN_I_ra_pix, CHAN_I_dec_pix, P_image = True, fix_additional_comps = fix_additional_comps, manual_rms_region = manual_rms_region)
+                    check_position('estimate_P.txt', CHAN_images[1], MFS_P_ra_pix, MFS_P_dec_pix, P_image = True, fix_additional_comps = fix_additional_comps, manual_rms_region = manual_rms_region)
                     CHAN_P_imfit  = get_imfit_values('estimate_P.txt', CHAN_images[1], CHAN_I_ra_pix, CHAN_I_dec_pix)
                     CHAN_P_ra_pix = [CHAN_P_imfit['results'][key]['pixelcoords'][0] for key in components]
                     CHAN_P_dec_pix = [CHAN_P_imfit['results'][key]['pixelcoords'][1] for key in components]   
@@ -624,6 +653,7 @@ def extract_polarization_properties(src_name,
                         DEC_pix_I = CHAN_I_imfit['results'][component]['pixelcoords'][1]
             
                         # For ease and readability separate out the parameters for calculations and rms extraction
+                        flux_I = CHAN_I_imfit['results'][component]['peak']['value'] * 1e3
                         flux_P = CHAN_P_imfit['results'][component]['peak']['value'] * 1e3
                         flux_Q = CHAN_Q_imfit['results'][component]['peak']['value'] * 1e3
                         flux_U = CHAN_U_imfit['results'][component]['peak']['value'] * 1e3
@@ -637,6 +667,7 @@ def extract_polarization_properties(src_name,
                         RA_P   = CHAN_P_imfit['results'][component]['shape']['direction']['m0']['value'] * 180 / np.pi
                         DEC_P = CHAN_P_imfit['results'][component]['shape']['direction']['m1']['value'] * 180 / np.pi
                     
+                        rms_I = get_imstat_values(CHAN_images[0], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3                
                         rms_Q = get_imstat_values(CHAN_images[2], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3                
                         rms_U = get_imstat_values(CHAN_images[3], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3                
                         rms_V = get_imstat_values(CHAN_images[4], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3                
@@ -708,8 +739,9 @@ def extract_polarization_properties(src_name,
                             output_dictionary['CHAN'][component]['LP_EVPA'][k].append(LP_EVPA)
                             output_dictionary['CHAN'][component]['LP_EVPA_err'][k].append(LP_EVPA_err)     
 
-            except Exception as e:
-                msg(f"Error occurred: {e}: Channel likely flagged")
+            except:
+                msg('Fitting Failed: Channel is likely flagged')
+
 
         # Write RM Synthesis files (freq, I, Q, U, dI, dQ, dU)
         if not only_intensity:
@@ -746,8 +778,12 @@ def main():
         pol_flag = True
         
     # Iterate through sources as specified in rmsynth_info.json
-    for k in range(len(rmsynth_info['image_directory']))[:]:      
-    
+    for k in range(len(rmsynth_info['image_directory']))[:]:
+   
+        if not os.path.exists(rmsynth_info['image_directory'][k]):
+            msg('Skipping {} as the directory does not exist'.format(rmsynth_info['image_directory'][k]))
+            continue
+
         # Construct image identifier based on input options
         if rmsynth_info["image_timing"][k]:
             src_im_identifier = cfg.CWD +'/{}/*{}*.ms_{}-t'.format(rmsynth_info["image_directory"][k], 
