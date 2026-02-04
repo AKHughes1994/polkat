@@ -299,6 +299,8 @@ def main():
             step['comment'] = 'Run Quartical self-calibration on the target {}'.format(targetname)
             step['dependency'] = n - 1
             step['id'] = 'CL2GC'+code
+            step['slurm_config'] = cfg.SLURM_WSCLEAN
+            step['pbs_config'] = cfg.PBS_WSCLEAN
             syscall = CONTAINER_RUNNER + QUARTICAL_CONTAINER+' ' if USE_SINGULARITY else ''
             extra_args = f'output.gain_directory={gain_outdir_2GC} output.log_directory={log_outdir_2GC}'
             if maxuvl != '' or minuvl != '':

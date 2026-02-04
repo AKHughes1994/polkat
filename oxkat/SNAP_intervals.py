@@ -126,7 +126,7 @@ def main():
             image_fix = image.replace(image_prefix, image_prefix_fix) # replace it in image name
             suffix = image_fix.split(image_prefix_fix + '-t')[-1] # get suffix with improper t-label number
             suffix_fix = suffix.split('-') 
-            suffix_fix[0] = '{:04d}'.format(int(suffix_fix[0]) + (nint_arr[scan_n - 1] if scan_n > 0 else 0)) # add past ints to t-label
+            suffix_fix[0] = '{:04d}'.format(int(suffix_fix[0]) + (sum(nint_arr[:scan_n]) if scan_n > 0 else 0))
             image_fix = image_fix.replace(suffix, '-'.join(suffix_fix)) # replace t-label in image
             syscall = f'mv {image} {image_fix}'
             subprocess.run([syscall], shell = True)
