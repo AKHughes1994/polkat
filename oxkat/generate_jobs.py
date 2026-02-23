@@ -564,6 +564,7 @@ def generate_syscall_wsclean(mslist,
                           threshold = cfg.WSC_THRESHOLD,
                           autothreshold = cfg.WSC_AUTOTHRESHOLD,
                           automask = cfg.WSC_AUTOMASK,
+                          localrms_strength = cfg.WSC_LOCALRMS_STRENGTH,
                           localrms = cfg.WSC_LOCALRMS,
                           stopnegative = cfg.WSC_STOPNEGATIVE,
                           fitspectralpol = cfg.WSC_FITSPECTRALPOL,
@@ -702,6 +703,7 @@ def generate_syscall_wsclean(mslist,
         syscall += '-auto-threshold '+str(autothreshold)+' '
         if localrms:
             syscall += '-local-rms '
+            syscall += '-local-rms-strength '+str(localrms_strength)+' '
     if threshold:
         syscall += '-threshold '+str(threshold)+' '
 

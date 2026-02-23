@@ -27,7 +27,9 @@ def main():
     if cfg.SNAP_POL:
         pol = 'IQUV'
     
-    syscall='python3 '+ cfg.TOOLS+f'/restore_model.py {model_prefix} {target_prefix} {pol}'        
+    syscall='python3 '+ cfg.TOOLS+f'/restore_model.py {model_prefix} {target_prefix} {pol}'
+    if cfg.SNAP_RESTORE_MFS_ONLY:
+        syscall += ' --mfs-only'
     subprocess.run([syscall], shell=True)
 
 
