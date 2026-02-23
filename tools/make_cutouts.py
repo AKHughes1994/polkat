@@ -16,9 +16,9 @@ def ensure_list(item):
         return [item]
     return item
 
-def create_zoom_cutout(input_file, output_file, zoom_factor=4):
+def create_zoom_cutout(input_file, output_file, cutout_size=1024):
     """
-    Create a zoomed cutout of the central region of a FITS image.
+    Create a cutout of the central region of a FITS image.
     
     Parameters:
     -----------
@@ -26,8 +26,8 @@ def create_zoom_cutout(input_file, output_file, zoom_factor=4):
         Path to input FITS file
     output_file : str
         Path to output FITS file
-    zoom_factor : int
-        Factor by which to reduce image size (default: 4)
+    cutout_size : int
+        Number of pixels for the square cutout (default: 1024)
     """
     
     # Open the FITS file
@@ -49,8 +49,14 @@ def create_zoom_cutout(input_file, output_file, zoom_factor=4):
             raise ValueError(f"Image must have at least 2 dimensions, got {len(shape)}")
         
         # Calculate cutout region (central portion)
-        new_nx = nx // zoom_factor
-        new_ny = ny // zoom_factor
+        new_nx = cutout_size
+        new_ny = cutout_size
+        
+        # Ensure cutout doesn't exceed image dimensions
+        if new_nx > nx:
+            new_nx = nx
+        if new_ny > ny:
+            new_ny = ny
         
         # Ensure even dimensions for clean centering
         if new_nx % 2 != 0:
@@ -105,8 +111,8 @@ def main():
     # Suffix(es) to match - can be string or list of strings  
     suffixes = ['image.fits', 'residual.fits', 'model.fits', 'image.homogenized.fits']
     
-    # Zoom factor (how much to reduce the image size)
-    zoom_factor = 40
+    # Cutout size in pixels (square cutout of this size)
+    cutout_size = 256  # e.g., 256, 512, 1024
     
     # ===========================================================
     
@@ -127,8 +133,8 @@ def main():
             # Create search pattern: *identifier*suffix
             pattern = os.path.join(full_dir, f"*{identifier}*{suffix}")
             
-            # Find matching files
-            matching_files = glob.glob(pattern)
+            # Find matching files, excluding those that already have _zoom in the name
+            matching_files = [f for f in glob.glob(pattern) if '_zoom' not in os.path.basename(f)]
             
             if not matching_files:
                 print(f"No files found matching pattern: {pattern}")
@@ -144,10 +150,12 @@ def main():
                     output_file = os.path.join(full_dir, output_name)
                     
                     # Create zoom cutout
-                    create_zoom_cutout(input_file, output_file, zoom_factor)
+                    create_zoom_cutout(input_file, output_file, cutout_size)
                     
-                    # Commented out command to delete original file
-                    os.remove(input_file)  # Uncomment to delete original file
+                    # Delete original file unless it contains 'MFS-*-image' pattern
+                    base_name = os.path.basename(input_file)
+                    if not ('MFS-' in base_name and '-image' in base_name):
+                        os.remove(input_file)
                     
                 except Exception as e:
                     print(f"Error processing {input_file}: {str(e)}")

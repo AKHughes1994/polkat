@@ -74,6 +74,20 @@ if os.path.isdir(ftab):
 
 # ------- Set BP calibrator models
 
+# Check if MODEL_DATA column exists, if not initialize it
+tb.open(myms)
+if 'MODEL_DATA' not in tb.colnames():
+    tb.close()
+    # Dummy setjy call to initialize non-existing model data column
+    setjy(vis=myms,
+        standard='manual',
+        field=bpcal_name,
+        fluxdensity=[1.0, 0, 0, 0],
+        reffreq='1000MHz',
+        usescratch=True)
+else:
+    tb.close()
+
 if primary_tag == '1934':
     
     # MeerKAT specific crystalball models for 1939 from B.Hugo: https://archive-gw-1.kat.ac.za/public/repository/10.48479/hhhy-4r55/index.htmlV
@@ -668,7 +682,7 @@ for i in range(0,len(pcal_names)):
         solint='inf',
         calmode='a',
         minsnr=3,
-        gaintable=[ktab, gptab0, bptab, dftab],
+        gaintable=[ktab, gptab, bptab, dftab],
         gainfield=[bpcal_name, pcal, bpcal_name, bpcal_name],
         interp=['linear', 'linear', 'linear', 'linear'],
         append=True)
@@ -766,43 +780,120 @@ if pacal_name != '':
         cross_field = [pacal_name, pacal_name]
         cross_interp = ['linear', 'linear']
 
-        # Check if the cross-hand phase is continuos (if not due manual as there is likely a null crossing)
-        if XF_MODE == 'auto':
+        # Always check if the cross-hand phase is continuous per scan
+        # Get the cross-hand phase            
+        tb.open(xftab)
+        gains = tb.getcol('CPARAM')
+        flags = tb.getcol('FLAG')
+        scans = tb.getcol('SCAN_NUMBER')
+        tb.close()
 
-            # Get the cross-hand phase            
-            tb.open(xftab)
-            gains = tb.getcol('CPARAM')
-            flags = tb.getcol('FLAG')
-            gains = np.nanmedian(gains[0,:,:], axis=-1)
-            flags = np.nanmedian(flags[0,:,:], axis=-1).astype(bool)
-            gains = gains[~flags]
-            tb.close()
+        print(f"Gains shape: {gains.shape}")
+        print(f"Unique scans: {np.unique(scans)}")
 
-            # Get continuity
-            phases = np.angle(gains)
+        # Process per scan
+        unique_scans = np.unique(scans)
+        manual_XF_per_scan = {}
 
-            # Calculate differences between adjacent phases
+        for scan in unique_scans:
+            scan_mask = (scans == scan)
+           
+            # Get gains for this scan (median over time axis)
+            scan_gains = np.nanmedian(gains[0, :, scan_mask].T, axis=-1)
+            scan_flags = np.nanmedian(flags[0, :, scan_mask].T, axis=-1).astype(bool)
+            scan_gains = scan_gains[~scan_flags]
+            
+            # Check continuity
+            phases = np.angle(scan_gains)
             phase_diffs = np.diff(phases)
-
-            # Wrap differences to [-π, π] range (shortest path around circle)
             phase_diffs = np.arctan2(np.sin(phase_diffs), np.cos(phase_diffs))
-
-            # Convert to degrees
-            phase_diffs_deg = np.degrees(phase_diffs)
-
-            # Find maximum absolute jump
-            max_jump = np.max(np.abs(phase_diffs_deg))
-
-            # Check against threshold
+            max_jump = np.max(np.abs(np.degrees(phase_diffs)))
+            
             is_continuous = max_jump < XF_AUTO_ANG_JUMP
+            manual_XF_per_scan[scan] = not is_continuous
+            
+            print(f"Scan {scan}: max jump = {max_jump:.2f}°, continuous = {is_continuous}")
 
-            print(f"Maximum phase jump: {max_jump:.2f}°")
-            print(f"Threshold: {XF_AUTO_ANG_JUMP}°")
-            print(f"Phase continuous: {is_continuous}")
+        # Determine which scans are continuous
+        continuous_scans = [scan for scan in unique_scans if not manual_XF_per_scan[scan]]
+        discontinuous_scans = [scan for scan in unique_scans if manual_XF_per_scan[scan]]
 
-            if not is_continuous:
-                print("Detected large phase jump in adjacent bins; solving Xf manually")
+        print("\n" + "="*60)
+        
+        if len(continuous_scans) == len(unique_scans):
+            # Case 1: All scans are continuous
+            print(f"✓ All {len(unique_scans)} scan(s) are phase continuous")
+            print("  Proceeding with standard XF calibration")
+            
+        elif len(continuous_scans) > 0:
+            # Case 2: Some scans are continuous, some are not
+            print(f"✓ {len(continuous_scans)} scan(s) are phase continuous: {continuous_scans}")
+            print(f"✗ {len(discontinuous_scans)} scan(s) failed continuity check: {discontinuous_scans}")
+            
+            # Move bad tables
+            bad_kcross = kcross.replace('.KCROSS', '_bad.KCROSS')
+            bad_xftab = xftab.replace('.Xf', '_bad.Xf')
+            print(f"  Moving original KCROSS table to: {bad_kcross}")
+            shutil.move(kcross, bad_kcross)
+            print(f"  Moving original Xf table to: {bad_xftab}")
+            shutil.move(xftab, bad_xftab)
+            
+            # Remake KCROSS with only continuous scans
+            print(f"  Remaking KCROSS table using only continuous scans: {continuous_scans}")
+            gaincal(vis = myms,
+                field = pacal_name,
+                scan = ','.join(map(str, continuous_scans)),
+                caltable = kcross,
+                refant = str(ref_ant),
+                solint = 'inf',
+                gaintype='KCROSS',
+                parang = True,
+                gaintable=[ktab,gptab,bptab,gatab,dftab],
+                gainfield=[pacal_name, pacal_name,bpcal_name, pacal_name, bpcal_name],
+                interp = ['linear','linear','linear','linear','linear'],
+                append = False)
+            
+            # Remake Xf table with only continuous scans
+            print(f"  Remaking Xf table using only continuous scans: {continuous_scans}")
+            polcal(vis = myms,
+                field = pacal_name,
+                scan = ','.join(map(str, continuous_scans)),
+                uvrange = myuvrange,
+                caltable = xftab,
+                refant = str(ref_ant),
+                solint = f'inf,{XF_CHANINT}ch',
+                poltype='Xf',
+                combine = '',
+                gaintable=[ktab,gptab,bptab,gatab,dftab, kcross],
+                gainfield=[pacal_name,pacal_name,bpcal_name, pacal_name, bpcal_name, pacal_name],
+                interp = ['linear','linear','linear','linear','linear', 'linear'],
+                append = False)
+            
+        else:
+            # Case 3: No scans are continuous
+            print(f"✗ None of the {len(unique_scans)} scan(s) are phase continuous")
+            
+            # Move bad tables
+            bad_kcross = kcross.replace('.KCROSS', '_bad.KCROSS')
+            bad_xftab = xftab.replace('.Xf', '_bad.Xf')
+            print(f"  Moving original KCROSS table to: {bad_kcross}")
+            shutil.move(kcross, bad_kcross)
+            print(f"  Moving original Xf table to: {bad_xftab}")
+            shutil.move(xftab, bad_xftab)
+            
+            if len(unique_scans) == 1:
+                # Single scan - can use manual solver
+                print("  Single scan detected - falling back to manual XF solver")
                 manual_XF = True
+            else:
+                # Multiple scans - cannot handle
+                print("\nERROR: Cannot currently handle multiple cross-hand phase scans in a single MS.")
+                print("       Cross-hand phase is stable over week timescales, so unless this is a")
+                print("       week-long MS file, one scan should be sufficient.")
+                print(f"       Please split out an MS file with only one XF scan and re-run.")
+                sys.exit(1)
+
+        print("="*60)
 
     if XF_MODE == 'manual' or manual_XF or band == 'UHF':
         print(f"Cross-hand phase mode is {XF_MODE} (or auto detected a large phase jump? {manual_XF}); solving manual solutions")

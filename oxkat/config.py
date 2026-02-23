@@ -218,7 +218,7 @@ PRE_TIMEBIN = '8s'                   # Integration time for working MS
 POLANG_NAME = 'J1331+3030'         # Specify the name of the field you want to use as a Polarization angle calibrator -- 3C286
 POLANG_DIR  = '13:31:08.2881,+30.30.32.959' # CASA Format
 POLANG_MOD  = [1.0, 0.0, 0.5, 0.0]
-XF_TARGET_POLANG = 28.0  # Expected INTRINSIC (i.e. correcting RM effects) linear polarization angle in degrees
+XF_TARGET_POLANG = 30.0  # Expected INTRINSIC (i.e. correcting RM effects) linear polarization angle in degrees
 XF_TARGET_RM = 0.0 # Guess for the intrinsic RM; for 'manual' XF determination and RM trialing
 
 #POLANG_NAME = 'J0521+1638'         # Specify the name of the field you want to use as a Polarization angle calibrator -- 3C138
@@ -229,12 +229,7 @@ XF_TARGET_RM = 0.0 # Guess for the intrinsic RM; for 'manual' XF determination a
 
 # PARAMETERS TO DECIDE XF SOLVE METHOD -- DEFAULTS ARE LIKELY ALL GOOD
 XF_MODE = 'auto' # options are: auto (RECOMMENDED: determine based on band and/or if there is large phase discontinuties), casa or  manual
-XF_AUTO_ANG_JUMP = 90.0 # angle in degrees where, if the CASA XF solver has adjacent solution intervals that have a discontinuity
-                        # larger than this value, it will solve XF manually.
-
-# PARAMETERS TO DECIDE XF SOLVE METHOD -- DEFAULTS ARE LIKELY ALL GOOD
-XF_MODE = 'auto' # options are: auto (RECOMMENDED: determine based on band and/or if there is large phase discontinuties), casa or  manual
-XF_AUTO_ANG_JUMP = 90.0 # angle in degrees where, if the CASA XF solver has adjacent solution intervals that have a discontinuity
+XF_AUTO_ANG_JUMP = 60.0 # angle in degrees where, if the CASA XF solver has adjacent solution intervals that have a discontinuity
                         # larger than this value, it will solve XF manually.
 
 # XF table targets
@@ -242,9 +237,13 @@ XF_CHANINT = 16  # Channels per solution interval default is 1024 frequency chan
 XF_MAX_AVG_CHANNELS = None # If None, auto calculate will be the same as the number of cross-hand solution intervals
 
 # Calibration and outlier thresholds
-XF_MIN_CROSS_FLUX = 0.1  # Minimum total cross-hand flux (Jy) for reliable solutions
-XF_SIGMA_CLIP = 2.0  # N-sigma threshold for outlier flagging
-XF_CLIP_WINDOW = 50  # Window size for local scatter analysis
+XF_MIN_CROSS_FLUX = 0.07  # Minimum total cross-hand flux (Jy) for reliable solutions
+XF_SIGMA_CLIP = 3.0  # N-sigma threshold for outlier flagging
+XF_CLIP_WINDOW = 16  # Window size for local scatter analysis
+XF_EX = True          # Enable gap filling
+XF_EX_FRAC = 0.2      # Use 20% of good bandwidth for extrapolation
+XF_RM_ANG_MAX = 20.0  # Maximum separation an angle [deg] from a trial RM can have from XF_TARGET_POLANG to be considered a good solution
+XF_AVG_SCAN = True # If multi-scan, average XF solutions over all scans to increase SNR
 
 # Smoothing control for XF table creation and interpolation
 XF_USE_SMOOTHING = True  # Apply Savitzky-Golay smoothing before interpolation
@@ -382,8 +381,8 @@ CAL_1GC_LINE_FILLGAPS = 48
 
 # CASA gaincal settings
 CAL_2GC_UVRANGE = '>150m'            # Selection for baselines to include during G solving
-CAL_2GC_PSOLINT = '32s'              # Solution interval for phase-only selfcal
-CAL_2GC_APSOLINT = 'inf'             # Solution interval for amplitude and phase selfcal
+CAL_2GC_PSOLINT = '32s'              # Solution interval for phase-only selfcal (DOES NOTHIN IN QC VERSION)
+CAL_2GC_APSOLINT = 'inf'             # Solution interval for amplitude and phase selfcal (DOES NOTHING IN QC VERSION)
 
 # Quartical
 CAL_2GC_YAML = DATA+'/quartical/2GC_phase.yaml'  # Frequency-dependent, phase-only self-calibration (diagonal terms: XX/YY only)
@@ -400,6 +399,8 @@ CAL_2GC_YAML = DATA+'/quartical/2GC_phase.yaml'  # Frequency-dependent, phase-on
 # CAL_2GC_YAML = DATA+'/quartical/2GC_fullpol.yaml'
 # CAL_2GC_YAML = DATA+'/quartical/2GC_amppol.yaml'
 
+# Flag to skip PB corrections
+SKIP_PB = False
 
 # ------------------------------------------------------------------------
 #
@@ -447,7 +448,7 @@ WSC_PARALLELGRIDDING = 8
 WSC_WEIGHT = 'briggs 0.0'
 WSC_WEIGHT_CAL = 'uniform'
 WSC_TAPERGAUSSIAN = ''
-WSC_MFWEIGHT = False
+WSC_MFWEIGHT = True
 # HIGH RES IMAGING
 WSC_UNIFORM_IMAGE = True
 WSC_WEIGHT_HIGHRES = 'uniform' # pick a more uniform weighting then WSC_WEIGHT -- uniform weight by default
@@ -474,10 +475,16 @@ WSC_POL = 'IQUV'
 WSC_SPLITPOL = False # Image V/I and Q/U separately (necessary for High RM and MFS fitting)
 WSC_JOINPOLARIZATIONS = True
 WSC_SQUAREPOLARIZATIONS = False
-# Masking
+# Masking for BLIND mask creation
+WSC_AUTOMASK_BLIND = 10.0
+WSC_AUTOTHRESHOLD_BLIND = 2.0
+WSC_THRESHOLD_BLIND = False
+WSC_LOCALRMS_BLIND = False
+# Masking for SCIENCE
 WSC_MASK = False
 WSC_THRESHOLD = False
-WSC_AUTOMASK = 3.0
+WSC_SHALLOWMASK = 50.0
+WSC_AUTOMASK = 4.0
 WSC_AUTOTHRESHOLD = 1.0
 WSC_LOCALRMS = False
 # Determines if you want to Homogenize the resolution
