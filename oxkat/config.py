@@ -282,6 +282,12 @@ CAL_1GC_DELAYCUT = 2.5               # [now defunct] Jy at central freq. Do not 
 CAL_1GC_FILLGAPS = 8                 # Maximum channel gap over which to interpolate bandpass solutions
 
 # Band specific options
+CAL_1GC_BL_MODE = 'freq' # options are 'freq' to flag specific frequencies the 'uvrange' baselin
+                         # 'aggressive' to the uvrange baseline on all frequencis,
+                         # 'none' to not do any baseline specific flagging (initially)
+                         # I've found that baseline flagging can cause artificiall spectral jumps, 
+                         # so 'none' or 'aggressive' are the way to go (I think) whereas freq might be best for MFS (continuum) imaging.
+                         # if you give the wrong option it will default to 'freq' and print a warning
 
 if BAND == 'UHF':       
 
@@ -292,12 +298,12 @@ if BAND == 'UHF':
     CAL_1GC_BAD_FREQS = ['*:540~570MHz',      # Lower band edge 
                         '*:1010~1150MHz']     # Upper band edge
 
-    CAL_1GC_BL_FLAG_UVRANGE = '<1000m'        # Baseline range for which BL_FREQS are flagged
+    CAL_1GC_BL_FLAG_UVRANGE = '<600m'        # Baseline range for which BL_FREQS are flagged
     CAL_1GC_BL_FREQS = []            
 
 elif BAND == 'L':
 
-    CAL_1GC_FREQRANGE = '*:1300~1400MHz'
+    CAL_1GC_FREQRANGE = '*:1326~1357MHz'
     CAL_1GC_UVRANGE = '>300m'
     CAL_1GC_0408_MODEL = ([17.066,0.0,0.0,0.0],[-1.179],'1284MHz') # Defunct, Model now hardcoded into 1GC_05
 
@@ -305,7 +311,7 @@ elif BAND == 'L':
                         '*:1650~1800MHz',     # Upper bandpass edge
                         '*:1419.8~1421.3MHz'] # Galactic HI 
 
-    CAL_1GC_BL_FLAG_UVRANGE = '<1000m'
+    CAL_1GC_BL_FLAG_UVRANGE = '<600m'
     CAL_1GC_BL_FREQS = ['*:900MHz~915MHz',    # GSM and aviation
                         '*:925MHz~960MHz',
                         '*:935.40~960.05 MHz', # GSM (from katdal)
@@ -333,7 +339,7 @@ elif BAND == 'S0':
     CAL_1GC_0408_MODEL = ([9.193,0.0,0.0,0.0],[-1.144],'2187MHz') # Defunct, Model now hardcoded into 1GC_0
     CAL_1GC_BAD_FREQS = ['*:1700~1800MHz',    # Lower band edge 
                         '*:2500~2650MHz']     # Upper band edge
-    CAL_1GC_BL_FLAG_UVRANGE = '<1000m'
+    CAL_1GC_BL_FLAG_UVRANGE = '<600m'
     CAL_1GC_BL_FREQS = []
 
 elif BAND == 'S1':
@@ -343,7 +349,7 @@ elif BAND == 'S1':
     CAL_1GC_0408_MODEL = ([8.244,0.0,0.0,0.0],[-1.138],'2406MHz')    # Defunct, Model now hardcoded into 1GC_0
     CAL_1GC_BAD_FREQS = ['*:1967~2056MHz',    # Lower band edge 
                         '*:2756~2845MHz']     # Upper band edge
-    CAL_1GC_BL_FLAG_UVRANGE = '<1000m'
+    CAL_1GC_BL_FLAG_UVRANGE = '<600m'
     CAL_1GC_BL_FREQS = []
 
 elif BAND == 'S2':
@@ -353,7 +359,7 @@ elif BAND == 'S2':
     CAL_1GC_0408_MODEL = ([7.468,0.0,0.0,0.0],[-1.133],'2625MHz')    # Defunct, Model now hardcoded into 1GC_0
     CAL_1GC_BAD_FREQS = ['*:2187~2275MHz',    # Lower band edge 
                         '*:2975~3063MHz']     # Upper band edge
-    CAL_1GC_BL_FLAG_UVRANGE = '<1000m'
+    CAL_1GC_BL_FLAG_UVRANGE = '<600m'
     CAL_1GC_BL_FREQS = []
 
 elif BAND == 'S3':
@@ -363,7 +369,7 @@ elif BAND == 'S3':
     CAL_1GC_0408_MODEL = ([6.822,0.0,0.0,0.0],[-1.128],'2483MHz')   # Defunct, Model now hardcoded into 1GC_0
     CAL_1GC_BAD_FREQS = ['*:2405~2493MHz',    # Lower band edge 
                         '*:3194~3282MHz']     # Upper band edge
-    CAL_1GC_BL_FLAG_UVRANGE = '<1000m'
+    CAL_1GC_BL_FLAG_UVRANGE = '<600m'
     CAL_1GC_BL_FREQS = []
 
 elif BAND == 'S4':
@@ -373,7 +379,7 @@ elif BAND == 'S4':
     CAL_1GC_0408_MODEL = ([6.423,0.0,0.0,0.0],[-1.124],'3000MHz')   # Defunct, Model now hardcoded into 1GC_0
     CAL_1GC_BAD_FREQS = ['*:2600~2690MHz',    # Lower band edge 
                         '*:3420~3600MHz']     # Upper band edge
-    CAL_1GC_BL_FLAG_UVRANGE = '<1000m'
+    CAL_1GC_BL_FLAG_UVRANGE = '<600m'
     CAL_1GC_BL_FREQS = []
 
 

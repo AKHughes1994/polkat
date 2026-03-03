@@ -3,6 +3,7 @@
 
 import glob
 import os
+import re
 import datetime
 import subprocess
 import sys
@@ -12,13 +13,87 @@ import numpy as np
 import os.path as o
 import time
 from scipy.spatial.distance import cdist
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
 sys.path.append(o.abspath(o.join(o.dirname(sys.modules[__name__].__file__), "..")))
 from oxkat import config as cfg
+
+
+# =============================================================================
+# Global fitting options
+# =============================================================================
+
+# Set True to always fix the Stokes V position to Stokes I, regardless of S/N.
+# Stokes V is typically faint and noisy in MeerKAT data; allowing it to fit
+# freely can produce spurious offsets that bias the flux measurement.  Setting
+# this to True is the recommended default for most science cases.
+FORCE_FIX_STOKES_V = True
+
+# =============================================================================
 
 
 def msg(txt):
     stamp = time.strftime(' %Y-%m-%d %H:%M:%S | ')
     print(stamp+txt, flush=True)
+
+
+def parse_casa_position(position_str):
+    """
+    Parse a CASA-format position string to decimal degrees.
+
+    Accepts two formats:
+      - CASA HMS/DMS : 'HH:MM:SS.SS,±DD.MM.SS.SS'   (colon RA, period Dec)
+      - Decimal degrees: '260.430458,-16.204894'  or with 'deg' suffix
+
+    Parameters
+    ----------
+    position_str : str
+        Position string from rmsynth_info.json source_pos field.
+
+    Returns
+    -------
+    ra_deg, dec_deg : float, float
+        Position in decimal degrees, or (None, None) on parse failure.
+    """
+    try:
+        # Decimal-degree format (no colons in the RA part)
+        if ':' not in position_str:
+            parts = position_str.replace('deg', '').split(',')
+            return float(parts[0].strip()), float(parts[1].strip())
+
+        # CASA HMS/DMS format: 'HH:MM:SS.SS,±DD.MM.SS.SS'
+        ra_str, dec_str = position_str.split(',')
+
+        # --- Parse RA (colon-separated: HH:MM:SS.SS) ---
+        ra_parts = ra_str.strip().split(':')
+        if len(ra_parts) != 3:
+            msg(f'WARNING: Expected 3 parts in RA "{ra_str}", got {len(ra_parts)}')
+            return None, None
+        ra_deg = (float(ra_parts[0]) + float(ra_parts[1]) / 60.0
+                  + float(ra_parts[2]) / 3600.0) * 15.0  # hours -> degrees
+
+        # --- Parse Dec (period-separated: ±DD.MM.SS.SS) ---
+        dec_str = dec_str.strip()
+        dec_sign = -1.0 if dec_str.startswith('-') else 1.0
+        dec_str  = dec_str.lstrip('+-')
+
+        dec_parts = dec_str.split('.')
+        if len(dec_parts) < 3:
+            msg(f'WARNING: Expected at least 3 parts in Dec "{dec_str}", got {len(dec_parts)}')
+            return None, None
+
+        # Reassemble fractional arcseconds from any extra period-separated parts
+        dec_arcsec = float(dec_parts[2] + ('.' + dec_parts[3] if len(dec_parts) > 3 else ''))
+        dec_deg = dec_sign * (abs(float(dec_parts[0]))
+                              + float(dec_parts[1]) / 60.0
+                              + dec_arcsec / 3600.0)
+
+        return ra_deg, dec_deg
+
+    except Exception as e:
+        msg(f'ERROR parsing CASA position "{position_str}": {e}')
+        return None, None
 
 
 def get_imfit_values(fname, image, xpix, ypix):
@@ -156,88 +231,140 @@ def get_imstat_values(image, xpix, ypix, manual_rms_region = False):
     return [flux, xpix, ypix, rms]
     
     
-def check_position(fname, image, xpix, ypix, snr_thresh = 5.0, P_image = False, fix_additional_comps = False, manual_rms_region = False):
-
+def check_position(fname, image, xpix, ypix, snr_thresh=5.0, P_image=False,
+                   fix_additional_comps=False, manual_rms_region=False,
+                   src_name='src', force_fix_all=False):
     '''
-    Code to check whether there is sufficient flux at a position to allow 
-    imfit to fit for position, or if said position should be frozen
-    Inputs:
-        fname = string containing name of output estimate file
-        xpix = RA pixel position(s)
-        ypix = Dec pixel position(s)
-        image = name of the image to fit
-        snr_thresh = 5.0
-        P_image = Check if it's a P-image or
-    Outputs:
-        Nothing, but makes an estimate file
+    Decide whether each source component's sky position should be fitted freely
+    or held fixed in the subsequent imfit call, then write the estimate file.
+
+    Decision logic (applied per component):
+      - force_fix_all=True            --> ALL components fixed ('xyabp'), no S/N check.
+                                          Used e.g. for Stokes V when FORCE_FIX_STOKES_V=True.
+      - Secondary components (k>0) when fix_additional_comps=True --> always fixed ('xyabp').
+        These are faint ejecta or secondary lobes where the position is unreliable
+        in non-Stokes-I images; fixing them to the Stokes I location prevents
+        noise-driven wandering from contaminating the flux measurement.
+      - Primary component (k=0), S/N >= snr_thresh  --> free position ('abp')
+      - Primary component (k=0), S/N <  snr_thresh  --> fixed position ('xyabp')
+
+    For polarization (P) images the noise is non-Gaussian (Rice distribution),
+    so the RMS check is performed on the corresponding Q and U images instead,
+    using the larger of the two as a conservative estimate of the local noise.
+
+    A unique temporary check file is written per component and Stokes parameter
+    (keyed on fname and component index) to prevent file collisions when multiple
+    Stokes passes are running in quick succession.
+
+    Parameters
+    ----------
+    fname               -- path for the output estimate file passed to imfit
+    image               -- CASA image to be fitted
+    xpix                -- list of RA pixel positions, one per component
+    ypix                -- list of Dec pixel positions, one per component
+    snr_thresh          -- minimum S/N to allow a free position fit (default 5)
+    P_image             -- set True for polarized-intensity images so the noise
+                           estimate is taken from Q/U rather than P directly
+    fix_additional_comps-- set True to force secondary components (k>0) to fixed
+                           positions regardless of S/N (recommended for faint ejecta)
+    manual_rms_region   -- optional CASA region string to override the default
+                           annular RMS region
+    src_name            -- source name string; used to build unique temp filenames
+    force_fix_all       -- set True to fix ALL components (including k=0) regardless
+                           of S/N; overrides both snr_thresh and fix_additional_comps
     '''
 
     fix_var = []
 
-    # If a component is weak (i.e., < snr-thresh * sigma fix the position to the the reference otherwise fit for the position)
-    k = 0
-    
-    # Get beam parameters
+    # Read beam shape once; it is the same for all components in this image
     bmaj = imhead(image, mode='get', hdkey='bmaj')['value']
     bmin = imhead(image, mode='get', hdkey='bmin')['value']
     bpa  = imhead(image, mode='get', hdkey='bpa')['value']
 
-    for x, y in zip(xpix, ypix):
-        region = f'circle[[{x}pix,{y}pix],{2 * bmaj}arcsec]'
+    # Also get the pixel scale so we can report offsets in arcsec
+    cell_rad    = abs(imhead(image, mode='get', hdkey='CDELT2')['value'])
+    cell_arcsec = np.degrees(cell_rad) * 3600.0
 
-        f = open('check_pos.txt', 'w')
-        f.write(f'0.0,{x},{y},{bmaj}arcsec,{bmin}arcsec,{bpa}deg, xyabp')
-        f.close()
+    for k, (x, y) in enumerate(zip(xpix, ypix)):
 
-        # Get flux at test position
-        test_flux = abs(imfit(image, region = region, estimates='check_pos.txt')['results']['component0']['peak']['value'])
+        # --- Temporary check file: unique per component and source name to
+        #     avoid overwriting files from concurrent Stokes passes ----------
+        check_file = f'check_pos_{os.path.basename(fname)}_{k}.txt'
+        with open(check_file, 'w') as f:
+            # Seed imfit with zero amplitude and fixed position; we only want
+            # the peak flux value at this pixel, not a real fit result
+            f.write(f'0.0,{x},{y},{bmaj}arcsec,{bmin}arcsec,{bpa}deg, xyabp')
 
-        # If its a P-image don't use the image plane noise as the check criteria as it is (very) non-gaussian
-        rms = get_imstat_values(image, x, y, manual_rms_region = manual_rms_region)[3]
-        
-        if P_image is True:
-            # msg(f'Check image: {image}')
+        # Fit region: circle of radius 2*BMAJ centred on the trial position
+        region    = f'circle[[{x}pix,{y}pix],{2 * bmaj}arcsec]'
+        test_flux = abs(imfit(image, region=region,
+                              estimates=check_file)['results']['component0']['peak']['value'])
+
+        # --- Determine the local noise (RMS) --------------------------------
+        # For P images (Rice-distributed noise) use the larger of rms_Q and rms_U
+        # as a conservative Gaussian-equivalent noise estimate
+        rms = get_imstat_values(image, x, y, manual_rms_region=manual_rms_region)[3]
+        if P_image:
             image_Q = image.replace('-Plin-', '-Q-').replace('-Ptot-', '-Q-')
             image_U = image.replace('-Plin-', '-U-').replace('-Ptot-', '-U-')
-            ims_Q = get_imstat_values(image_Q, x, y, manual_rms_region = manual_rms_region)
-            ims_U = get_imstat_values(image_U, x, y, manual_rms_region = manual_rms_region)
-            rms = np.amax((ims_Q[3],ims_U[3]))
-        if fix_additional_comps is True and k > 0:
+            rms_Q   = get_imstat_values(image_Q, x, y, manual_rms_region=manual_rms_region)[3]
+            rms_U   = get_imstat_values(image_U, x, y, manual_rms_region=manual_rms_region)[3]
+            rms     = np.amax((rms_Q, rms_U))
+
+        snr = test_flux / rms
+
+        # --- Decide fix/free and log the outcome ----------------------------
+        if force_fix_all:
+            # Bypass S/N check entirely -- fix every component unconditionally.
+            # Used for Stokes V when FORCE_FIX_STOKES_V=True.
             fix_var.append('xyabp')
-            msg(f'Fixing position of component {k} because manual flag set: {image}')
-        elif fix_additional_comps is True and k == 0 and test_flux > snr_thresh * rms:
+            msg(f'  Component {k}: FIXED (force_fix_all=True) '
+                f'| S/N = {snr:.1f} | {os.path.basename(image)}')
+
+        elif fix_additional_comps and k > 0:
+            fix_var.append('xyabp')
+            msg(f'  Component {k}: FIXED (secondary component flag set) '
+                f'| S/N = {snr:.1f} | {os.path.basename(image)}')
+
+        elif test_flux > snr_thresh * rms:
             fix_var.append('abp')
-            msg(f'Free fitting position of component {k} with S/N = {test_flux/rms:.2f}: {image}')
-        elif fix_additional_comps is False and test_flux > snr_thresh * rms:
-            fix_var.append('abp')
-            msg(f'Free fitting position of component {k} with S/N = {test_flux/rms:.2f}: {image}')
+            msg(f'  Component {k}: FREE position fit '
+                f'| S/N = {snr:.1f} (>= {snr_thresh}) '
+                f'| {os.path.basename(image)}')
+
         else:
             fix_var.append('xyabp')
-            msg(f'Fixing position of component {k} due to S/N = {test_flux/rms:.2f}: {image}')
-        k+=1
+            msg(f'  Component {k}: FIXED position (low S/N) '
+                f'| S/N = {snr:.1f} (< {snr_thresh}) '
+                f'| {os.path.basename(image)}')
 
-    # Make the estimate file
+    # Write the final estimate file that imfit will actually use
     make_estimate(fname, image, xpix, ypix, fix_var)
 
 
 def make_estimate(fname, image, xpix, ypix, fix_var):
     '''
-    Take in an array of imstat values from f(get_imstat_values)
-    and return an CASA imfit estimate file name fname
+    Write a CASA imfit estimate file for one or more source components.
+
+    Each line in the estimate file seeds imfit with a starting position and
+    beam-sized Gaussian, with a flag string controlling which parameters are
+    free ('abp' = fit amplitude, beam axes, PA only; 'xyabp' = also fix x/y
+    position).
+
     Inputs:
-        fname  = string containing name of estimate file
-        image  = string containing name of image to fit
-        xpix    = Right ascension (pixel) estimate of source(s)
-        ypix  = Declination (pixel) estimate of source(s)
-        fix = parameters to fix, default is assume a point source (abp) other relevant example is fixing position (xyabp)
+        fname   -- output estimate file path
+        image   -- CASA image from which to read the beam and peak flux seed
+        xpix    -- list of RA pixel positions for each component
+        ypix    -- list of Dec pixel positions for each component
+        fix_var -- list of CASA fix strings, one per component (e.g. 'abp' or 'xyabp')
     '''
 
-    # Get the beam parameters
+    # Read beam shape from the image header to initialise the Gaussian seed
     bmaj = imhead(image, mode='get', hdkey = 'BMAJ')['value']
     bmin = imhead(image, mode='get', hdkey = 'BMIN')['value']
     bpa  = imhead(image, mode='get', hdkey = 'BPA')['value']
     
-    # Make estimate file
+    # Write one line per component: amplitude, x, y, beam major, beam minor, PA, fix string
     f = open(fname, 'w')
     for x, y, fix in zip(xpix, ypix, fix_var):
         ims = get_imstat_values(image, x, y)
@@ -245,6 +372,89 @@ def make_estimate(fname, image, xpix, ypix, fix_var):
     f.close()            
     
     return 0    
+
+
+def check_fit_offset_and_refix(imfit_result, image, ref_xpix, ref_ypix, bmaj,
+                               src_name, stokes_label, manual_rms_region=False):
+    '''
+    After an imfit call, verify that each fitted component has not drifted
+    unreasonably far from its reference position (normally the Stokes I result).
+
+    If any component has moved more than 1/3 of the beam BMAJ from the
+    reference, the entire fit is re-run with ALL positions fixed.  This
+    conservative approach avoids the risk of one wandering component
+    contaminating the fluxes of nearby components.
+
+    The 1/3 BMAJ threshold is physically motivated: genuine sub-beam offsets
+    between Stokes parameters are expected to be small fractions of the beam,
+    so anything larger almost certainly reflects a noise-driven imfit excursion.
+
+    Parameters
+    ----------
+    imfit_result    : dict  -- result dictionary returned by get_imfit_values()
+    image           : str   -- path to the CASA image (used to convert pixels to arcsec)
+    ref_xpix        : list  -- reference RA pixel positions, one per component
+                               (typically the Stokes I fitted positions)
+    ref_ypix        : list  -- reference Dec pixel positions, one per component
+    bmaj            : float -- beam major axis in arcsec; sets the offset threshold
+    src_name        : str   -- source name, used to build a unique estimate filename
+    stokes_label    : str   -- Stokes label for log messages (e.g. 'Q', 'Plin', 'V')
+    manual_rms_region : str or False -- passed through to make_estimate() if a
+                                        re-fit is needed
+
+    Returns
+    -------
+    imfit_result : dict  -- original result, or updated result if a re-fit was done
+    was_refitted : bool  -- True if at least one component exceeded the threshold
+    '''
+
+    # Convert BMAJ from arcsec to pixels so the distance threshold is physically meaningful.
+    # CDELT2 is stored in radians; convert to arcsec.
+    cell_rad    = abs(imhead(image, mode='get', hdkey='CDELT2')['value'])
+    cell_arcsec = np.degrees(cell_rad) * 3600.0
+    bmaj_pixels = bmaj / cell_arcsec
+
+    # Threshold: flag fits that move more than 1/3 beam from the reference position
+    threshold_fraction = 1.0 / 3.0
+    threshold_pixels   = threshold_fraction * bmaj_pixels
+    threshold_arcsec   = threshold_fraction * bmaj
+
+    # Filter to component keys only -- imfit results also contain 'nelements'
+    # (an integer) and other metadata keys that must be excluded here.
+    components = [key for key in imfit_result['results'].keys() if 'component' in key]
+    any_exceeded = False
+
+    for z, component in enumerate(components):
+        fitted_xpix = imfit_result['results'][component]['pixelcoords'][0]
+        fitted_ypix = imfit_result['results'][component]['pixelcoords'][1]
+
+        # Euclidean pixel distance from the Stokes I reference for this component
+        pixel_dist    = np.sqrt((fitted_xpix - ref_xpix[z])**2 +
+                                (fitted_ypix - ref_ypix[z])**2)
+        offset_arcsec = pixel_dist * cell_arcsec
+
+        if pixel_dist > threshold_pixels:
+            msg(f'  WARNING: Stokes {stokes_label} component {z} offset = '
+                f'{offset_arcsec:.2f}" ({pixel_dist:.1f} pix) '
+                f'exceeds 1/3 BMAJ ({threshold_arcsec:.2f}"). '
+                f'Will re-fit entire image with all positions fixed to Stokes I reference.')
+            any_exceeded = True
+        else:
+            msg(f'  Position check OK: Stokes {stokes_label} component {z} offset = '
+                f'{offset_arcsec:.2f}" ({pixel_dist:.1f} pix) '
+                f'< 1/3 BMAJ ({threshold_arcsec:.2f}")')
+
+    if any_exceeded:
+        # Fix all components to their reference positions and refit.
+        # Using a unique filename avoids overwriting estimate files from other
+        # Stokes parameters that may still be in use.
+        fixed_est = f'estimate_fixed_{stokes_label}_{src_name}.txt'
+        fix_var   = ['xyabp'] * len(ref_xpix)
+        make_estimate(fixed_est, image, ref_xpix, ref_ypix, fix_var)
+        imfit_result = get_imfit_values(fixed_est, image, ref_xpix, ref_ypix)
+        msg(f'  Re-fit complete: all Stokes {stokes_label} positions fixed to reference.')
+
+    return imfit_result, any_exceeded
 
 
 def extract_polarization_properties(src_name,
@@ -260,136 +470,220 @@ def extract_polarization_properties(src_name,
     fix_additional_comps = False):
 
     '''
-    Fit the Stokes IQUV cube for all components in an image. This assumes
-    that the Q, U, and V images follow the WSCLEAN naming
-    convention. This should work for slightly extended emission where
-    you have two components that are yet to be separated by > 1 beam
+    Core extraction routine: fit Stokes I, Q, U, V (and polarized intensity P)
+    for all source components across both the multi-frequency-synthesis (MFS)
+    and per-channel images produced by WSCLEAN.
 
-    input parameters:
-        src_name       = name of source 
-        src_im_identifier  = identifier for images that will have flux extraction
-        src_im_suffix  = image suffix, included to differentiate between standard WSCLEAN image products (image.fits) and homogenized products (image.homogenized.fits)
-        src_ra   = Estimated right ascension of source(s) pixel units
-        src_dec  = Estimated declination of  source(s) pixel units
-        pol_flag = determines whether or not to solve for total or linear/circular polarization (depending on if cross-hand calibrator was included)
-        manual_rms_region = option to specify the rms region, otherwise use an annulus centered on the source(s) with a ~100xPSF area
-        fix_additional_comps[default=False] = option to fix the Q,U,V,P position to Stokes I (primarily for faint partially unresolved ejecta)
+    For each prefix (one per time interval, or just one for a full-observation
+    image), the function:
+      1. Fits the MFS Stokes I image to establish the reference sky position.
+      2. Fits MFS P, Q, U, V using that position as a prior, with post-fit
+         offset checks that refix wandering components automatically.
+      3. Iterates over per-channel image sets, repeating the same fitting
+         sequence and accumulating results for RM synthesis output.
 
-    Output parametres:
-        flux_dict = Dictionary containing all MFS and per-channel information for the IQUV fluxes
-        rmsynth_arr = Array containing the necessary information to run RM synthesis on each image
-    ''' 
+    Supports multi-component sources (e.g. partially resolved jet ejecta): set
+    fix_additional_comps=True to anchor secondary components to the Stokes I
+    position in non-intensity images, preventing noise-driven wandering.
 
-    # Initialize dictionary to contain the output parameters
-    output_dictionary = {'name' : src_name}
-    output_dictionary['MFS'] = {}
+    Parameters
+    ----------
+    src_name            -- source name string (used in output filenames)
+    src_im_identifier   -- glob pattern identifying the image set, constructed
+                           from rmsynth_info.json fields
+    src_im_suffix       -- FITS suffix, e.g. 'image.fits' or
+                           'image.homogenized.fits'; auto-detected if MFS
+                           images are not found with the requested suffix
+    src_ra              -- array of RA guesses in decimal degrees, one per component
+    src_dec             -- array of Dec guesses in decimal degrees, one per component
+    src_ulims           -- list of booleans, True = treat component as upper limit
+                           (position held fixed, flux not de-biased)
+    pol_flag            -- True if a polarization angle calibrator was used;
+                           controls which P image type is fitted (Plin vs Ptot)
+                           and which de-biasing formula is applied in calculate_P0
+    manual_rms_region   -- CASA region string for the noise measurement box/annulus;
+                           if False, a default annulus of ~100 beam areas is used
+    image_directory     -- top-level image directory (e.g. 'IMAGES' or 'INTERVALS')
+    image_identifier    -- image identifier string (e.g. 'pcalmask', 'restored')
+    fix_additional_comps-- if True, secondary components (k>0) have their positions
+                           frozen in all non-Stokes-I images; recommended for faint
+                           partially unresolved jet ejecta
+
+    Returns
+    -------
+    output_dictionary : dict
+        Nested dictionary with 'MFS' and 'CHAN' sub-dictionaries, each keyed by
+        component name, containing fluxes, errors, RMS values, positions, beam
+        parameters, LP fraction, EVPA, and observation metadata.
+    '''
+
+    # ------------------------------------------------------------------
+    # Log key settings at the start so the output log is self-documenting
+    # ------------------------------------------------------------------
+    msg('')
+    msg(f'{"="*70}')
+    msg(f'  Starting polarization extraction for source: {src_name}')
+    msg(f'  Image identifier : {src_im_identifier}')
+    if manual_rms_region:
+        msg(f'  RMS region       : MANUAL -- {manual_rms_region}')
+    else:
+        msg(f'  RMS region       : default annulus (~100 beam areas) centred on source')
+    msg(f'  Polarization angle calibrator present: {pol_flag}')
+    msg(f'  Fix secondary component positions    : {fix_additional_comps}')
+    msg(f'{"="*70}')
+    msg('')
+
+    # Initialize the output dictionary.  'MFS' holds one entry per time
+    # interval; 'CHAN' holds per-frequency-channel data for RM synthesis.
+    output_dictionary = {'name': src_name}
+    output_dictionary['MFS']  = {}
     output_dictionary['CHAN'] = {}
 
-    # Check if any images exist matching the identifier
+    # ------------------------------------------------------------------
+    # Locate images and determine the correct suffix to use
+    # ------------------------------------------------------------------
+
+    # Confirm at least some images exist before proceeding
     test_images = glob.glob(f'{src_im_identifier}*{src_im_suffix}')
     if not test_images:
-        raise FileNotFoundError(f"Cannot find any images with prefix: {src_im_identifier} and suffix: {src_im_suffix}. Please check the image identifier.")
-    else:
-        msg(f"Found images of form: {test_images[0]}")
+        raise FileNotFoundError(
+            f'No images found matching: {src_im_identifier}*{src_im_suffix}\n'
+            f'Check the image_directory and image_identifier fields in rmsynth_info.json.')
+    msg(f'Found images matching pattern (example): {test_images[0]}')
 
-    # Check if the MFS image exists for the suffix, if not, use homogenized one
+    # MFS images may use 'image.homogenized.fits' if per-channel splitting
+    # has already consumed the standard image.fits products
     mfs_im_suffix = src_im_suffix[:]
-    if glob.glob(f'{src_im_identifier}MFS*{src_im_suffix}') == []:
-        msg(f'WARNING: {src_im_suffix} does not exist in MFS image due to channel splitting; Using: image.homogenized.fits')
-        mfs_im_suffix = 'image.homogenized.fits' # if this doesn't work you don't have the images required for this analysis
-    
-    # Determine if there are multiple stokes parameters or if its strictly Stokes I (suffixes will be, e.g., MFS-image)
-    if glob.glob(f'{src_im_identifier}MFS-I-{mfs_im_suffix}') == []:
+    if not glob.glob(f'{src_im_identifier}MFS*{src_im_suffix}'):
+        msg(f'WARNING: No MFS {src_im_suffix} images found; '
+            f'falling back to image.homogenized.fits')
+        mfs_im_suffix = 'image.homogenized.fits'
+    else:
+        msg(f'MFS image suffix: {mfs_im_suffix}')
+
+    # Check whether polarization images (Q, U, V, P) exist, or if this run
+    # is Stokes I only (e.g. early-stage pipeline without polarization calibration)
+    if not glob.glob(f'{src_im_identifier}MFS-I-{mfs_im_suffix}'):
         only_intensity = True
+        msg('No MFS polarization images found -- running in Stokes I only mode')
     else:
         only_intensity = False
-    
-    # Get unique prefixes, this will now iterate in time (if applicable) if not it will just return arrays of length 1:
+        msg('MFS polarization images found -- fitting full Stokes IQUV')
+
+    # Build the list of unique image prefixes.  Each prefix corresponds to one
+    # time interval (or the full observation if image_timing=false in rmsynth_info.json).
     prefix_arr = glob.glob(f'{src_im_identifier}MFS*{mfs_im_suffix}')
     prefix_arr = sorted(list(set([x.split('-MFS')[0] for x in prefix_arr])))
+    msg(f'Found {len(prefix_arr)} prefix(es) (time interval(s)) to process')
     
     for k, prefix in enumerate(prefix_arr[:]):
-    
-        # Extract the MFS image parameters
-        msg(f'Fitting MFS image(s) for prefix {k}: {prefix}')
-        
-        # This is to get the image into an array
+
+        msg('')
+        msg(f'--- Prefix {k+1}/{len(prefix_arr)}: {os.path.basename(prefix)} ---')
+
+        # Collect MFS images for this prefix. sorted() puts them in the order
+        # I, P(lin/tot), Q, U, V which is the order the rest of the code assumes.
         if only_intensity:
             MFS_images = [f'{prefix}-MFS-{mfs_im_suffix}']
         else:
-            # The sorted function will make order the images as I, P, Q, U, V
             MFS_images = glob.glob(f'{prefix}-MFS-*-{mfs_im_suffix}')
+            # Exclude whichever polarized intensity type is not in use:
+            # pol_flag=True  --> pol angle calibrator present --> use Plin (sqrt(Q^2+U^2))
+            # pol_flag=False --> no pol angle calibrator       --> use Ptot (sqrt(Q^2+U^2+V^2))
             if pol_flag:
                 MFS_images = sorted([im for im in MFS_images if '-Ptot-' not in im])
             else:
                 MFS_images = sorted([im for im in MFS_images if '-Plin-' not in im])
 
-        # Output image name
+        msg(f'MFS images selected ({len(MFS_images)}):')
         for MFS_image in MFS_images:
-            msg(f'Fitting MFS image name(s): {MFS_image}')
-    
-        # Get generalized properties from the first image (i.e., Stokes I header)
-        freq_GHz = imhead(MFS_images[0], mode='get', hdkey = 'CRVAL3')['value'] / 1.0e9
-        date_obs = imhead(MFS_images[0], mode='get', hdkey = 'DATE-OBS').replace('/','-',2).replace('/','T')
-        bmaj = imhead(MFS_images[0], mode='get', hdkey = 'bmaj')['value']
-        bmin = imhead(MFS_images[0], mode='get', hdkey = 'bmin')['value']
-        bpa   = imhead(MFS_images[0], mode='get', hdkey = 'bpa')['value']
-    
-        # Convert the RA/DEC guesses to pixel coordinates
-        src_ra_pix = []
+            msg(f'  {os.path.basename(MFS_image)}')
+
+        # Read observation metadata from the Stokes I header
+        freq_GHz = imhead(MFS_images[0], mode='get', hdkey='CRVAL3')['value'] / 1.0e9
+        date_obs = imhead(MFS_images[0], mode='get', hdkey='DATE-OBS').replace('/','-',2).replace('/','T')
+        bmaj     = imhead(MFS_images[0], mode='get', hdkey='bmaj')['value']
+        bmin     = imhead(MFS_images[0], mode='get', hdkey='bmin')['value']
+        bpa      = imhead(MFS_images[0], mode='get', hdkey='bpa')['value']
+        msg(f'Observation: date={date_obs}  freq={freq_GHz:.4f} GHz  '
+            f'beam={bmaj:.2f}"x{bmin:.2f}" PA={bpa:.1f} deg')
+
+        # Convert the input RA/Dec guesses (decimal degrees) to pixel coordinates
+        # in this specific image.  imstat finds the nearest pixel to the input position.
+        src_ra_pix  = []
         src_dec_pix = []
         for z in range(src_ra.size):
             region = 'circle[[{}deg,{}deg],1.0pix]'.format(src_ra[z], src_dec[z])
-            pixel_imstat = imstat(MFS_images[0], region = region)
+            pixel_imstat = imstat(MFS_images[0], region=region)
             src_ra_pix.append(pixel_imstat['maxpos'][0])
             src_dec_pix.append(pixel_imstat['maxpos'][1])
-            
-        # First fit Stokes I -- also extract pixel coordinates
+
+        # -----------------------------------------------------------------
+        # Fit MFS Stokes I -- establishes the reference position for all
+        # subsequent polarization fits in this prefix epoch
+        # -----------------------------------------------------------------
+        # Upper-limit components have their position fixed (xyabp); detected
+        # components are fitted freely for flux, size and PA (abp).
         fix = []
-        for z, boolean in enumerate(src_ulims):        
-            msg(f'For source {src_name} component {z} has upper limit = {boolean}')
+        for z, boolean in enumerate(src_ulims):
             if boolean:
                 fix.append('xyabp')
+                msg(f'  Component {z}: upper limit -- position will be fixed')
             else:
                 fix.append('abp')
-    
-        make_estimate('estimate_I.txt', MFS_images[0], src_ra_pix, src_dec_pix,  fix)
-        MFS_I_imfit = get_imfit_values('estimate_I.txt', MFS_images[0], src_ra_pix, src_dec_pix)
+                msg(f'  Component {z}: detected -- position will be fitted freely')
 
-        # Get number of components
-        components = [key for key in MFS_I_imfit['results'].keys() if 'component' in key]              
-        MFS_I_ra_pix = [MFS_I_imfit['results'][key]['pixelcoords'][0] for key in components]
+        make_estimate(f'estimate_I_{src_name}.txt', MFS_images[0], src_ra_pix, src_dec_pix, fix)
+        MFS_I_imfit = get_imfit_values(f'estimate_I_{src_name}.txt', MFS_images[0], src_ra_pix, src_dec_pix)
+
+        # Extract the list of fitted component keys (e.g. ['component0', 'component1'])
+        components    = [key for key in MFS_I_imfit['results'].keys() if 'component' in key]
+        MFS_I_ra_pix  = [MFS_I_imfit['results'][key]['pixelcoords'][0] for key in components]
         MFS_I_dec_pix = [MFS_I_imfit['results'][key]['pixelcoords'][1] for key in components]
-       
-        # Initialize arrays if they don't exist, else append values to existsing arrays
+
+        # Log the Stokes I fitted results -- this position is the astrometric
+        # reference for all polarization fits below
+        msg('')
+        msg(f'  --- MFS Stokes I fit results (astrometric reference) ---')
         for z, component in enumerate(components):
-        
-            # For ease of readability define the desired quantities as variables
-            flux_I = MFS_I_imfit['results'][component]['peak']['value'] * 1e3
-            err_I = MFS_I_imfit['results'][component]['peak']['error'] * 1e3
-            RA_I   = MFS_I_imfit['results'][component]['shape']['direction']['m0']['value'] * 180 / np.pi
-            DEC_I = MFS_I_imfit['results'][component]['shape']['direction']['m1']['value'] * 180 / np.pi
+            flux_I_log = MFS_I_imfit['results'][component]['peak']['value'] * 1e3
+            err_I_log  = MFS_I_imfit['results'][component]['peak']['error'] * 1e3
+            RA_I_log   = MFS_I_imfit['results'][component]['shape']['direction']['m0']['value'] * 180 / np.pi
+            DEC_I_log  = MFS_I_imfit['results'][component]['shape']['direction']['m1']['value'] * 180 / np.pi
+            rms_I_log  = get_imstat_values(MFS_images[0], MFS_I_ra_pix[z], MFS_I_dec_pix[z], manual_rms_region)[3] * 1e3
+            msg(f'  {component}: RA={RA_I_log:.6f} deg  Dec={DEC_I_log:.6f} deg  '
+                f'({MFS_I_ra_pix[z]:.1f}, {MFS_I_dec_pix[z]:.1f}) pix')
+            msg(f'    Flux = {flux_I_log:.3f} +/- {err_I_log:.3f} mJy  '
+                f'rms = {rms_I_log:.3f} mJy  S/N = {flux_I_log/rms_I_log:.1f}')
+        msg('')
+
+        # Populate the output dictionary with MFS Stokes I results
+        for z, component in enumerate(components):
+
+            flux_I   = MFS_I_imfit['results'][component]['peak']['value'] * 1e3
+            err_I    = MFS_I_imfit['results'][component]['peak']['error'] * 1e3
+            RA_I     = MFS_I_imfit['results'][component]['shape']['direction']['m0']['value'] * 180 / np.pi
+            DEC_I    = MFS_I_imfit['results'][component]['shape']['direction']['m1']['value'] * 180 / np.pi
             RA_pix_I = MFS_I_imfit['results'][component]['pixelcoords'][0]
             DEC_pix_I = MFS_I_imfit['results'][component]['pixelcoords'][1]
-            rms_I = get_imstat_values(MFS_images[0], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3
-       
+            rms_I    = get_imstat_values(MFS_images[0], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3
+
             if component not in output_dictionary['MFS']:
-
+                # First epoch: initialise lists
                 output_dictionary['MFS'][component] = {}
-
-                output_dictionary['MFS'][component]['upperlimit'] = [src_ulims[z]]           
-                output_dictionary['MFS'][component]['freq_GHz'] = [freq_GHz]
-                output_dictionary['MFS'][component]['date_isot'] = [date_obs]
-                output_dictionary['MFS'][component]['bmaj_asec'] = [bmaj]
-                output_dictionary['MFS'][component]['bmin_asec'] = [bmin]
-                output_dictionary['MFS'][component]['bpa_deg'] = [bpa]
-                output_dictionary['MFS'][component]['I_flux_mJy'] = [flux_I]
-                output_dictionary['MFS'][component]['I_err_mJy'] = [err_I]
-                output_dictionary['MFS'][component]['I_rms_mJy'] = [rms_I]
-                output_dictionary['MFS'][component]['I_RA_deg'] = [RA_I]
-                output_dictionary['MFS'][component]['I_DEC_deg'] = [DEC_I]
-                         
+                output_dictionary['MFS'][component]['upperlimit']  = [src_ulims[z]]
+                output_dictionary['MFS'][component]['freq_GHz']    = [freq_GHz]
+                output_dictionary['MFS'][component]['date_isot']   = [date_obs]
+                output_dictionary['MFS'][component]['bmaj_asec']   = [bmaj]
+                output_dictionary['MFS'][component]['bmin_asec']   = [bmin]
+                output_dictionary['MFS'][component]['bpa_deg']     = [bpa]
+                output_dictionary['MFS'][component]['I_flux_mJy']  = [flux_I]
+                output_dictionary['MFS'][component]['I_err_mJy']   = [err_I]
+                output_dictionary['MFS'][component]['I_rms_mJy']   = [rms_I]
+                output_dictionary['MFS'][component]['I_RA_deg']    = [RA_I]
+                output_dictionary['MFS'][component]['I_DEC_deg']   = [DEC_I]
             else:
+                # Subsequent epochs: append to existing lists
                 output_dictionary['MFS'][component]['freq_GHz'].append(freq_GHz)
                 output_dictionary['MFS'][component]['date_isot'].append(date_obs)
                 output_dictionary['MFS'][component]['bmaj_asec'].append(bmaj)
@@ -402,53 +696,106 @@ def extract_polarization_properties(src_name,
                 output_dictionary['MFS'][component]['I_DEC_deg'].append(DEC_I)
             
         
-        # Next fit Polarization intensity and check if source is bright enough to allow positions to vary freely
+        # -----------------------------------------------------------------
+        # Fit MFS polarization images (P, Q, U, V)
+        # Each fit is followed by an offset check: if any component has
+        # drifted more than 1/3 BMAJ from the Stokes I reference, the
+        # fit is automatically re-run with all positions fixed.
+        # -----------------------------------------------------------------
         if not only_intensity:
             
-            # Run a first pass
+            # --- First pass: fit P freely to see if it lands near Stokes I ---
+            # If it wanders too far (handled by check_fit_offset_and_refix later)
+            # the second pass below will re-fit with positions fixed.
             try:
-                check_position('estimate_P.txt', MFS_images[1], MFS_I_ra_pix, MFS_I_dec_pix, P_image = True, fix_additional_comps = False, manual_rms_region = manual_rms_region)
-                MFS_P_imfit  = get_imfit_values('estimate_P.txt', MFS_images[1], MFS_I_ra_pix, MFS_I_dec_pix)
-                MFS_P_ra_pix = [MFS_P_imfit['results'][key]['pixelcoords'][0] for key in components]
-                MFS_P_dec_pix = [MFS_P_imfit['results'][key]['pixelcoords'][1] for key in components]   
-           
-                # If any of the P components are very far from Stokes I refit fixing the additional comps 
+                check_position(f'estimate_P_{src_name}.txt', MFS_images[1],
+                                MFS_I_ra_pix, MFS_I_dec_pix,
+                                P_image=True, fix_additional_comps=False,
+                                manual_rms_region=manual_rms_region, src_name=src_name)
+                MFS_P_imfit   = get_imfit_values(f'estimate_P_{src_name}.txt',
+                                                  MFS_images[1], MFS_I_ra_pix, MFS_I_dec_pix)
+                MFS_P_ra_pix  = [MFS_P_imfit['results'][key]['pixelcoords'][0] for key in components]
+                MFS_P_dec_pix = [MFS_P_imfit['results'][key]['pixelcoords'][1] for key in components]
+
+                # Check whether any P component has drifted more than 1/3 BMAJ from Stokes I.
+                # If so, fall through to the guarded re-fit below.
                 dist_check = False
-                dist_max = 0.0
+                dist_max   = 0.0
                 for z in range(len(MFS_P_ra_pix)):
-                    dist = ((MFS_I_ra_pix[z] - MFS_P_ra_pix[z]) ** 2 + (MFS_I_dec_pix[z] - MFS_P_dec_pix[z]) ** 2) ** 0.5
-                    if dist > 3.0: # should not be >3 pixels
+                    dist = np.sqrt((MFS_I_ra_pix[z] - MFS_P_ra_pix[z])**2 +
+                                   (MFS_I_dec_pix[z] - MFS_P_dec_pix[z])**2)
+                    if dist > 3.0:   # >3 pixel offset is unphysical for unresolved sources
                         dist_check = True
-                        if dist > dist_max:
-                            dist_max = dist
-                            
+                        dist_max   = max(dist_max, dist)
+
             except Exception as e:
-                msg(f'Free fitting failed, assuming multi-component fit to complex re-trying fixing the secondary component positions to Stokes I: {e}')
-                dist_max = -1.0
+                msg(f'  P free-fit failed (likely complex multi-component field); '
+                    f'will re-fit with secondary positions fixed to Stokes I: {e}')
+                dist_max   = -1.0
                 dist_check = True
 
             if dist_check:
-                msg(f'Significant offset between Stokes I and P {dist_max:.1f} pix, re-fitting while fixing multi-component')
-                check_position('estimate_P.txt', MFS_images[1], MFS_I_ra_pix, MFS_I_dec_pix, P_image = True, fix_additional_comps = fix_additional_comps, manual_rms_region = manual_rms_region)
-                MFS_P_imfit  = get_imfit_values('estimate_P.txt', MFS_images[1], MFS_I_ra_pix, MFS_I_dec_pix)
-                MFS_P_ra_pix = [MFS_P_imfit['results'][key]['pixelcoords'][0] for key in components]
-                MFS_P_dec_pix = [MFS_P_imfit['results'][key]['pixelcoords'][1] for key in components]   
+                msg(f'  Stokes I--P offset = {dist_max:.1f} pix; re-fitting P with '
+                    f'secondary component positions fixed to Stokes I')
+                check_position(f'estimate_P_{src_name}.txt', MFS_images[1],
+                                MFS_I_ra_pix, MFS_I_dec_pix,
+                                P_image=True, fix_additional_comps=fix_additional_comps,
+                                manual_rms_region=manual_rms_region, src_name=src_name)
+                MFS_P_imfit   = get_imfit_values(f'estimate_P_{src_name}.txt',
+                                                  MFS_images[1], MFS_I_ra_pix, MFS_I_dec_pix)
+                MFS_P_ra_pix  = [MFS_P_imfit['results'][key]['pixelcoords'][0] for key in components]
+                MFS_P_dec_pix = [MFS_P_imfit['results'][key]['pixelcoords'][1] for key in components]
 
-            # Make estimate and fit for Q/U -- checking against position of Lin. Pol. components
-            check_position('estimate_Q.txt', MFS_images[2], MFS_P_ra_pix, MFS_P_dec_pix, P_image = False, fix_additional_comps = fix_additional_comps, manual_rms_region = manual_rms_region)
-            MFS_Q_imfit  = get_imfit_values('estimate_Q.txt', MFS_images[2], MFS_P_ra_pix, MFS_P_dec_pix)
-            MFS_Q_ra_pix = [MFS_Q_imfit['results'][key]['pixelcoords'][0] for key in components]
-            MFS_Q_dec_pix = [MFS_Q_imfit['results'][key]['pixelcoords'][1] for key in components]   
-   
-            check_position('estimate_U.txt', MFS_images[3], MFS_P_ra_pix, MFS_P_dec_pix, P_image = False, fix_additional_comps = fix_additional_comps, manual_rms_region = manual_rms_region)
-            MFS_U_imfit  = get_imfit_values('estimate_U.txt', MFS_images[3], MFS_P_ra_pix, MFS_P_dec_pix)
-            MFS_U_ra_pix = [MFS_U_imfit['results'][key]['pixelcoords'][0] for key in components]
-            MFS_U_dec_pix = [MFS_U_imfit['results'][key]['pixelcoords'][1] for key in components]   
+            # Post-fit offset check for P -- refixes automatically if needed
+            MFS_P_imfit, _ = check_fit_offset_and_refix(
+                MFS_P_imfit, MFS_images[1], MFS_I_ra_pix, MFS_I_dec_pix,
+                bmaj, src_name, 'P', manual_rms_region=manual_rms_region)
+            MFS_P_ra_pix  = [MFS_P_imfit['results'][key]['pixelcoords'][0] for key in components]
+            MFS_P_dec_pix = [MFS_P_imfit['results'][key]['pixelcoords'][1] for key in components]
 
-            # Make estimate and fit Stokes V  -- checking against position of stokes I components
-            check_position('estimate_V.txt', MFS_images[4], MFS_I_ra_pix, MFS_I_dec_pix, P_image = False, fix_additional_comps = fix_additional_comps, manual_rms_region = manual_rms_region)
-            MFS_V_imfit  = get_imfit_values('estimate_V.txt', MFS_images[4], MFS_I_ra_pix, MFS_I_dec_pix)
-            MFS_V_ra_pix = [MFS_V_imfit['results'][key]['pixelcoords'][0] for key in components]
+            # --- Fit Q and U, referenced to the P position ------------------
+            # Using the P position as the reference for Q/U is more accurate
+            # than using Stokes I when the source is significantly polarized.
+            check_position(f'estimate_Q_{src_name}.txt', MFS_images[2],
+                            MFS_P_ra_pix, MFS_P_dec_pix,
+                            P_image=False, fix_additional_comps=fix_additional_comps,
+                            manual_rms_region=manual_rms_region, src_name=src_name)
+            MFS_Q_imfit   = get_imfit_values(f'estimate_Q_{src_name}.txt',
+                                              MFS_images[2], MFS_P_ra_pix, MFS_P_dec_pix)
+            MFS_Q_imfit, _ = check_fit_offset_and_refix(
+                MFS_Q_imfit, MFS_images[2], MFS_P_ra_pix, MFS_P_dec_pix,
+                bmaj, src_name, 'Q', manual_rms_region=manual_rms_region)
+            MFS_Q_ra_pix  = [MFS_Q_imfit['results'][key]['pixelcoords'][0] for key in components]
+            MFS_Q_dec_pix = [MFS_Q_imfit['results'][key]['pixelcoords'][1] for key in components]
+
+            check_position(f'estimate_U_{src_name}.txt', MFS_images[3],
+                            MFS_P_ra_pix, MFS_P_dec_pix,
+                            P_image=False, fix_additional_comps=fix_additional_comps,
+                            manual_rms_region=manual_rms_region, src_name=src_name)
+            MFS_U_imfit   = get_imfit_values(f'estimate_U_{src_name}.txt',
+                                              MFS_images[3], MFS_P_ra_pix, MFS_P_dec_pix)
+            MFS_U_imfit, _ = check_fit_offset_and_refix(
+                MFS_U_imfit, MFS_images[3], MFS_P_ra_pix, MFS_P_dec_pix,
+                bmaj, src_name, 'U', manual_rms_region=manual_rms_region)
+            MFS_U_ra_pix  = [MFS_U_imfit['results'][key]['pixelcoords'][0] for key in components]
+            MFS_U_dec_pix = [MFS_U_imfit['results'][key]['pixelcoords'][1] for key in components]
+
+            # --- Fit Stokes V, referenced back to Stokes I ------------------
+            # V is expected to be small and noisy in MeerKAT data; anchoring
+            # to I avoids noise-driven position bias.  When FORCE_FIX_STOKES_V
+            # is True (the global default), ALL components are held fixed via
+            # force_fix_all, bypassing the S/N check entirely.
+            check_position(f'estimate_V_{src_name}.txt', MFS_images[4],
+                            MFS_I_ra_pix, MFS_I_dec_pix,
+                            P_image=False, fix_additional_comps=fix_additional_comps,
+                            manual_rms_region=manual_rms_region, src_name=src_name,
+                            force_fix_all=FORCE_FIX_STOKES_V)
+            MFS_V_imfit   = get_imfit_values(f'estimate_V_{src_name}.txt',
+                                              MFS_images[4], MFS_I_ra_pix, MFS_I_dec_pix)
+            MFS_V_imfit, _ = check_fit_offset_and_refix(
+                MFS_V_imfit, MFS_images[4], MFS_I_ra_pix, MFS_I_dec_pix,
+                bmaj, src_name, 'V', manual_rms_region=manual_rms_region)
+            MFS_V_ra_pix  = [MFS_V_imfit['results'][key]['pixelcoords'][0] for key in components]
             MFS_V_dec_pix = [MFS_V_imfit['results'][key]['pixelcoords'][1] for key in components]   
   
             # Once again initialize arrays that don't exist
@@ -583,34 +930,71 @@ def extract_polarization_properties(src_name,
                     msg('Skipping Channel: BMAJ is very different from expectation based on MFS image (likely high flagged)')
                     continue 
 
-                check_position('estimate_I.txt', CHAN_images[0], MFS_I_ra_pix, MFS_I_dec_pix, manual_rms_region = manual_rms_region)
-                CHAN_I_imfit = get_imfit_values('estimate_I.txt', CHAN_images[0], MFS_I_ra_pix, MFS_I_dec_pix)
-                CHAN_I_ra_pix = [CHAN_I_imfit['results'][key]['pixelcoords'][0] for key in components]
+                # Fit Stokes I for this channel, seeded from the MFS I position
+                check_position(f'estimate_I_{src_name}.txt', CHAN_images[0],
+                                MFS_I_ra_pix, MFS_I_dec_pix,
+                                manual_rms_region=manual_rms_region, src_name=src_name)
+                CHAN_I_imfit   = get_imfit_values(f'estimate_I_{src_name}.txt',
+                                                   CHAN_images[0], MFS_I_ra_pix, MFS_I_dec_pix)
+                CHAN_I_ra_pix  = [CHAN_I_imfit['results'][key]['pixelcoords'][0] for key in components]
                 CHAN_I_dec_pix = [CHAN_I_imfit['results'][key]['pixelcoords'][1] for key in components]
-            
+
                 # Fit Polarization intensity if not only_intensity (do ALL fitting before appending to dictionary)
                 if not only_intensity:
 
-                    check_position('estimate_P.txt', CHAN_images[1], MFS_P_ra_pix, MFS_P_dec_pix, P_image = True, fix_additional_comps = fix_additional_comps, manual_rms_region = manual_rms_region)
-                    CHAN_P_imfit  = get_imfit_values('estimate_P.txt', CHAN_images[1], CHAN_I_ra_pix, CHAN_I_dec_pix)
-                    CHAN_P_ra_pix = [CHAN_P_imfit['results'][key]['pixelcoords'][0] for key in components]
-                    CHAN_P_dec_pix = [CHAN_P_imfit['results'][key]['pixelcoords'][1] for key in components]   
-                
-                    # Make estimate and fit for Q/U -- checking against position of Lin. Pol. components
-                    check_position('estimate_Q.txt', CHAN_images[2], CHAN_P_ra_pix, CHAN_P_dec_pix, P_image = False, fix_additional_comps = fix_additional_comps, manual_rms_region = manual_rms_region)
-                    CHAN_Q_imfit  = get_imfit_values('estimate_Q.txt', CHAN_images[2], CHAN_P_ra_pix, CHAN_P_dec_pix)
-                    CHAN_Q_ra_pix = [CHAN_Q_imfit['results'][key]['pixelcoords'][0] for key in components]
-                    CHAN_Q_dec_pix = [CHAN_Q_imfit['results'][key]['pixelcoords'][1] for key in components]   
-   
-                    check_position('estimate_U.txt', CHAN_images[3], CHAN_P_ra_pix, CHAN_P_dec_pix, P_image = False, fix_additional_comps = fix_additional_comps, manual_rms_region = manual_rms_region)
-                    CHAN_U_imfit  = get_imfit_values('estimate_U.txt', CHAN_images[3], CHAN_P_ra_pix, CHAN_P_dec_pix)
-                    CHAN_U_ra_pix = [CHAN_U_imfit['results'][key]['pixelcoords'][0] for key in components]
-                    CHAN_U_dec_pix = [CHAN_U_imfit['results'][key]['pixelcoords'][1] for key in components]   
+                    # Fit P seeded from the MFS P position
+                    check_position(f'estimate_P_{src_name}.txt', CHAN_images[1],
+                                    MFS_P_ra_pix, MFS_P_dec_pix,
+                                    P_image=True, fix_additional_comps=fix_additional_comps,
+                                    manual_rms_region=manual_rms_region, src_name=src_name)
+                    CHAN_P_imfit   = get_imfit_values(f'estimate_P_{src_name}.txt',
+                                                      CHAN_images[1], CHAN_I_ra_pix, CHAN_I_dec_pix)
+                    CHAN_P_imfit, _ = check_fit_offset_and_refix(
+                        CHAN_P_imfit, CHAN_images[1], CHAN_I_ra_pix, CHAN_I_dec_pix,
+                        bmaj, src_name, 'P', manual_rms_region=manual_rms_region)
+                    CHAN_P_ra_pix  = [CHAN_P_imfit['results'][key]['pixelcoords'][0] for key in components]
+                    CHAN_P_dec_pix = [CHAN_P_imfit['results'][key]['pixelcoords'][1] for key in components]
 
-                    # Make estimate and fit Stokes V  -- checking against position of stokes I components
-                    check_position('estimate_V.txt', CHAN_images[4], CHAN_I_ra_pix, CHAN_I_dec_pix, P_image = False, fix_additional_comps = fix_additional_comps, manual_rms_region = manual_rms_region)
-                    CHAN_V_imfit  = get_imfit_values('estimate_V.txt', CHAN_images[4], CHAN_I_ra_pix, CHAN_I_dec_pix)
-                    CHAN_V_ra_pix = [CHAN_V_imfit['results'][key]['pixelcoords'][0] for key in components]
+                    # Fit Q and U referenced to the channel P position
+                    check_position(f'estimate_Q_{src_name}.txt', CHAN_images[2],
+                                    CHAN_P_ra_pix, CHAN_P_dec_pix,
+                                    P_image=False, fix_additional_comps=fix_additional_comps,
+                                    manual_rms_region=manual_rms_region, src_name=src_name)
+                    CHAN_Q_imfit   = get_imfit_values(f'estimate_Q_{src_name}.txt',
+                                                      CHAN_images[2], CHAN_P_ra_pix, CHAN_P_dec_pix)
+                    CHAN_Q_imfit, _ = check_fit_offset_and_refix(
+                        CHAN_Q_imfit, CHAN_images[2], CHAN_P_ra_pix, CHAN_P_dec_pix,
+                        bmaj, src_name, 'Q', manual_rms_region=manual_rms_region)
+                    CHAN_Q_ra_pix  = [CHAN_Q_imfit['results'][key]['pixelcoords'][0] for key in components]
+                    CHAN_Q_dec_pix = [CHAN_Q_imfit['results'][key]['pixelcoords'][1] for key in components]
+
+                    check_position(f'estimate_U_{src_name}.txt', CHAN_images[3],
+                                    CHAN_P_ra_pix, CHAN_P_dec_pix,
+                                    P_image=False, fix_additional_comps=fix_additional_comps,
+                                    manual_rms_region=manual_rms_region, src_name=src_name)
+                    CHAN_U_imfit   = get_imfit_values(f'estimate_U_{src_name}.txt',
+                                                      CHAN_images[3], CHAN_P_ra_pix, CHAN_P_dec_pix)
+                    CHAN_U_imfit, _ = check_fit_offset_and_refix(
+                        CHAN_U_imfit, CHAN_images[3], CHAN_P_ra_pix, CHAN_P_dec_pix,
+                        bmaj, src_name, 'U', manual_rms_region=manual_rms_region)
+                    CHAN_U_ra_pix  = [CHAN_U_imfit['results'][key]['pixelcoords'][0] for key in components]
+                    CHAN_U_dec_pix = [CHAN_U_imfit['results'][key]['pixelcoords'][1] for key in components]
+
+                    # Fit Stokes V anchored to channel I.
+                    # FORCE_FIX_STOKES_V=True (global default) passes
+                    # force_fix_all=True, bypassing the S/N check for all
+                    # components including k=0.
+                    check_position(f'estimate_V_{src_name}.txt', CHAN_images[4],
+                                    CHAN_I_ra_pix, CHAN_I_dec_pix,
+                                    P_image=False, fix_additional_comps=fix_additional_comps,
+                                    manual_rms_region=manual_rms_region, src_name=src_name,
+                                    force_fix_all=FORCE_FIX_STOKES_V)
+                    CHAN_V_imfit   = get_imfit_values(f'estimate_V_{src_name}.txt',
+                                                      CHAN_images[4], CHAN_I_ra_pix, CHAN_I_dec_pix)
+                    CHAN_V_imfit, _ = check_fit_offset_and_refix(
+                        CHAN_V_imfit, CHAN_images[4], CHAN_I_ra_pix, CHAN_I_dec_pix,
+                        bmaj, src_name, 'V', manual_rms_region=manual_rms_region)
+                    CHAN_V_ra_pix  = [CHAN_V_imfit['results'][key]['pixelcoords'][0] for key in components]
                     CHAN_V_dec_pix = [CHAN_V_imfit['results'][key]['pixelcoords'][1] for key in components]   
   
                 # All fitting complete - now append to output dictionary
@@ -743,18 +1127,29 @@ def extract_polarization_properties(src_name,
                 msg('Fitting Failed: Channel is likely flagged')
 
 
-        # Write RM Synthesis files (freq, I, Q, U, dI, dQ, dU)
+        # Write RM Synthesis files (freq, I, Q, U, dI, dQ, dU) in Jy, one file
+        # per component per epoch.  These are the direct inputs to RM-Tools.
         if not only_intensity:
             for component in components:
-                rmsynth_arr = np.array([np.array(output_dictionary['CHAN'][component]['freq_GHz'][k]) * 1e9, 
-                                                    np.array(output_dictionary['CHAN'][component]['I_flux_mJy'][k]) / 1e3, 
-                                                    np.array(output_dictionary['CHAN'][component]['Q_flux_mJy'][k]) / 1e3, 
-                                                    np.array(output_dictionary['CHAN'][component]['U_flux_mJy'][k]) / 1e3,
-                                                    np.array(output_dictionary['CHAN'][component]['I_rms_mJy'][k]) / 1e3,
-                                                    np.array(output_dictionary['CHAN'][component]['Q_rms_mJy'][k]) / 1e3,
-                                                    np.array(output_dictionary['CHAN'][component]['U_rms_mJy'][k]) / 1e3])
+                rmsynth_arr = np.array([
+                    np.array(output_dictionary['CHAN'][component]['freq_GHz'][k]) * 1e9,
+                    np.array(output_dictionary['CHAN'][component]['I_flux_mJy'][k])  / 1e3,
+                    np.array(output_dictionary['CHAN'][component]['Q_flux_mJy'][k])  / 1e3,
+                    np.array(output_dictionary['CHAN'][component]['U_flux_mJy'][k])  / 1e3,
+                    np.array(output_dictionary['CHAN'][component]['I_rms_mJy'][k])   / 1e3,
+                    np.array(output_dictionary['CHAN'][component]['Q_rms_mJy'][k])   / 1e3,
+                    np.array(output_dictionary['CHAN'][component]['U_rms_mJy'][k])   / 1e3])
 
-                np.savetxt('{}_{}_rmsynth.txt'.format(prefix, component).replace(image_directory, 'RESULTS'), rmsynth_arr.T)
+                rmsynth_fname = '{}_{}_rmsynth.txt'.format(prefix, component).replace(image_directory, 'RESULTS')
+                np.savetxt(rmsynth_fname, rmsynth_arr.T)
+                msg(f'  RM synthesis file written: {rmsynth_fname}')
+
+        # Generate a Stokes I diagnostic spectrum plot for each component in
+        # this epoch and compute the spectral index (if MFS S/N > 30).
+        # alpha and alpha_err are stored back into output_dictionary so they
+        # appear in the final JSON without a second write.
+        for component in components:
+            plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k)
 
     # Save the full dictionary with all times, etc.
     # Remove trailing dash from image_identifier for splitting if present
@@ -767,6 +1162,222 @@ def extract_polarization_properties(src_name,
         json.dump(output_dictionary, j, indent = 4)
 
     return 0
+
+def plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k):
+    '''
+    Diagnostic plot of per-channel Stokes I, Q, U, V spectra for one source
+    component in one time-interval epoch, stacked vertically with a shared
+    frequency axis.
+
+    Layout
+    ------
+    Four panels stacked vertically, sharing the same x-axis:
+      - Panel 1 (top):  Stokes I  -- log-log axes; MFS reference dashed line;
+                                      spectral index power-law fit overlaid when
+                                      MFS S/N > 30 and >= 3 valid channels.
+      - Panels 2-4:     Stokes Q, U, V -- linear y-axis (fluxes can be negative);
+                                          symmetric y-axis centred on zero;
+                                          MFS value as a dashed horizontal reference.
+
+    All panels use RMS error bars (not the imfit formal errors, which are stored
+    in the JSON for completeness but not plotted).
+
+    Spectral index fitting (Stokes I panel only)
+    --------------------------------------------
+    Conditions: MFS S/N > 30, >= 3 channels with flux > 0 and per-channel S/N >= 3.
+    Method: weighted log-log linear regression (np.polyfit), weights = S/N per channel.
+    alpha and alpha_err are stored back into output_dictionary['MFS'][component]
+    and therefore appear in the final JSON without a second write.  None is stored
+    if the fit is skipped.
+
+    Parameters
+    ----------
+    output_dictionary : dict  -- full extraction dictionary (modified in place)
+    src_name          : str   -- source name for plot title and filename
+    prefix            : str   -- epoch path prefix (used for output filename)
+    component         : str   -- component key, e.g. 'component0'
+    k                 : int   -- epoch index within the prefix list
+    '''
+
+    # Ensure the VISPLOTS output directory exists
+    os.makedirs(cfg.VISPLOTS, exist_ok=True)
+
+    # ------------------------------------------------------------------
+    # Retrieve per-channel data arrays for this epoch
+    # ------------------------------------------------------------------
+    chan  = output_dictionary['CHAN'][component]
+    freq_arr  = np.array(chan['freq_GHz'][k])
+
+    if len(freq_arr) == 0:
+        msg(f'  plot_stokes_spectrum: no channel data for {component} epoch {k}, skipping plot')
+        return
+
+    I_flux = np.array(chan['I_flux_mJy'][k])
+    I_rms  = np.array(chan['I_rms_mJy'][k])
+    # err_arr (imfit formal errors) retrieved only to satisfy completeness;
+    # RMS is used for all error bars -- see docstring.
+    _ = np.array(chan['I_err_mJy'][k])
+
+    # Q, U, V are only available when not running in Stokes-I-only mode
+    only_intensity = 'Q_flux_mJy' not in chan
+    if not only_intensity:
+        Q_flux = np.array(chan['Q_flux_mJy'][k])
+        Q_rms  = np.array(chan['Q_rms_mJy'][k])
+        U_flux = np.array(chan['U_flux_mJy'][k])
+        U_rms  = np.array(chan['U_rms_mJy'][k])
+        V_flux = np.array(chan['V_flux_mJy'][k])
+        V_rms  = np.array(chan['V_rms_mJy'][k])
+
+    # MFS reference values for this epoch
+    mfs       = output_dictionary['MFS'][component]
+    mfs_I     = mfs['I_flux_mJy'][k]
+    mfs_I_rms = mfs['I_rms_mJy'][k]
+    mfs_freq  = mfs['freq_GHz'][k]
+    mfs_snr   = mfs_I / mfs_I_rms if mfs_I_rms > 0 else 0.0
+    if not only_intensity:
+        mfs_Q = mfs['Q_flux_mJy'][k]
+        mfs_U = mfs['U_flux_mJy'][k]
+        mfs_V = mfs['V_flux_mJy'][k]
+
+    # ------------------------------------------------------------------
+    # Spectral index fit on Stokes I (log-log space)
+    # ------------------------------------------------------------------
+    alpha     = None
+    alpha_err = None
+    fit_nu    = None
+    fit_S     = None
+
+    # Quality mask: positive flux and per-channel S/N >= 3
+    valid = (I_flux > 0) & (I_rms > 0) & (I_flux / I_rms >= 3.0)
+
+    if mfs_snr > 30.0 and np.sum(valid) >= 3:
+        nu_v = freq_arr[valid]
+        S_v  = I_flux[valid]
+        w_v  = S_v / I_rms[valid]          # S/N weights
+
+        # Fit in log space: log(S) = alpha*log(nu/nu_ref) + log(S_ref)
+        log_nu = np.log(nu_v / mfs_freq)
+        log_S  = np.log(S_v)
+        try:
+            coeffs, cov = np.polyfit(log_nu, log_S, 1, w=w_v, cov=True)
+            alpha     = coeffs[0]
+            alpha_err = np.sqrt(cov[0, 0])
+
+            nu_plot = np.linspace(nu_v.min(), nu_v.max(), 200)
+            fit_S   = np.exp(coeffs[1]) * (nu_plot / mfs_freq) ** alpha
+            fit_nu  = nu_plot
+
+            msg(f'  Spectral index fit ({component}, epoch {k}): '
+                f'alpha = {alpha:.3f} +/- {alpha_err:.3f}  '
+                f'(MFS S/N = {mfs_snr:.1f}, N_chan = {int(np.sum(valid))})')
+        except Exception as e:
+            msg(f'  WARNING: Spectral index fit failed for {component} epoch {k}: {e}')
+    else:
+        if mfs_snr <= 30.0:
+            msg(f'  Spectral index fit skipped ({component}, epoch {k}): '
+                f'MFS S/N = {mfs_snr:.1f} (< 30)')
+        else:
+            msg(f'  Spectral index fit skipped ({component}, epoch {k}): '
+                f'only {int(np.sum(valid))} valid channels (need >= 3)')
+
+    # Store alpha in the MFS dict so it appears in the JSON without a second write.
+    # Initialise as a list on the first epoch; append on subsequent epochs.
+    if 'alpha' not in mfs:
+        mfs['alpha']     = [alpha]
+        mfs['alpha_err'] = [alpha_err]
+    else:
+        mfs['alpha'].append(alpha)
+        mfs['alpha_err'].append(alpha_err)
+
+    # ------------------------------------------------------------------
+    # Build figure: 4 panels stacked vertically, shared x-axis
+    # (1 panel if Stokes-I-only mode)
+    # ------------------------------------------------------------------
+    n_panels = 1 if only_intensity else 4
+    fig, axes = plt.subplots(n_panels, 1, figsize=(10, 3 * n_panels),
+                             sharex=True)
+    if n_panels == 1:
+        axes = [axes]   # make iterable
+
+    # --- Panel 0: Stokes I (log-log) ---
+    ax = axes[0]
+    plot_mask = I_flux > 0
+    if np.sum(plot_mask) > 0:
+        ax.errorbar(freq_arr[plot_mask], I_flux[plot_mask],
+                    yerr=I_rms[plot_mask],
+                    fmt='o', markersize=4, capsize=3, color='royalblue',
+                    label='Stokes I', zorder=3)
+
+        # Zoom y-axis to the 5th–95th percentile of plotted fluxes, with 10%
+        # padding on the log scale, so a handful of flagged/outlier channels
+        # don't collapse the bulk of the data into a tiny portion of the panel.
+        p05 = np.nanpercentile(I_flux[plot_mask], 5)
+        p95 = np.nanpercentile(I_flux[plot_mask], 95)
+        if p05 > 0 and p95 > p05:
+            log_pad = 0.1 * (np.log10(p95) - np.log10(p05))
+            ax.set_ylim(10 ** (np.log10(p05) - log_pad),
+                        10 ** (np.log10(p95) + log_pad))
+
+    ax.axhline(y=mfs_I, color='k', linestyle='--', linewidth=1.5,
+               label=f'MFS: {mfs_I:.2f} mJy  (S/N = {mfs_snr:.1f})', zorder=2)
+    if fit_nu is not None:
+        ax.plot(fit_nu, fit_S, color='tomato', linewidth=1.8,
+                label=rf'$\alpha$ = {alpha:.2f} $\pm$ {alpha_err:.2f}', zorder=4)
+    ax.set_xscale('log')
+    ax.set_yscale('log')
+    ax.set_ylabel('I  (mJy/beam)', fontsize=10)
+    ax.grid(True, which='both', alpha=0.3, linestyle=':')
+    ax.legend(fontsize=9, loc='best')
+
+    # --- Panels 1-3: Stokes Q, U, V (linear y, symmetric about zero) ---
+    if not only_intensity:
+        for ax, flux, rms, label, mfs_val, colour in zip(
+                axes[1:],
+                [Q_flux,   U_flux,   V_flux],
+                [Q_rms,    U_rms,    V_rms],
+                ['Q',      'U',      'V'],
+                [mfs_Q,    mfs_U,    mfs_V],
+                ['darkorange', 'forestgreen', 'mediumpurple']):
+
+            ax.errorbar(freq_arr, flux, yerr=rms,
+                        fmt='o', markersize=4, capsize=3, color=colour,
+                        label=f'Stokes {label}', zorder=3)
+            ax.axhline(y=mfs_val, color='k', linestyle='--', linewidth=1.5,
+                       label=f'MFS: {mfs_val:.2f} mJy', zorder=2)
+            ax.axhline(y=0, color='grey', linestyle=':', linewidth=0.8, zorder=1)
+
+            # Zoom to the 5th–95th percentile range of |flux|, with 10% linear
+            # padding.  The y-axis is kept symmetric about zero so positive and
+            # negative excursions read at the same scale.
+            p05 = np.nanpercentile(flux, 5)
+            p95 = np.nanpercentile(flux, 95)
+            span = p95 - p05
+            if np.isfinite(span) and span > 0:
+                pad    = 0.10 * span
+                centre = 0.5 * (p05 + p95)
+                half   = 0.5 * span + pad
+                # Enforce symmetry about zero: use the larger of the two half-widths
+                # so the zero line and MFS reference always stay visible
+                half = max(half, abs(centre) + pad)
+                ax.set_ylim(-half, half)
+
+            ax.set_ylabel(f'{label}  (mJy/beam)', fontsize=10)
+            ax.grid(True, which='both', alpha=0.3, linestyle=':')
+            ax.legend(fontsize=9, loc='best')
+
+    # Shared x-axis label on the bottom panel only
+    axes[-1].set_xlabel('Frequency (GHz)', fontsize=11)
+
+    fig.suptitle(f'{src_name}  |  {component}  |  epoch {k}', fontsize=12, y=1.01)
+    plt.tight_layout()
+
+    plot_fname = os.path.join(
+        cfg.VISPLOTS,
+        f'{os.path.basename(prefix)}_{component}_IQUV_spectrum.png')
+    plt.savefig(plot_fname, dpi=150, bbox_inches='tight')
+    plt.close()
+    msg(f'  IQUV spectrum plot saved: {plot_fname}')
+
 
 def main():
     
@@ -795,35 +1406,21 @@ def main():
             src_im_identifier = cfg.CWD +'/{}/*{}*.ms_{}-'.format(rmsynth_info["image_directory"][k], 
                                                                                             rmsynth_info["source_name"][k], 
                                                                                            rmsynth_info["image_identifier"][k])                                                                                           
-        # Separate out source positions
-        src_ra   = []
+        # Parse source positions from rmsynth_info.json using parse_casa_position().
+        # Accepts both CASA HMS/DMS format ('HH:MM:SS.SS,+-DD.MM.SS.SS') and
+        # plain decimal degrees ('260.43,-16.20' or with 'deg' suffix).
+        src_ra  = []
         src_dec = []
         for pos in rmsynth_info['source_pos'][k]:
-        
-            # If the positions are given in CASA h:m:s d.m.s format covert to degrees
-            if ':' in pos:
-                pos_i = pos.split(',')
-                pos_i[0], pos_i[1] = pos_i[0].split(':'), pos_i[1].split('.')
-                
-                if len(pos_i[1]) > 3:
-                    pos_i[1][2] = pos_i[1][2] + '.' + pos_i[1][3]
-                    pos_i[1] = pos_i[1][:3]
-                
-                sign = 1.0
-                if '-' in pos_i[1][0]:
-                    sign = -1.0
-                
-                pos_i[0] = float(pos_i[0][0]) * 15 + float(pos_i[0][1]) / 4. + float(pos_i[0][2]) / 240.
-                pos_i[1] = (abs(float(pos_i[1][0])) + float(pos_i[1][1]) / 60.0 + float(pos_i[1][2]) / 3600.0) * sign
+            ra_deg, dec_deg = parse_casa_position(pos)
+            if ra_deg is None:
+                msg(f'ERROR: Could not parse position "{pos}" -- skipping source')
+                continue
+            msg(f'Parsed position: RA = {ra_deg:.6f} deg, Dec = {dec_deg:.6f} deg')
+            src_ra.append(ra_deg)
+            src_dec.append(dec_deg)
 
-            # Else just remove 'deg' string (if there) and convert to floats
-            else:
-                pos_i.replace('deg', '').split(',')
-            
-            src_ra.append(pos_i[0])
-            src_dec.append(pos_i[1])      
-            
-        src_ra, src_deg = np.array(src_ra), np.array(src_dec)  
+        src_ra, src_dec = np.array(src_ra), np.array(src_dec)
 
         ###########################
         # Add the position prediction from here #

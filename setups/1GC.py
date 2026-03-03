@@ -182,30 +182,30 @@ def main():
             absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
             syscall = ''
             prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
-            imcall  = gen.generate_syscall_wsclean(mslist = [myms],
-                imgname = mask_prefix,
-                datacol = 'CORRECTED_DATA',
-                field = cal_index,
-                weight=cfg.WSC_WEIGHT_CAL,
-                imsize = cfg.WSC_CAL_IMSIZE,
-                chanout = cfg.WSC_BLIND_CHANNELSOUT,
-                pol='I',
-                mfweight = True,
-                multiscale = False,
-                joinpolarizations=False,
-                mask = False,
-                automask = 5.0,
-                intervalsout = False,
-                autothreshold = 1.0,
-                localrms= True,
-                threshold = False,
-                nomodel  = True,
-                sourcelist = False,
-                absmem = absmem)
-            for call in imcall: 
-                syscall += prefix + call + '\n\n'
-            syscall += prefix + gen.generate_syscall_breizorro(restoredimage = f"{mask_prefix}-MFS-image.fits", 
-                                                      outfile = f"{mask_prefix}-MFS-image.mask.fits", thresh = 6.0)[0] + '\n\n'
+            # imcall  = gen.generate_syscall_wsclean(mslist = [myms],
+            #     imgname = mask_prefix,
+            #     datacol = 'CORRECTED_DATA',
+            #     field = cal_index,
+            #     weight=cfg.WSC_WEIGHT_CAL,
+            #     imsize = cfg.WSC_CAL_IMSIZE,
+            #     chanout = cfg.WSC_BLIND_CHANNELSOUT,
+            #     pol='I',
+            #     mfweight = True,
+            #     multiscale = False,
+            #     joinpolarizations=False,
+            #     mask = False,
+            #     automask = 5.0,
+            #     intervalsout = False,
+            #     autothreshold = 1.0,
+            #     localrms= True,
+            #     threshold = False,
+            #     nomodel  = True,
+            #     sourcelist = False,
+            #     absmem = absmem)
+            # for call in imcall: 
+            #     syscall += prefix + call + '\n\n'
+            # syscall += prefix + gen.generate_syscall_breizorro(restoredimage = f"{mask_prefix}-MFS-image.fits", 
+            #                                           outfile = f"{mask_prefix}-MFS-image.mask.fits", thresh = 6.0)[0] + '\n\n'
             imcall = gen.generate_syscall_wsclean(mslist = [myms],
                 imgname = img_prefix,
                 datacol = 'CORRECTED_DATA',
@@ -221,13 +221,17 @@ def main():
                 automask = 5.0,
                 intervalsout = False,
                 autothreshold = 1.0,
-                localrms=False,
+                localrms=True,
                 threshold = False,
                 nomodel  = True,
                 sourcelist = False,
                 absmem = absmem)
             for call in imcall: 
                 syscall += prefix + call + '\n\n'
+
+            if cfg.WSC_POL != 'I':
+                syscall += prefix + f"python3 {cfg.TOOLS}/make_pol_images.py {cfg.IMAGES} {cal_name}"
+
             step['syscall'] = syscall
             steps.append(step)
 
