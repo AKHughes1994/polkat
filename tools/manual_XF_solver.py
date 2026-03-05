@@ -1139,30 +1139,28 @@ os.makedirs(xfdir, exist_ok=True)
 # corrections, but NOT the cross-hand phase (XF), since that's what we're solving for.
 # This gives us calibrated I,Q,U,V visibilities with only the XF correction missing.
 
-# Define calibration tables (primary calibrator solutions)
+# Define calibration tables (matching 1GC_05_casa_refcal.py)
 ktab0 = GAINTABLES+'/cal_1GC_'+myms+'.K0'
 bptab0 = GAINTABLES+'/cal_1GC_'+myms+'.B0'
-gptab0 = GAINTABLES+'/cal_1GC_'+myms+'.Gp0'
-gatab0 = GAINTABLES+'/cal_1GC_'+myms+'.Ga0'
-ftab0 = GAINTABLES+'/cal_1GC_'+myms+'.F0'
+gtab0 = GAINTABLES+'/cal_1GC_'+myms+'.G0'
 dftab0  = GAINTABLES+'/cal_1GC_'+myms+'.Df0'
 
 ktab = GAINTABLES+'/cal_1GC_'+myms+'.K'
 bptab = GAINTABLES+'/cal_1GC_'+myms+'.B'
-gptab = GAINTABLES+'/cal_1GC_'+myms+'.Gp'
-gatab = GAINTABLES+'/cal_1GC_'+myms+'.Ga'
+gtab = GAINTABLES+'/cal_1GC_'+myms+'.G'
 ftab = GAINTABLES+'/cal_1GC_'+myms+'.F'
 dftab  = GAINTABLES+'/cal_1GC_'+myms+'.Df'
 
 kcross  = GAINTABLES+'/cal_1GC_'+myms+'.KCROSS'
 xftab  = GAINTABLES+'/cal_1GC_'+myms+'.Xf'
 
+# Apply all calibration except cross-hand phase (XF), which is what we're solving for
 applycal(vis = myms,
         field = pacal_name,
-        parang = False,
-        gainfield = [pacal_name,pacal_name, bpcal_name, pacal_name, bpcal_name],
-        gaintable = [ktab,gptab,bptab,ftab,dftab],
-        interp = ['linear','linear','linear','linear','linear'],
+        parang = True,
+        gaintable = [ktab, bptab, ftab, dftab],
+        gainfield = [pacal_name, bpcal_name, pacal_name, bpcal_name],
+        interp = ['nearest','linear','linear','linear'],
         flagbackup = False)
 
 # Split out polarization calibrator to temporary MS for analysis
@@ -1313,7 +1311,12 @@ for scan_idx, scan in enumerate(scan_numbers):
     ms.close()
     
     # Verify required data is present
-    missing = [k for k in ('data', 'flag') if k not in d]
+    # Note: avoid list comprehension here because exec() scoping in Python 3
+    # prevents comprehension sub-scopes from seeing exec'd local variables.
+    missing = []
+    for _k in ('data', 'flag'):
+        if _k not in d:
+            missing.append(_k)
     if missing:
         print(f"WARNING: Scan {scan} missing {missing}, skipping")
         vis_avg[:, scan_idx, :] = np.nan
