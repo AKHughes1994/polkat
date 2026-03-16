@@ -1805,6 +1805,158 @@ def get_identifiers(prefix: str) -> Tuple[List[str], List[str]]:
         msg('Standard mode: Single identifier processing')
         return [prefix], [prefix]
 
+def process_psf(psf: str, beam: Tuple[float, float, float], identifier: str) -> Dict[str, Any]:
+    """
+    Process a single PSF file: generate the homogenization kernel via pypher and
+    apply it to all associated Stokes image/residual pairs.
+
+    This is the worker function for parallel execution in homogenize_images().
+    It must remain a top-level function so that ProcessPoolExecutor can pickle it.
+
+    Parameters
+    ----------
+    psf : str
+        Path to the PSF FITS file for this channel.
+    beam : Tuple[float, float, float]
+        Target beam parameters (semi-major, semi-minor, position_angle) as
+        returned by get_homogenized_beam().  Position angle is in radians.
+    identifier : str
+        Base identifier for the image set, used only for log context.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Status dictionary with keys:
+          'psf'       - the input psf path
+          'success'   - bool, True if the PSF was processed without fatal error
+          'processed' - int, 1 if completed (including already-skipped), else 0
+          'failed'    - int, 1 if a fatal error occurred, else 0
+          'message'   - human-readable summary string
+    """
+    a, b, p = beam[0], beam[1], beam[2]
+
+    # Derive sibling filenames
+    psf_header = fits.getheader(psf)
+    psf_zoom = psf.replace('psf.fits', 'psf.zoom.fits')
+    psf_new  = psf.replace('psf.fits', 'psf.new.fits')
+    kernel   = psf.replace('psf.fits', 'psf.kernel.fits')
+
+    sky_to_pix  = (abs(psf_header.get('CDELT1'))) ** (-1)
+    fwhm_to_sig = (8 * np.log(2)) ** (-0.5)
+    psf_size    = 101
+
+    # Safety check: skip flagged channels (WSCLEAN sets BMAJ=0 for flagged channels)
+    if psf_header['BMAJ'] <= 1e-14:
+        return {
+            'psf': psf, 'success': False, 'processed': 0, 'failed': 1,
+            'message': f'Skipping {psf} - invalid beam (BMAJ <= 1e-14)'
+        }
+
+    # If kernel already exists, skip generation and go straight to convolution
+    if os.path.exists(kernel):
+        msg(f'Kernel exists, skipping pypher for {os.path.basename(psf)}')
+    else:
+        # --- Build original (zoomed) PSF ---
+        psf_zoom_header = psf_header.copy()
+        a_pix = psf_zoom_header['BMAJ'] * sky_to_pix * fwhm_to_sig
+        b_pix = psf_zoom_header['BMIN'] * sky_to_pix * fwhm_to_sig
+        p_pix = np.radians(psf_zoom_header['BPA']) + 0.5 * np.pi
+
+        psf_zoom_header['NAXIS1'] = psf_size
+        psf_zoom_header['NAXIS2'] = psf_size
+        psf_zoom_image = Gaussian2DKernel(
+            x_stddev=a_pix, y_stddev=b_pix, theta=p_pix,
+            x_size=psf_size, y_size=psf_size, mode='center'
+        ).array
+        psf_zoom_image /= np.amax(psf_zoom_image)
+        fits.PrimaryHDU(data=psf_zoom_image, header=psf_zoom_header).writeto(psf_zoom, overwrite=True)
+
+        # --- Build target (new) PSF ---
+        a_pix = a * sky_to_pix
+        b_pix = b * sky_to_pix
+
+        psf_new_header = psf_header.copy()
+        psf_new_header['NAXIS1'] = psf_size
+        psf_new_header['NAXIS2'] = psf_size
+        psf_new_header['BMAJ']   = a / fwhm_to_sig
+        psf_new_header['BMIN']   = b / fwhm_to_sig
+        psf_new_header['BPA']    = np.degrees(p - 0.5 * np.pi)
+        psf_new_image = Gaussian2DKernel(
+            x_stddev=a_pix, y_stddev=b_pix, theta=p,
+            x_size=psf_size, y_size=psf_size, mode='center'
+        ).array
+        psf_new_image /= np.amax(psf_new_image)
+        fits.PrimaryHDU(data=psf_new_image, header=psf_new_header).writeto(psf_new, overwrite=True)
+
+        # --- Run pypher to generate the homogenization kernel ---
+        try:
+            msg(f'Generating convolution kernel using pypher for {os.path.basename(psf)}')
+            subprocess.run(
+                [f'pypher {psf_zoom} {psf_new} {kernel}'],
+                shell=True, check=True
+            )
+            msg(f'Successfully created kernel: {os.path.basename(kernel)}')
+        except subprocess.CalledProcessError as e:
+            return {
+                'psf': psf, 'success': False, 'processed': 0, 'failed': 1,
+                'message': f'pypher failed for {os.path.basename(psf)}: {e}'
+            }
+
+    # Re-derive psf_new_image for the convolution step (needed whether kernel
+    # was just built or already existed on disk)
+    a_pix = a * sky_to_pix
+    b_pix = b * sky_to_pix
+    psf_new_image = Gaussian2DKernel(
+        x_stddev=a_pix, y_stddev=b_pix, theta=p,
+        x_size=psf_size, y_size=psf_size, mode='center'
+    ).array
+    psf_new_image /= np.amax(psf_new_image)
+
+    # --- Apply kernel to all associated Stokes images ---
+    images = glob.glob(psf.split('-psf.fits')[0] + '*-image.fits')
+    images = [im for im in images if not ('-Plin-' in im or '-Ptot-' in im)]
+
+    for im in images:
+        try:
+            image_name    = im.replace('image.fits', 'image.homogenized.fits')
+            residual      = im.replace('image.fits', 'residual.fits')
+            residual_name = im.replace('image.fits', 'residual.homogenized.fits')
+            model         = im.replace('image.fits', 'model.fits')
+
+            model_image    = get_image(model)
+            residual_image = get_image(residual)
+            kernel_image   = get_image(kernel)
+
+            if model_image is None or residual_image is None or kernel_image is None:
+                msg(f'Warning: Could not load required images for {im}, skipping')
+                continue
+
+            # Convolve model with new PSF, residual with homogenization kernel
+            image_new  = scipy.signal.fftconvolve(model_image,    psf_new_image, mode='same')
+            image_rms  = scipy.signal.fftconvolve(residual_image, kernel_image,  mode='same')
+            image_new += image_rms
+
+            header = fits.getheader(im)
+            header['BMAJ']    = a / fwhm_to_sig
+            header['BMIN']    = b / fwhm_to_sig
+            header['BPA']     = np.degrees(p - 0.5 * np.pi)
+            header['HISTORY'] = 'Beam homogenized using pypher kernel'
+
+            create_fits(np.asarray(image_new, dtype=np.float32), header, image_name)
+            create_fits(np.asarray(image_rms, dtype=np.float32), header, residual_name)
+
+            msg(f'Successfully processed: {os.path.basename(image_name)}')
+
+        except Exception as e:
+            msg(f'Error processing image {im}: {e}')
+            continue
+
+    return {
+        'psf': psf, 'success': True, 'processed': 1, 'failed': 0,
+        'message': f'Completed: {os.path.basename(psf)}'
+    }
+
+
 def homogenize_images(identifier: str, beam: Tuple[float, float, float], 
                      resources: Dict[str, Any], sigma_threshold: float = 3.0) -> None:
     """
@@ -1889,140 +2041,52 @@ def homogenize_images(identifier: str, beam: Tuple[float, float, float],
     
     msg(f"Processing {len(good_psfs)} good PSF files (rejected {len(rejected_psfs)} outliers)")
     
-    good_images = []
     processed_count = 0
     failed_count = 0
-    
-    # Iterate through good PSFs only (these are Stokes independent)
-    for psf in good_psfs:
 
-        # Define various names for psf
-        psf_header = fits.getheader(psf)
-        psf_zoom = psf.replace('psf.fits', 'psf.zoom.fits') 
-        psf_new   = psf.replace('psf.fits', 'psf.new.fits') 
-        kernel     = psf.replace('psf.fits', 'psf.kernel.fits') 
-        
-        # Get sky to pixel and FWHM to SIGMA conversions
-        sky_to_pix    = (abs(psf_header.get('CDELT1'))) ** (-1)
-        fwhm_to_sig = (8 * np.log(2)) ** (-0.5)
+    # Determine worker count from available memory and CPU count.
+    # Each worker runs two fftconvolve calls; budget ~14 array-equivalents
+    # (inputs + FFT working buffers + outputs) plus 100 MB process overhead.
+    available_gb = psutil.virtual_memory().available / 1024**3
+    sample_image = good_psfs[0].replace('-psf.fits', '-I-image.fits')
+    if not os.path.exists(sample_image):
+        # Fall back to any image associated with the first PSF
+        candidates = glob.glob(good_psfs[0].split('-psf.fits')[0] + '*-image.fits')
+        sample_image = candidates[0] if candidates else None
 
-        # Make PSF images
-        psf_size = 101      
+    if sample_image:
+        with fits.open(sample_image) as hdul:
+            array_bytes = hdul[0].data.nbytes
+        per_worker_gb = (14 * array_bytes + 100 * 1024**2) / 1024**3
+    else:
+        per_worker_gb = 2.0
+        msg('Warning: Could not find sample image for memory estimation, assuming 2.00 GB/worker')
 
-        # This will check if channel is flagged (WSCLEAN assigns the BMAJ as 0 for these channels)
-        # Note: We already filtered outliers, but this is an additional safety check
-        if psf_header['BMAJ'] > 1e-14:
+    mem_cap  = max(1, int(available_gb // per_worker_gb))
+    cpu_cap  = os.cpu_count() or 1
+    n_workers = min(mem_cap, cpu_cap, len(good_psfs))
 
-            good_images.append(True)
+    msg(f'Memory available      : {available_gb:.2f} GB')
+    msg(f'Est. memory/worker    : {per_worker_gb:.2f} GB')
+    msg(f'Workers (mem cap)     : {mem_cap}')
+    msg(f'Workers (CPU cap)     : {cpu_cap}')
+    msg(f'Workers (selected)    : {n_workers}')
 
-            # If kernel exists skip this psf
-            if os.path.exists(kernel):
-                msg(f'Skipping {psf} as homogenization kernel already exists; delete {kernel} to re-run')
-                processed_count += 1    
-                continue 
-
-            # Original PSF
-            psf_zoom_header = psf_header.copy()
-            a_pix = psf_zoom_header['BMAJ'] * sky_to_pix * fwhm_to_sig
-            b_pix = psf_zoom_header['BMIN'] * sky_to_pix * fwhm_to_sig
-            p_pix = np.radians(psf_zoom_header['BPA']) + 0.5 * np.pi
-        
-            psf_zoom_header['NAXIS1'] = psf_size
-            psf_zoom_header['NAXIS2'] = psf_size
-            psf_zoom_image = Gaussian2DKernel(x_stddev = a_pix, y_stddev = b_pix, theta = p_pix, x_size = psf_size , y_size = psf_size, mode='center').array
-            psf_zoom_image /= np.amax(psf_zoom_image)
-
-            psf_zoom_hdul = fits.PrimaryHDU(data=psf_zoom_image, header=psf_zoom_header)
-            psf_zoom_hdul.writeto(psf_zoom, overwrite=True)
-
-            # New PSF (target beam)
-            a_pix = a * sky_to_pix
-            b_pix = b * sky_to_pix
-
-            psf_new_header = psf_header.copy()
-            psf_new_header['NAXIS1'] = psf_size
-            psf_new_header['NAXIS2'] = psf_size
-            psf_new_header['BMAJ'] = a / fwhm_to_sig
-            psf_new_header['BMIN'] = b / fwhm_to_sig
-            psf_new_header['BPA'] = np.degrees(p - 0.5 * np.pi)
-            psf_new_image = Gaussian2DKernel(x_stddev=a_pix, y_stddev = b_pix, theta = p, x_size = psf_size , y_size = psf_size, mode='center').array
-            psf_new_image /= np.amax(psf_new_image)
-
-            psf_new_hdul = fits.PrimaryHDU(data=psf_new_image, header=psf_new_header)
-            psf_new_hdul.writeto(psf_new, overwrite=True)
-
-            # Run pypher to generate a homogenization kernel
+    # Dispatch all PSFs in parallel; each worker is fully independent
+    with ProcessPoolExecutor(max_workers=n_workers) as pool:
+        futures = {
+            pool.submit(process_psf, psf, beam, identifier): psf
+            for psf in good_psfs
+        }
+        for future in as_completed(futures):
             try:
-                msg(f'Generating convolution kernel using pypher for {os.path.basename(psf)}')
-                subprocess.run(["pypher {} {} {}".format(psf_zoom, psf_new, kernel)], shell=True, check=True)        
-                msg(f'Successfully created kernel: {os.path.basename(kernel)}')
-            except subprocess.CalledProcessError as e:
-                msg(f'Error running pypher for {psf}: {e}')
-                good_images[-1] = False
+                result = future.result()
+                msg(result['message'])
+                processed_count += result['processed']
+                failed_count    += result['failed']
+            except Exception as e:
+                msg(f'ERROR processing {futures[future]}: {e}')
                 failed_count += 1
-                continue
-
-            # Iterate through the images
-            images = glob.glob(psf.split('-psf.fits')[0] + '*-image.fits')
-
-            # Remove Plin and Ptot images as these are not produced by WSClean
-            # and are not relevant for homogenization
-            images = [im for im in images if not ('-Plin-' in im or '-Ptot-' in im)]
-
-            for im in images:
-
-                try:
-                    # Get various names
-                    image_name = im.replace('image.fits', 'image.homogenized.fits') 
-                    residual = im.replace('image.fits', 'residual.fits')
-                    residual_name = im.replace('image.fits', 'residual.homogenized.fits') 
-                    model = im.replace('image.fits', 'model.fits')
-                
-                    # Load images with error checking
-                    model_image = get_image(model)
-                    residual_image = get_image(residual)
-                    kernel_image = get_image(kernel)
-                    
-                    if model_image is None or residual_image is None or kernel_image is None:
-                        msg(f'Warning: Could not load required images for {im}')
-                        continue
-                
-                    # Convolve model with new PSF
-                    image_new = scipy.signal.fftconvolve(model_image, psf_new_image, mode='same')
-                    
-                    # Convolve residual with kernel
-                    image_rms = scipy.signal.fftconvolve(residual_image, kernel_image, mode='same')
-                    
-                    # Combine model and residual
-                    image_new += image_rms
-                
-                    # Save outputs with updated header
-                    header = fits.getheader(im)
-                    header['BMAJ'] = a / fwhm_to_sig
-                    header['BMIN'] = b / fwhm_to_sig
-                    header['BPA'] = np.degrees(p - 0.5 * np.pi)
-                    header['HISTORY'] = f'Beam homogenized using pypher kernel'
-                
-                    # For image_new
-                    image_new = np.asarray(image_new, dtype=np.float32)
-                    create_fits(image_new, header, image_name)
-                    
-                    # For image_rms
-                    image_rms = np.asarray(image_rms, dtype=np.float32)  
-                    create_fits(image_rms, header, residual_name)
-                    
-                    msg(f'Successfully processed: {os.path.basename(image_name)}')
-                
-                except Exception as e:
-                    msg(f'Error processing image {im}: {e}')
-                    continue
-            
-            processed_count += 1
-
-        else:
-            msg(f'Skipping {psf} - invalid beam (BMAJ <= 1e-14)')
-            good_images.append(False)
-            failed_count += 1
 
     msg(f"Homogenization summary for {identifier}:")
     msg(f"  Total PSF files found: {len(psfs)}")
@@ -2156,4 +2220,6 @@ def main() -> None:
         sys.exit(1)
 
 if __name__ == '__main__':
+    # Guard required for ProcessPoolExecutor on macOS/Windows (spawn start method).
+    # Safe no-op on Linux (fork), but good practice regardless.
     main()
