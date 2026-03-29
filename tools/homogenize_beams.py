@@ -49,6 +49,49 @@ def msg(txt: str) -> None:
     stamp = time.strftime(' %Y-%m-%d %H:%M:%S | ')
     print(stamp + txt, flush=True)
 
+
+def get_available_memory_gb() -> float:
+    """
+    Return the available memory in GB, preferring SLURM allocation over
+    node-wide psutil figures.
+
+    SLURM environment variables checked (in order):
+      SLURM_MEM_PER_NODE  — total MB allocated to this job
+      SLURM_MEM_PER_CPU   — MB per CPU; multiplied by SLURM_CPUS_ON_NODE
+    Falls back to psutil.virtual_memory().available if neither is set.
+    """
+    slurm_mem_node = os.environ.get('SLURM_MEM_PER_NODE')
+    if slurm_mem_node:
+        try:
+            allocated_gb = int(slurm_mem_node) / 1024.0
+            msg(f'SLURM allocation detected: SLURM_MEM_PER_NODE={slurm_mem_node} MB '
+                f'-> {allocated_gb:.1f} GB')
+            return allocated_gb
+        except ValueError:
+            pass
+
+    slurm_mem_cpu  = os.environ.get('SLURM_MEM_PER_CPU')
+    # Use allocated CPUs (not SLURM_CPUS_ON_NODE which reflects the full node)
+    _cpus_per_task = os.environ.get('SLURM_CPUS_PER_TASK')
+    _ntasks        = os.environ.get('SLURM_NTASKS')
+    _alloc_cpus    = (int(_cpus_per_task) * int(_ntasks) if _cpus_per_task and _ntasks
+                      else int(_cpus_per_task) if _cpus_per_task
+                      else int(_ntasks) if _ntasks
+                      else None)
+    if slurm_mem_cpu and _alloc_cpus:
+        try:
+            allocated_gb = int(slurm_mem_cpu) * _alloc_cpus / 1024.0
+            msg(f'SLURM allocation detected: SLURM_MEM_PER_CPU={slurm_mem_cpu} MB x '
+                f'{_alloc_cpus} allocated CPUs -> {allocated_gb:.1f} GB')
+            return allocated_gb
+        except ValueError:
+            pass
+
+    # No SLURM allocation found — use node-wide available memory
+    available_gb = psutil.virtual_memory().available / 1024**3
+    msg(f'No SLURM allocation detected — using node-wide available memory: {available_gb:.1f} GB')
+    return available_gb
+
 def get_divisors(n: int) -> List[int]:
     """
     Get all divisors of n in descending order for optimal chunk sizing.
@@ -89,11 +132,43 @@ def get_system_resources(memory_threshold: float = 0.8) -> Dict[str, Any]:
     # CPU information
     cpu_physical = psutil.cpu_count(logical=False)
     cpu_logical = psutil.cpu_count(logical=True)
+
+    # Respect SLURM CPU allocation if present — same priority order as compute_max_workers
+    # SLURM_CPUS_ON_NODE intentionally excluded (reflects total node, not allocation)
+    import re as _re
+    _cpus_per_task = os.environ.get('SLURM_CPUS_PER_TASK')
+    _ntasks        = os.environ.get('SLURM_NTASKS')
+    _job_cpus      = os.environ.get('SLURM_JOB_CPUS_PER_NODE', '')
+    _job_cpus_m    = _re.match(r'(\d+)', _job_cpus)
+
+    if _cpus_per_task and _ntasks:
+        slurm_cpu_cap = int(_cpus_per_task) * int(_ntasks)
+        _cpu_src = f'SLURM_CPUS_PER_TASK={_cpus_per_task} x SLURM_NTASKS={_ntasks}'
+    elif _cpus_per_task:
+        slurm_cpu_cap = int(_cpus_per_task)
+        _cpu_src = f'SLURM_CPUS_PER_TASK={_cpus_per_task}'
+    elif _job_cpus_m:
+        slurm_cpu_cap = int(_job_cpus_m.group(1))
+        _cpu_src = f'SLURM_JOB_CPUS_PER_NODE={_job_cpus} -> {slurm_cpu_cap}'
+    elif _ntasks:
+        slurm_cpu_cap = int(_ntasks)
+        _cpu_src = f'SLURM_NTASKS={_ntasks}'
+    else:
+        slurm_cpu_cap = None
+        _cpu_src = 'os.cpu_count() (no SLURM allocation detected)'
+
+    # Cap physical/logical counts to SLURM allocation if present
+    if slurm_cpu_cap is not None:
+        cpu_physical = min(cpu_physical, slurm_cpu_cap)
+        cpu_logical  = min(cpu_logical,  slurm_cpu_cap)
+        msg(f'SLURM CPU cap applied: {slurm_cpu_cap} CPUs [{_cpu_src}]')
+    else:
+        msg(f'No SLURM CPU cap [{_cpu_src}]')
     
-    # Memory information
+    # Memory information — respect SLURM allocation if present
     memory = psutil.virtual_memory()
     total_memory_gb = memory.total / (1024**3)
-    available_memory_gb = memory.available / (1024**3)
+    available_memory_gb = get_available_memory_gb()
     
     # Calculate usable memory with single threshold
     usable_memory_gb = available_memory_gb * memory_threshold
@@ -2047,7 +2122,7 @@ def homogenize_images(identifier: str, beam: Tuple[float, float, float],
     # Determine worker count from available memory and CPU count.
     # Each worker runs two fftconvolve calls; budget ~14 array-equivalents
     # (inputs + FFT working buffers + outputs) plus 100 MB process overhead.
-    available_gb = psutil.virtual_memory().available / 1024**3
+    available_gb = get_available_memory_gb()
     sample_image = good_psfs[0].replace('-psf.fits', '-I-image.fits')
     if not os.path.exists(sample_image):
         # Fall back to any image associated with the first PSF
@@ -2063,14 +2138,38 @@ def homogenize_images(identifier: str, beam: Tuple[float, float, float],
         msg('Warning: Could not find sample image for memory estimation, assuming 2.00 GB/worker')
 
     mem_cap  = max(1, int(available_gb // per_worker_gb))
-    cpu_cap  = os.cpu_count() or 1
+    # --- SLURM-aware CPU cap ---
+    # SLURM_CPUS_ON_NODE is intentionally excluded: it reports the total node
+    # CPU count, not the allocation, and would defeat the purpose of this check.
+    import re as _re
+    _cpus_per_task = os.environ.get('SLURM_CPUS_PER_TASK')
+    _ntasks        = os.environ.get('SLURM_NTASKS')
+    _job_cpus      = os.environ.get('SLURM_JOB_CPUS_PER_NODE', '')
+    _job_cpus_m    = _re.match(r'(\d+)', _job_cpus)
+
+    if _cpus_per_task and _ntasks:
+        cpu_cap = int(_cpus_per_task) * int(_ntasks)
+        _cpu_src = f'SLURM_CPUS_PER_TASK={_cpus_per_task} x SLURM_NTASKS={_ntasks}'
+    elif _cpus_per_task:
+        cpu_cap = int(_cpus_per_task)
+        _cpu_src = f'SLURM_CPUS_PER_TASK={_cpus_per_task}'
+    elif _job_cpus_m:
+        cpu_cap = int(_job_cpus_m.group(1))
+        _cpu_src = f'SLURM_JOB_CPUS_PER_NODE={_job_cpus} -> {cpu_cap}'
+    elif _ntasks:
+        cpu_cap = int(_ntasks)
+        _cpu_src = f'SLURM_NTASKS={_ntasks}'
+    else:
+        cpu_cap = os.cpu_count() or 1
+        _cpu_src = f'os.cpu_count() (no SLURM allocation detected)'
+
     n_workers = min(mem_cap, cpu_cap, len(good_psfs))
 
-    msg(f'Memory available      : {available_gb:.2f} GB')
+    msg(f'Memory available      : {available_gb:.2f} GB  [{"SLURM" if any(os.environ.get(v) for v in ("SLURM_MEM_PER_NODE","SLURM_MEM_PER_CPU")) else "psutil/proc"}]')
     msg(f'Est. memory/worker    : {per_worker_gb:.2f} GB')
     msg(f'Workers (mem cap)     : {mem_cap}')
-    msg(f'Workers (CPU cap)     : {cpu_cap}')
-    msg(f'Workers (selected)    : {n_workers}')
+    msg(f'Workers (CPU cap)     : {cpu_cap}  [{_cpu_src}]')
+    msg(f'Workers (selected)    : {n_workers}  [min(mem={mem_cap}, cpu={cpu_cap}, images={len(good_psfs)})]')
 
     # Dispatch all PSFs in parallel; each worker is fully independent
     with ProcessPoolExecutor(max_workers=n_workers) as pool:

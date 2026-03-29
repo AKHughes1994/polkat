@@ -29,7 +29,7 @@ def main():
     gen.setup_dir(cfg.LOGS)
     gen.setup_dir(cfg.SCRIPTS)
     gen.setup_dir(cfg.GAINTABLES)
-
+    gen.setup_dir(cfg.RESULTS)
 
     INFRASTRUCTURE, CONTAINER_PATH = gen.set_infrastructure(sys.argv)
     if CONTAINER_PATH is not None:
@@ -65,6 +65,8 @@ def main():
     syscall += ' python3 '+cfg.TOOLS+'/scan_times.py '+myms+'\n'
     syscall += CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
     syscall += ' python3 '+cfg.TOOLS+'/find_sun.py '+myms+'\n'
+    syscall += CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
+    syscall += ' python3 '+cfg.TOOLS+'/get_elevation_range.py '+myms+'\n'
     syscall += CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
     syscall += ' python3 '+cfg.OXKAT+'/1GC_00_setup.py '+myms+'\n'
     syscall += CONTAINER_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''

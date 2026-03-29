@@ -94,16 +94,39 @@ def compute_max_workers(image_list):
     per_worker = estimate_memory_per_worker_bytes(image_list[0])
 
     mem_cap = max(1, int(available // per_worker))
-    cpu_cap = os.cpu_count() or 1
+    # --- SLURM-aware CPU cap ---
+    # SLURM_CPUS_ON_NODE is intentionally excluded: it reports total node CPUs,
+    # not the allocation. We multiply cpus_per_task x ntasks when both are set.
+    import re as _re
+    _cpus_per_task = os.environ.get('SLURM_CPUS_PER_TASK')
+    _ntasks        = os.environ.get('SLURM_NTASKS')
+    _job_cpus      = os.environ.get('SLURM_JOB_CPUS_PER_NODE', '')
+    _job_cpus_m    = _re.match(r'(\d+)', _job_cpus)
+
+    if _cpus_per_task and _ntasks:
+        cpu_cap    = int(_cpus_per_task) * int(_ntasks)
+        _cpu_src   = f'SLURM_CPUS_PER_TASK={_cpus_per_task} x SLURM_NTASKS={_ntasks}'
+    elif _cpus_per_task:
+        cpu_cap    = int(_cpus_per_task)
+        _cpu_src   = f'SLURM_CPUS_PER_TASK={_cpus_per_task}'
+    elif _job_cpus_m:
+        cpu_cap    = int(_job_cpus_m.group(1))
+        _cpu_src   = f'SLURM_JOB_CPUS_PER_NODE={_job_cpus} -> {cpu_cap}'
+    elif _ntasks:
+        cpu_cap    = int(_ntasks)
+        _cpu_src   = f'SLURM_NTASKS={_ntasks}'
+    else:
+        cpu_cap    = os.cpu_count() or 1
+        _cpu_src   = 'os.cpu_count() (no SLURM allocation detected)'
     n_images = len(image_list)
 
     workers = min(mem_cap, cpu_cap, n_images)
 
-    msg(f'Memory available   : {available / 1024**3:.2f} GB')
+    msg(f'Memory available   : {available / 1024**3:.2f} GB  [{"SLURM" if any(os.environ.get(v) for v in ("SLURM_MEM_PER_NODE","SLURM_MEM_PER_CPU")) else "psutil/proc"}]')
     msg(f'Est. memory/worker : {per_worker / 1024**3:.2f} GB')
     msg(f'Workers (mem cap)  : {mem_cap}')
-    msg(f'Workers (CPU cap)  : {cpu_cap}')
-    msg(f'Workers (selected) : {workers}')
+    msg(f'Workers (CPU cap)  : {cpu_cap}  [{_cpu_src}]')
+    msg(f'Workers (selected) : {workers}  [min(mem={mem_cap}, cpu={cpu_cap}, images={n_images})]')
 
     return workers
 

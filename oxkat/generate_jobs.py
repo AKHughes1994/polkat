@@ -17,7 +17,7 @@ from oxkat import config as cfg
 def preamble():
     print('---------------------+----------------------------------------------------------')
     print('                     |')
-    print('                     | v1.1')  
+    print('                     | v1.2')  
     print('   p o l  k  a  t    | The poorly coded, younger brother of oxkat:')
     print('   C A S A / Q C     | Feel free to email questions/concerns to:')
     print('                     | hughesakh@gmail.com')
@@ -48,12 +48,12 @@ def print_spacer():
 def set_infrastructure(args):
 
     if len(args) == 1:
-        print(col()+'Please specify infrastructure (idia / chpc / hippo / node)')
+        print(col()+'Please specify infrastructure (idia / chpc / hippo / node / glam)')
         print_spacer()
         sys.exit()
 
-    if args[1].lower() not in ['idia','chpc','hippo','node']:
-        print(col()+'Please specify infrastructure (idia / chpc / hippo / node)')
+    if args[1].lower() not in ['idia','chpc','hippo','node','glam']:
+        print(col()+'Please specify infrastructure (idia / chpc / hippo / node / glam)')
         print_spacer()
         sys.exit()
 
@@ -66,6 +66,9 @@ def set_infrastructure(args):
     elif args[1].lower() == 'node':
         infrastructure = 'node'
         CONTAINER_PATH = cfg.NODE_CONTAINER_PATH
+    elif args[1].lower() == 'glam':
+        infrastructure = 'glam'
+        CONTAINER_PATH = cfg.GLAM_CONTAINER_PATH
     elif args[1].lower() == 'hippo':
         infrastructure = 'hippo'
         CONTAINER_PATH = None
@@ -205,6 +208,8 @@ def job_handler(syscall,
                 slurm_nodelist = cfg.SLURM_NODELIST,
                 slurm_exclude = cfg.SLURM_EXCLUDE,
                 pbs_config = cfg.PBS_DEFAULTS,
+                glam_config = cfg.GLAM_STANDARD,
+                grouping = None,
                 bind = cfg.BIND):
                 # slurm_time=cfg.SLURM_TIME,
                 # slurm_partition=cfg.SLURM_PARTITION,
@@ -330,6 +335,43 @@ def job_handler(syscall,
 
         make_executable(pbs_runfile)
 
+    elif infrastructure == 'glam':
+
+        # GLAM uses custom addqueue scripts
+        glam_cpus = glam_config['CPUS']
+        glam_mem = glam_config['MEM']
+
+        # Split syscall into lines
+        syscall_lines = [line for line in syscall.splitlines() if line.strip()]
+        
+        # Group commands based on grouping parameter
+        if grouping is None:
+            # Put all commands in a single file
+            command_groups = [syscall_lines]
+        elif grouping == 1:
+            # One command per file (original behavior)
+            command_groups = [[line] for line in syscall_lines]
+        else:
+            # Group N commands per file
+            command_groups = []
+            for i in range(0, len(syscall_lines), grouping):
+                command_groups.append(syscall_lines[i:i+grouping])
+        
+        # Create runfiles for each group
+        for k, group in enumerate(command_groups):
+            glam_runfile = cfg.SCRIPTS+'/glam_'+jobname+f'_part{k:03d}.sh'
+            
+            f = open(glam_runfile,'w')
+            f.write('#!/bin/bash\n')
+            for line in group:
+                f.write(line+'\n')
+            f.close()
+            
+            make_executable(glam_runfile)
+
+        # Return empty run_command as GLAM uses custom addqueue scripts
+        run_command = ''
+
     elif infrastructure == 'node':
 
         node_logfile = cfg.LOGS + '/oxk_' + jobname + '.log'
@@ -340,10 +382,10 @@ def job_handler(syscall,
         for line in syscall.splitlines():
             if line.strip():  # non-blank
                 if first:
-                    lines.append(f"{line} |& tee {node_logfile}")
+                    lines.append(f"{{ time {line} ; }} 2>&1 | tee {node_logfile}")
                     first = False
                 else:
-                    lines.append(f"{line} |& tee -a {node_logfile}")
+                    lines.append(f"{{ time {line} ; }} 2>&1 | tee -a {node_logfile}")
             else:
                 lines.append("")
 
@@ -373,6 +415,8 @@ def absmem_helper(step,infrastructure,absmem):
         config_mem = step['pbs_config']['MEM']
     elif infrastructure == 'idia':
         config_mem = step['slurm_config']['MEM']
+    elif infrastructure == 'glam':
+        config_mem = step['glam_config']['MEM']
     elif infrastructure == 'hippo':
         slurm_cpus = step['slurm_config']['CPUS']
         if int(slurm_cpus) > 20:
@@ -493,11 +537,15 @@ def generate_syscall_predict(msname,
                             mem = cfg.WSC_MEM,
                             absmem = cfg.WSC_ABSMEM,
                             parallelreordering = cfg.WSC_PARALLELREORDERING,
-                            parallelgridding = cfg.WSC_PARALLELGRIDDING):
+                            parallelgridding = cfg.WSC_PARALLELGRIDDING,
+                            cores = False,
+                            tempdir = None):
 
     # Generate system call to run wsclean in predict mode
     syscall = 'wsclean '
     syscall += '-predict '
+    if cores:
+        syscall += '-j '+str(cores)+' '
     syscall += '-field '+str(field)+' '
     syscall += '-pol ' + str(pol) + ' '
 
@@ -505,6 +553,8 @@ def generate_syscall_predict(msname,
         syscall += '-parallel-reordering '+str(parallelreordering)+' '
     if parallelgridding != 0:
         syscall += '-parallel-gridding '+str(parallelgridding)+' '
+    if tempdir is not None:
+        syscall += '-temp-dir '+tempdir+' '
     if intervalsout:
         syscall += '-intervals-out ' + str(intervalsout) + ' '
     syscall += '-channels-out '+str(chanout)+' '
@@ -554,7 +604,8 @@ def generate_syscall_wsclean(mslist,
                           nwlayersfactor = cfg.WSC_NWLAYERSFACTOR,
                           joinchannels = cfg.WSC_JOINCHANNELS,
                           joinpolarizations = cfg.WSC_JOINPOLARIZATIONS,
-                          squarepolarizations = cfg.WSC_SQUAREPOLARIZATIONS,
+                          squarechans = cfg.WSC_SQUARECHANS,
+                          qu_automask_scale = cfg.WSC_QU_AUTOMASK_SCALE,
                           pol = cfg.WSC_POL,
                           splitpol = cfg.WSC_SPLITPOL,
                           padding = cfg.WSC_PADDING,
@@ -564,8 +615,8 @@ def generate_syscall_wsclean(mslist,
                           threshold = cfg.WSC_THRESHOLD,
                           autothreshold = cfg.WSC_AUTOTHRESHOLD,
                           automask = cfg.WSC_AUTOMASK,
-                          localrms_strength = cfg.WSC_LOCALRMS_STRENGTH,
                           localrms = cfg.WSC_LOCALRMS,
+                          localrms_strength = cfg.WSC_LOCALRMS_STRENGTH,
                           stopnegative = cfg.WSC_STOPNEGATIVE,
                           fitspectralpol = cfg.WSC_FITSPECTRALPOL,
                           circularbeam = cfg.WSC_CIRCULARBEAM,
@@ -578,7 +629,9 @@ def generate_syscall_wsclean(mslist,
                           tukeytaper=cfg.WSC_TUKEYTAPER,
                           paralleldeconvolution = cfg.WSC_PARALLELDECONVOLUTION,
                           parallelreordering = cfg.WSC_PARALLELREORDERING,
-                          parallelgridding = cfg.WSC_PARALLELGRIDDING):
+                          parallelgridding = cfg.WSC_PARALLELGRIDDING,
+                          cores = False,
+                          tempdir = None):
 
     # Generate system call to run wsclean based imaging for 2GC (and beyond)
     if  imsize % 2 != 0:
@@ -597,6 +650,8 @@ def generate_syscall_wsclean(mslist,
     # -----------
     syscall = 'wsclean '
     syscall += '-log-time '
+    if cores:
+        syscall += '-j '+str(cores)+' '
     if absmem < 0:
         syscall += '-mem '+str(mem)+' '
     else:
@@ -605,6 +660,8 @@ def generate_syscall_wsclean(mslist,
         syscall += '-continue '
     if parallelreordering != 0:
         syscall += '-parallel-reordering '+str(parallelreordering)+' '
+    if tempdir is not None:
+        syscall += '-temp-dir '+tempdir+' '
 
     # Outputs  
     if makepsf:
@@ -613,6 +670,7 @@ def generate_syscall_wsclean(mslist,
         syscall += '-no-dirty '
     if sourcelist: # and fitspectralpol != 0:
         syscall += '-save-source-list '
+
 
     # Data selection
     syscall += '-data-column '+datacol+' '
@@ -678,10 +736,12 @@ def generate_syscall_wsclean(mslist,
     syscall += '-niter '+str(niter)+' '
     syscall += '-gain '+str(gain)+' '
     syscall += '-mgain '+str(mgain)+' '
-    if chandeconvolution:
+    if chandeconvolution and fitspectralpol != 0:
         syscall += '--deconvolution-channels '+str(chandeconvolution)+' '
     if joinchannels:
         syscall += '-join-channels '
+        if squarechans:
+            syscall += '-squared-channel-joining '
 
     if nonegative:
         syscall += '-no-negative '
@@ -738,38 +798,63 @@ def generate_syscall_wsclean(mslist,
     else:
         syscall_arr.append(wsclean_syscall_base + f'-channels-out {chanout} -name {imgname} ')
 
-    # Add option to split the deconvolution into IV and QU steps
+    # Add option to split the deconvolution into IQU & IV steps
     # Sources with large rotation measures may not want polynomial fitting to the QU channels
     if splitpol and pol != 'I':
-        pol_IQU = pol.replace('V','')
+        pol_QU  = pol.replace('V','').replace('I','')
         pol_IV  = pol.replace('Q', '').replace('U','')
 
         spectralpol_IV = ''
         if fitspectralpol != 0:
             spectralpol_IV = '-fit-spectral-pol '+str(fitspectralpol) + ' '
 
-        joinpol_IQU = ''
-        squarepol = ''
+        joinpol_QU = ''
 
-        if joinpolarizations and len(pol.replace('V','')) >= 2:
-            joinpol_IQU     = '-join-polarizations '
-            if squarepolarizations:
-                squarepol = '-squared-channel-joining '    
+        if joinpolarizations and len(pol_QU) >= 2:
+            joinpol_QU = '-join-polarizations '
 
         joinpol_IV = ''
-        if joinpolarizations and len(pol.replace('Q', '').replace('U','')) >= 2:
-            joinpol_IV     = '-join-polarizations '
+        if joinpolarizations and len(pol_IV) >= 2:
+            joinpol_IV = '-join-polarizations '
 
         k = len(syscall_arr)
         syscall_arr += syscall_arr
 
+        # Resolve the QU automask scale factor
+        # 'auto' (or unrecognised): scale by 5/3 if automask < 10, else no change
+        # float: always scale by that value
+        try:
+            _scale = float(qu_automask_scale)
+        except (TypeError, ValueError):
+            _scale = None  # treat as 'auto'
+
+        if _scale is not None:
+            _qu_automask = round(automask * _scale, 1) if automask else automask
+        else:
+            # auto mode
+            if automask and automask < 10:
+                _qu_automask = round(automask * 5 / 3, 1)
+            else:
+                _qu_automask = automask
+
         for _k in range(k):
-            syscall_arr[_k] += f'-pol {pol_IQU} {joinpol_IQU} {squarepol} '
-            syscall_arr[_k + k] += f'-pol {pol_IV} {spectralpol_IV} {joinpol_IV} '
+            # QU: apply scaled automask when squarechans is active
+            # also strip --deconvolution-channels (only appropriate for IV)
+            qu_syscall = syscall_arr[_k]
+            if chandeconvolution:
+                qu_syscall = qu_syscall.replace(
+                    f'--deconvolution-channels {chandeconvolution} ', '')
+            if squarechans and automask and _qu_automask != automask:
+                qu_syscall = qu_syscall.replace(
+                    f'-auto-mask {automask} ',
+                    f'-auto-mask {_qu_automask} ')
+            syscall_arr[_k] = qu_syscall + f'-pol {pol_QU} {joinpol_QU} '
+            # IV: strip squared-channel-joining unconditionally (not appropriate for Stokes V)
+            iv_syscall = syscall_arr[_k + k].replace('-squared-channel-joining ', '')
+            syscall_arr[_k + k] = iv_syscall + f'-pol {pol_IV} {spectralpol_IV} {joinpol_IV} '
 
     else:
         joinpol = ''
-        squarepol = ''
         spectralpol = ''
 
         if joinpolarizations and len(pol) > 1:
@@ -1148,3 +1233,490 @@ def generate_syscall_crystalball(myms,
 
 # ------------------------------------------------------------------------
 
+
+# ========================================================================
+# GLAMDRING-SPECIFIC QUEUE SELECTION FUNCTIONS
+# ========================================================================
+# Functions for automatically selecting the best Slurm queue based on
+# resource availability on the Glamdring cluster.
+# Based on get_queue_summary.py functionality.
+# ========================================================================
+
+import re
+import subprocess
+from typing import Dict, List, Any, Tuple, Set
+
+
+_NUM_PAIR_RE = re.compile(
+    r"^\s*([0-9]+(?:\.[0-9]+)?)\s*/\s*([0-9]+(?:\.[0-9]+)?)\s*$"
+)
+
+
+def run_n() -> str:
+    """
+    Execute the 'n' command and return its output.
+    
+    Returns:
+        str: stdout from the 'n' command
+    """
+    cp = subprocess.run(["n"], check=True, text=True, capture_output=True)
+    return cp.stdout
+
+
+def parse_free_value(cell: str) -> float:
+    """
+    Parse a 'free/total' cell value and return the free amount.
+    
+    Args:
+        cell: String in format "123/456" or "12.5/24.0"
+    
+    Returns:
+        float: The free value (first number)
+    
+    Raises:
+        ValueError: If the cell doesn't match the expected format
+    """
+    m = _NUM_PAIR_RE.match(cell)
+    if not m:
+        raise ValueError
+    return float(m.group(1))
+
+
+def parse_n_table(text: str) -> Dict[str, Dict[str, List[Any]]]:
+    """
+    Parse the output table from 'n' command into structured data.
+    
+    Memory units from 'n' are assumed to be in GB.
+    
+    Args:
+        text: Raw output from 'n' command
+    
+    Returns:
+        Dict mapping queue names to:
+            {"states": [...], "cores": [free...], "mem": [free_gb...]}
+    """
+    data: Dict[str, Dict[str, List[Any]]] = {}
+
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line.startswith("│"):
+            continue
+
+        cells = [c.strip() for c in line.split("│")[1:-1]]
+        if len(cells) < 6:
+            continue
+
+        queue, node, state, cores_cell, mem_cell, _os = cells[:6]
+
+        if node in ("QUEUE TOTAL", "ALL TOTAL"):
+            continue
+        if not queue:
+            continue
+
+        try:
+            free_cores = parse_free_value(cores_cell)
+            free_mem = parse_free_value(mem_cell)
+        except ValueError:
+            continue
+
+        bucket = data.setdefault(queue, {"states": [], "cores": [], "mem": []})
+        bucket["states"].append(state)
+        bucket["cores"].append(free_cores)
+        bucket["mem"].append(free_mem)
+
+    return data
+
+
+def normalise(q: str) -> str:
+    """Normalize queue name to uppercase."""
+    return q.strip().upper()
+
+
+def allowed_states(include_mixed: bool) -> Set[str]:
+    """
+    Return the set of allowed node states.
+    
+    Args:
+        include_mixed: If True, include MIXED state; otherwise only IDLE and OFFtillNEEDED
+    
+    Returns:
+        Set of allowed state strings
+    """
+    s = {"IDLE", "OFFtillNEEDED"}
+    if include_mixed:
+        s.add("MIXED")
+    return s
+
+
+def count_nodes(
+    data: Dict[str, Dict[str, List[Any]]],
+    min_cores: float,
+    min_mem: float,
+    states_ok: Set[str],
+    excluded: Set[str],
+) -> Dict[str, int]:
+    """
+    Count qualifying nodes per queue based on resource requirements.
+    
+    Args:
+        data: Parsed queue data from parse_n_table
+        min_cores: Minimum free cores required per node
+        min_mem: Minimum free memory required per node (GB)
+        states_ok: Set of allowed node states
+        excluded: Set of excluded queue names (normalized)
+    
+    Returns:
+        Dict mapping queue names to count of qualifying nodes
+    """
+    counts: Dict[str, int] = {}
+
+    for queue, info in data.items():
+        if normalise(queue) in excluded:
+            continue
+
+        count = 0
+        for st, c, m in zip(info["states"], info["cores"], info["mem"]):
+            if st in states_ok and c >= min_cores and m >= min_mem:
+                count += 1
+
+        counts[queue] = count
+
+    return counts
+
+
+def pick_best(counts: Dict[str, int]) -> Tuple[List[str], int]:
+    """
+    Select the queue(s) with the most qualifying nodes.
+    
+    Args:
+        counts: Dict mapping queue names to qualifying node counts
+    
+    Returns:
+        Tuple of (list of best queue names, best count)
+    """
+    best_count = -1
+    best: List[str] = []
+    for q, c in counts.items():
+        if c > best_count:
+            best_count = c
+            best = [q]
+        elif c == best_count:
+            best.append(q)
+    return best, best_count
+
+
+def select_best_queue(
+    min_cores: float,
+    min_mem: float,
+    cpu_only_states: bool = False,
+    verbose: bool = False,
+) -> Tuple[str, int]:
+    """
+    Select the best Slurm queue based on resource availability.
+    
+    This function runs the 'n' command, parses its output, and selects
+    the queue with the most nodes meeting the specified requirements.
+    
+    Memory units:
+    - min_mem is interpreted as GB of free memory per node
+    - The 'Mem Free/TOT' column from 'n' is assumed to be in GB
+    
+    Args:
+        min_cores: Minimum free cores required per node
+        min_mem: Minimum free memory required per node (GB)
+        cpu_only_states: If True, only allow IDLE and OFFtillNEEDED states
+                        (exclude MIXED). Default False.
+        verbose: If True, print detailed information about the selection.
+                Default False.
+    
+    Returns:
+        Tuple of (best queue name, number of qualifying nodes)
+        If no queue qualifies, returns ("redwood", 0) as default
+    
+    Example:
+        >>> queue, count = select_best_queue(min_cores=32, min_mem=100)
+        >>> print(f"Selected queue: {queue} with {count} available nodes")
+    """
+    # GPU queues to exclude
+    excluded = {normalise(x) for x in ("GPULONG", "OPTGPU", "CMBGPU")}
+    
+    # Determine allowed states
+    states_ok = allowed_states(include_mixed=not cpu_only_states)
+
+    try:
+        text = run_n()
+    except Exception as e:
+        if verbose:
+            print(f"Error running 'n' command: {e}")
+        return "redwood", 0
+
+    # Parse and analyze
+    data = parse_n_table(text)
+    counts = count_nodes(
+        data,
+        min_cores=min_cores,
+        min_mem=min_mem,
+        states_ok=states_ok,
+        excluded=excluded,
+    )
+
+    best_queues, best_count = pick_best(counts)
+
+    # Default to redwood if nothing qualifies
+    if best_count <= 0:
+        best_queues = ["redwood"]
+        best_count = 0
+
+    if verbose:
+        print(f"Requirements: free_cores >= {min_cores}, free_mem >= {min_mem} GB")
+        print(f"Allowed states: {', '.join(sorted(states_ok))}")
+        print(f"Excluded queues: {', '.join(sorted(excluded))}")
+        print("\nPer-queue qualifying node counts:")
+        for q in sorted(counts):
+            print(f"  {q}: {counts[q]}")
+
+        if best_count == 0:
+            print("\nNo queues meet requirements --- defaulting to: redwood")
+        elif len(best_queues) == 1:
+            print(f"\nBest queue: {best_queues[0]} ({best_count} qualifying nodes)")
+        else:
+            print(f"\nBest queues (tie at {best_count} nodes): {', '.join(sorted(best_queues))}")
+
+    # Return first queue if there's a tie
+    return best_queues[0], best_count
+
+
+def write_glam_submission_script(file_obj, steps, field_name=None):
+    """
+    Write addqueue job submission commands to an opened file object.
+    
+    This function generates a bash script that submits jobs using addqueue,
+    with automatic queue selection and dependency handling for Glamdring.
+    
+    Args:
+        file_obj: An opened file object to write commands to
+        steps: List of step dictionaries containing job configuration.
+               Each step should have:
+               - 'jobname': Name of the job
+               - 'glam_config': Dict with 'CPUS', 'MEM', 'QUEUE' keys
+               - 'dependency': Optional job name this depends on
+        field_name: Optional field name to include in job names
+    
+    The function will:
+    - Automatically determine the best queue using select_best_queue()
+    - Handle multi-part scripts (part000, part001, etc.) as dependency chains
+    - Extract Slurm job IDs and use them for --runafter dependencies
+    - Create log files in cfg.LOGS with standard naming
+    
+    Example usage:
+        with open('submit_jobs.sh', 'w') as f:
+            f.write('#!/usr/bin/env bash\\n')
+            f.write('set -euo pipefail\\n\\n')
+            write_glam_submission_script(f, steps)
+    """
+    import glob
+    
+    file_obj.write('\n# Auto-generated job submission commands for Glamdring\n\n')
+    
+    # Track job IDs for dependencies
+    job_ids = {}  # Maps jobname to variable holding its JOBID
+    
+    # Run queue selection once for all jobs and store results
+    file_obj.write('# Queue Selection Summary:\n')
+    
+    # Get current queue status once
+    try:
+        text = run_n()
+        data = parse_n_table(text)
+        excluded = {normalise(x) for x in ("GPULONG", "OPTGPU", "CMBGPU")}
+        states_ok = allowed_states(include_mixed=True)
+        
+        # Print overall queue status
+        file_obj.write('#\n')
+        file_obj.write('# Current cluster status:\n')
+        for queue_name in sorted(data.keys()):
+            if normalise(queue_name) not in excluded:
+                total_nodes = len(data[queue_name]['cores'])
+                avg_free_cores = sum(data[queue_name]['cores']) / max(1, total_nodes)
+                avg_free_mem = sum(data[queue_name]['mem']) / max(1, total_nodes)
+                file_obj.write(f'#   {queue_name}: {total_nodes} nodes, avg {avg_free_cores:.1f} free cores, avg {avg_free_mem:.1f} GB free mem\n')
+        file_obj.write('#\n')
+    except Exception as e:
+        file_obj.write(f'# Warning: Could not query cluster status: {e}\n')
+        data = {}
+    
+    # Pre-compute queue selections for each step
+    step_info = []
+    
+    for step in steps:
+        jobname = step['id']
+        glam_config = step.get('glam_config', cfg.GLAM_STANDARD)
+        dependency = step.get('dependency', None)
+        
+        # Resolve dependency index to jobname
+        dependency_jobname = None
+        if dependency is not None:
+            if isinstance(dependency, list):
+                # Multiple dependencies - keep as list of jobnames
+                dependency_jobname = []
+                for dep in dependency:
+                    if isinstance(dep, int):
+                        # dependency is a step index, look up the jobname
+                        if 0 <= dep < len(steps):
+                            dependency_jobname.append(steps[dep]['id'])
+                    else:
+                        # dependency is already a jobname string
+                        dependency_jobname.append(dep)
+            elif isinstance(dependency, int):
+                # Single dependency as step index, look up the jobname
+                if 0 <= dependency < len(steps):
+                    dependency_jobname = steps[dependency]['id']
+            else:
+                # dependency is already a jobname string
+                dependency_jobname = dependency
+        
+        # Extract resource requirements
+        cpus = glam_config.get('CPUS', '32')
+        mem_gb = glam_config.get('MEM', '100GB')
+        
+        # Parse memory string to GB number (with headroom for queue selection)
+        mem_value = mem_string_to_gb(mem_gb)
+        
+        # Parse memory value without headroom for addqueue command
+        mem_gb_clean = mem_gb.upper().replace('B', '').replace('G', '').replace('T', '').replace('M', '')
+        mem_numeric = int(float(''.join(x for x in mem_gb_clean if x.isdigit() or x == '.')))
+        
+        # Select best queue based on requirements
+        queue, node_count = select_best_queue(
+            min_cores=float(cpus),
+            min_mem=float(mem_value),
+            cpu_only_states=False,
+            verbose=False
+        )
+        
+        # Store all info for this step
+        step_info.append({
+            'step': step,
+            'jobname': jobname,
+            'cpus': cpus,
+            'mem_gb': mem_gb,
+            'mem_value': mem_value,
+            'mem_numeric': mem_numeric,
+            'queue': queue,
+            'node_count': node_count,
+            'dependency': dependency_jobname
+        })
+        
+        file_obj.write(f'#   {jobname}: Queue={queue}, Cores={cpus}, Mem={mem_gb} ({node_count} nodes available)\n')
+    
+    file_obj.write('\n')
+    
+    # Now process each step with pre-computed queue info
+    for info in step_info:
+        jobname = info['jobname']
+        cpus = info['cpus']
+        mem_gb = info['mem_gb']
+        mem_numeric = info['mem_numeric']
+        queue = info['queue']
+        node_count = info['node_count']
+        dependency = info['dependency']
+        
+        # Find all script files for this job (may be multi-part)
+        # Use exact match to avoid matching POEXT077_1 with POEXT077_10, etc.
+        script_pattern = cfg.SCRIPTS + '/glam_' + jobname + '_part*.sh'
+        script_files = sorted(glob.glob(script_pattern))
+        
+        # If no multi-part files, check for single script
+        if not script_files:
+            single_script = cfg.SCRIPTS + '/glam_' + jobname + '.sh'
+            if glob.glob(single_script):
+                script_files = [single_script]
+        
+        if not script_files:
+            file_obj.write(f'# WARNING: No script files found for {jobname}\n')
+            continue
+        
+        # Log file for this job
+        logfile = cfg.LOGS + '/slurm_' + jobname + '.log'
+        
+        file_obj.write(f'\n# ---- Job: {jobname} ----\n')
+        file_obj.write(f'# Queue: {queue}, Cores: {cpus}, Mem: {mem_gb}\n')
+        
+        # Previous job ID for chaining multi-part scripts
+        prev_jobid_var = None
+        
+        # If this job depends on another job, start with that dependency
+        if dependency:
+            if isinstance(dependency, list):
+                # Multiple dependencies - join only first and last (range notation)
+                dep_vars = []
+                for dep_name in dependency:
+                    if dep_name in job_ids:
+                        dep_vars.append(job_ids[dep_name])
+                if dep_vars:
+                    if len(dep_vars) == 1:
+                        # Single dependency
+                        prev_jobid_var = dep_vars[0]
+                    else:
+                        # Multiple dependencies: use first:last notation (includes all in between)
+                        prev_jobid_var = f'${{{dep_vars[0]}}}:${{{dep_vars[-1]}}}'
+            else:
+                # Single dependency
+                if dependency in job_ids:
+                    prev_jobid_var = job_ids[dependency]
+        
+        # Submit each part
+        for idx, script_file in enumerate(script_files):
+            script_basename = script_file.split('/')[-1]
+            
+            # Variable name and job name for this part's job ID
+            if len(script_files) > 1:
+                jobid_var = f"{jobname}_part{idx:03d}"
+                job_submit_name = f"{jobname}_part{idx:03d}"
+                part_logfile = cfg.LOGS + f'/slurm_{jobname}_part{idx:03d}.log'
+            else:
+                jobid_var = jobname
+                job_submit_name = jobname
+                part_logfile = cfg.LOGS + f'/slurm_{jobname}.log'
+            
+            # Build addqueue command (memory is per-cpu)
+            mem_per_cpu = int(mem_numeric / int(cpus))
+            file_obj.write(f'\n# Submit {script_basename}\n')
+            file_obj.write(f'out="$(addqueue -c "{job_submit_name}" -n 1x{cpus} -m {mem_per_cpu} ')
+            file_obj.write(f'-o "{part_logfile}" -q "{queue}" -s ')
+            
+            # Add dependency if exists
+            if prev_jobid_var:
+                # Check if it's a formatted multi-dependency string (contains ${ and :)
+                if '${' in str(prev_jobid_var) and ':' in str(prev_jobid_var):
+                    # Already formatted as ${VAR1}:${VAR2}, use directly
+                    file_obj.write(f'--runafter "{prev_jobid_var}" ')
+                else:
+                    # Single variable, wrap with ${}
+                    file_obj.write(f'--runafter "${{{prev_jobid_var}}}" ')
+            
+            file_obj.write(f'--sbatch "{script_file}")"\n')
+            
+            # Extract job ID
+            file_obj.write(f'{jobid_var}="$(printf \'%s\\n\' "$out" | ')
+            file_obj.write(f'awk \'/Submitted batch job/ {{print $NF; exit}}\')"\n')
+            
+            # Error check
+            file_obj.write(f'if [[ -z "${{{jobid_var}:-}}" ]]; then\n')
+            file_obj.write(f'  echo "ERROR: Could not extract JOBID for {script_basename}" >&2\n')
+            file_obj.write(f'  echo "---- addqueue output ----" >&2\n')
+            file_obj.write(f'  echo "$out" >&2\n')
+            file_obj.write(f'  exit 1\n')
+            file_obj.write(f'fi\n')
+            file_obj.write(f'echo "Submitted {script_basename} with JOBID=${{{jobid_var}}}"\n')
+            
+            # This part becomes the dependency for the next part
+            prev_jobid_var = jobid_var
+        
+        # Store the last job ID for this step (for other steps that depend on it)
+        job_ids[jobname] = prev_jobid_var
+    
+    file_obj.write('\n# All jobs submitted successfully\n')
+
+
+# ========================================================================

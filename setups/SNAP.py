@@ -34,7 +34,6 @@ def main():
     IMAGES = cfg.IMAGES
     SCRIPTS = cfg.SCRIPTS
     TOOLS = cfg.TOOLS
-    IMAGES = cfg.IMAGES
     INTERVALS = cfg.INTERVALS
 
 
@@ -86,7 +85,8 @@ def main():
     # Initialize workflow by sequentially spliting
     steps = []
     kill_file = SCRIPTS+'/kill_snap_split_jobs.sh'    
-    n = 0    
+    n = 0
+    last_split_code = None  # will be set after at least one successful split step
 
     for tt in range(0,len(target_names)):
         
@@ -185,9 +185,9 @@ def main():
                         pol = 'I',
                         intervalsout = False,
                         mfweight = True,
-                        localrms = False,
-                        automask = 10.0,
-                        autothreshold = 3.0,
+                        localrms = cfg.WSC_LOCALRMS_BLIND,
+                        automask = cfg.WSC_AUTOMASK_BLIND,
+                        autothreshold = cfg.WSC_AUTOTHRESHOLD_BLIND,
                         tukeytaper=False,
                         field='0',
                         absmem = absmem)
@@ -214,6 +214,13 @@ def main():
                 if o.exists(f"{blind_image_prefix}-MFS-image.mask.fits"):
                     model_mask = f"{blind_image_prefix}-MFS-image.mask.fits"
 
+                # If user specified a mask, verify it exists before using it
+                if cfg.SNAP_MODELMASK != '':
+                    if o.exists(cfg.SNAP_MODELMASK):
+                        model_mask = cfg.SNAP_MODELMASK
+                    else:
+                        print(gen.col('WARNING')+f'SNAP_MODELMASK "{cfg.SNAP_MODELMASK}" not found — falling back to blind mask')
+
                 if n == 0:
                     dependency = last_split_code
                 else:
@@ -236,6 +243,7 @@ def main():
                     chanout = cfg.SNAP_CHANNELSOUT,
                     field= '0',
                     pol = pol,
+                    mfweight = False,
                     nomodel = True,
                     sourcelist = False,
                     absmem = absmem)
@@ -252,7 +260,7 @@ def main():
                     step['step'] = n
                     step['comment'] = f'Fix Naming of the snap (MASK) images'
                     step['dependency'] = n - 1
-                    step['id'] = 'HOSNA'+code
+                    step['id'] = 'FXSNA'+code
                     prefix = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
                     syscall =  f'python3 {cfg.TOOLS}/fix_image_naming.py {cfg.SNAP_CHANNELSOUT} {model_image_prefix}'
                     step['syscall'] = prefix + syscall 

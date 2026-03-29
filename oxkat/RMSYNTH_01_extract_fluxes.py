@@ -16,6 +16,7 @@ from scipy.spatial.distance import cdist
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
 sys.path.append(o.abspath(o.join(o.dirname(sys.modules[__name__].__file__), "..")))
 from oxkat import config as cfg
 
@@ -574,6 +575,7 @@ def extract_polarization_properties(src_name,
     # time interval (or the full observation if image_timing=false in rmsynth_info.json).
     prefix_arr = glob.glob(f'{src_im_identifier}MFS*{mfs_im_suffix}')
     prefix_arr = sorted(list(set([x.split('-MFS')[0] for x in prefix_arr])))
+    is_time_resolved = len(prefix_arr) > 1
     msg(f'Found {len(prefix_arr)} prefix(es) (time interval(s)) to process')
     
     for k, prefix in enumerate(prefix_arr[:]):
@@ -1144,12 +1146,29 @@ def extract_polarization_properties(src_name,
                 np.savetxt(rmsynth_fname, rmsynth_arr.T)
                 msg(f'  RM synthesis file written: {rmsynth_fname}')
 
-        # Generate a Stokes I diagnostic spectrum plot for each component in
-        # this epoch and compute the spectral index (if MFS S/N > 30).
-        # alpha and alpha_err are stored back into output_dictionary so they
-        # appear in the final JSON without a second write.
+        # Compute the spectral index for every epoch (stored in JSON).
+        # For time-resolved data the spectrum plot is deferred to the brightest
+        # epoch only (see below); for single-epoch data plot immediately.
         for component in components:
-            plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k)
+            plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k,
+                                save_plot=(not is_time_resolved))
+
+    # ------------------------------------------------------------------
+    # Post-loop diagnostics for time-resolved data
+    # ------------------------------------------------------------------
+    if is_time_resolved:
+        # Plot the IQUV spectrum for the brightest epoch only (by MFS Stokes I)
+        for component in components:
+            mfs_I_arr = np.array(output_dictionary['MFS'][component]['I_flux_mJy'])
+            k_bright  = int(np.argmax(mfs_I_arr))
+            bright_prefix = prefix_arr[k_bright]
+            msg(f'  Brightest epoch for {component}: {k_bright} '
+                f'({mfs_I_arr[k_bright]:.2f} mJy) -- plotting spectrum')
+            plot_stokes_spectrum(output_dictionary, src_name, bright_prefix,
+                                component, k_bright, save_plot=True)
+
+        # Plot MFS light curve across all epochs
+        plot_light_curve(output_dictionary, src_name, prefix_arr)
 
     # Save the full dictionary with all times, etc.
     # Remove trailing dash from image_identifier for splitting if present
@@ -1163,7 +1182,8 @@ def extract_polarization_properties(src_name,
 
     return 0
 
-def plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k):
+def plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k,
+                         save_plot=True):
     '''
     Diagnostic plot of per-channel Stokes I, Q, U, V spectra for one source
     component in one time-interval epoch, stacked vertically with a shared
@@ -1197,10 +1217,13 @@ def plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k):
     prefix            : str   -- epoch path prefix (used for output filename)
     component         : str   -- component key, e.g. 'component0'
     k                 : int   -- epoch index within the prefix list
+    save_plot         : bool  -- if False, compute and store spectral index but
+                                 skip figure generation (default True)
     '''
 
-    # Ensure the VISPLOTS output directory exists
-    os.makedirs(cfg.VISPLOTS, exist_ok=True)
+    # Ensure the output directory exists
+    plot_dir = os.path.join('RESULTS', 'fitting_plots')
+    os.makedirs(plot_dir, exist_ok=True)
 
     # ------------------------------------------------------------------
     # Retrieve per-channel data arrays for this epoch
@@ -1282,12 +1305,17 @@ def plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k):
 
     # Store alpha in the MFS dict so it appears in the JSON without a second write.
     # Initialise as a list on the first epoch; append on subsequent epochs.
+    # Guard against duplicates when the function is re-called for plotting only.
     if 'alpha' not in mfs:
         mfs['alpha']     = [alpha]
         mfs['alpha_err'] = [alpha_err]
-    else:
+    elif len(mfs['alpha']) <= k:
         mfs['alpha'].append(alpha)
         mfs['alpha_err'].append(alpha_err)
+
+    # If save_plot is False, we only needed the spectral index computation above.
+    if not save_plot:
+        return
 
     # ------------------------------------------------------------------
     # Build figure: 4 panels stacked vertically, shared x-axis
@@ -1372,11 +1400,108 @@ def plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k):
     plt.tight_layout()
 
     plot_fname = os.path.join(
-        cfg.VISPLOTS,
+        plot_dir,
         f'{os.path.basename(prefix)}_{component}_IQUV_spectrum.png')
     plt.savefig(plot_fname, dpi=150, bbox_inches='tight')
     plt.close()
     msg(f'  IQUV spectrum plot saved: {plot_fname}')
+
+
+def plot_light_curve(output_dictionary, src_name, prefix_arr):
+    '''
+    Plot MFS Stokes I light curve for time-resolved data.
+
+    One figure per source containing one panel per component, showing
+    MFS flux density vs time with RMS error bars.  If polarization data
+    is available, a second row of panels shows the linear polarization
+    fraction.
+
+    Parameters
+    ----------
+    output_dictionary : dict  -- full extraction dictionary
+    src_name          : str   -- source name for title and filename
+    prefix_arr        : list  -- list of prefix strings (one per epoch),
+                                 used to build the output filename
+    '''
+
+    plot_dir = os.path.join('RESULTS', 'fitting_plots')
+    os.makedirs(plot_dir, exist_ok=True)
+
+    mfs = output_dictionary['MFS']
+    components = sorted(mfs.keys())
+
+    # Determine whether polarization data exists
+    has_pol = 'LP_frac' in mfs[components[0]]
+    n_rows  = 2 if has_pol else 1
+    n_cols  = len(components)
+
+    fig, axes = plt.subplots(n_rows, n_cols,
+                             figsize=(5 * n_cols, 3.5 * n_rows),
+                             squeeze=False, sharex=True)
+
+    # Component colours
+    colours = ['royalblue', 'tomato', 'forestgreen', 'mediumpurple',
+               'darkorange', 'teal', 'crimson', 'goldenrod']
+
+    for j, component in enumerate(components):
+        comp = mfs[component]
+
+        # Parse observation dates
+        dates = [datetime.datetime.fromisoformat(d) for d in comp['date_isot']]
+
+        I_flux = np.array(comp['I_flux_mJy'])
+        I_rms  = np.array(comp['I_rms_mJy'])
+        col    = colours[j % len(colours)]
+
+        # --- Stokes I panel ---
+        ax = axes[0, j]
+        ax.errorbar(dates, I_flux, yerr=I_rms,
+                    fmt='o', markersize=5, capsize=3, color=col,
+                    label=component)
+        ax.set_ylabel('Stokes I (mJy/beam)', fontsize=10)
+        ax.set_title(component, fontsize=10)
+        ax.grid(True, alpha=0.3, linestyle=':')
+        ax.legend(fontsize=8, loc='best')
+
+        # --- LP fraction panel (if available) ---
+        if has_pol and 'LP_frac' in comp:
+            ax2 = axes[1, j]
+            LP      = np.array(comp['LP_frac'])
+            LP_err  = np.array(comp['LP_frac_err'])
+            ax2.errorbar(dates, LP, yerr=LP_err,
+                         fmt='s', markersize=5, capsize=3, color=col)
+            ax2.axhline(y=0, color='grey', linestyle=':', linewidth=0.8)
+            ax2.set_ylabel('LP fraction (%)', fontsize=10)
+            ax2.grid(True, alpha=0.3, linestyle=':')
+
+    # Format the time axis on the bottom row
+    for ax in axes[-1, :]:
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+        ax.set_xlabel('Time (UT)', fontsize=10)
+        for tick in ax.get_xticklabels():
+            tick.set_rotation(30)
+            tick.set_ha('right')
+
+    # If the time span covers more than 1 day, use a date+time format instead
+    all_dates = []
+    for component in components:
+        all_dates += [datetime.datetime.fromisoformat(d)
+                      for d in mfs[component]['date_isot']]
+    if all_dates:
+        span = max(all_dates) - min(all_dates)
+        if span.total_seconds() > 86400:
+            for ax in axes[-1, :]:
+                ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d\n%H:%M'))
+
+    fig.suptitle(f'{src_name}  |  MFS light curve', fontsize=12, y=1.02)
+    plt.tight_layout()
+
+    plot_fname = os.path.join(
+        plot_dir,
+        f'{os.path.basename(prefix_arr[0])}_{src_name}_MFS_lightcurve.png')
+    plt.savefig(plot_fname, dpi=150, bbox_inches='tight')
+    plt.close()
+    msg(f'  MFS light curve plot saved: {plot_fname}')
 
 
 def main():

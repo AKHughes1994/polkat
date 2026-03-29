@@ -37,6 +37,8 @@ def main():
     GAINTABLES = cfg.GAINTABLES
     LOGS = cfg.LOGS
 
+    SELFCAL_MOD_DIR = DATA + '/selfcal_mod'
+
     gen.setup_dir(GAINTABLES)
     gen.setup_dir(IMAGES)
     gen.setup_dir(cfg.LOGS)
@@ -117,9 +119,14 @@ def main():
                 ii += 1
             codes.append(code)
         
-            # Define output parameters for 2GC steo
-            gain_outdir_2GC = GAINTABLES+'/2GC_'+str(filename_targetname)+f'_{stamp}.qc/'
-            log_outdir_2GC = LOGS+'/2GC_'+str(filename_targetname)+f'_{stamp}.qc/'
+            # Define output parameters for 2GC step
+            gain_outdir_2GC    = GAINTABLES+'/2GC_'+str(filename_targetname)+f'_{stamp}.qc/'
+            log_outdir_2GC     = LOGS+'/2GC_'+str(filename_targetname)+f'_{stamp}.qc/'
+            gain_outdir_stage2 = GAINTABLES+'/2GC_'+str(filename_targetname)+f'_{stamp}_stage2.qc/'
+            log_outdir_stage2  = LOGS+'/2GC_'+str(filename_targetname)+f'_{stamp}_stage2.qc/'
+
+            # Stage 2 MS (split from CORRECTED_DATA after stage 1 phase selfcal)
+            stage2_ms = myms.replace('.ms', '_stage2.ms')
 
             # Image prefixes
             img_prefix = IMAGES+f'/img_{myms}_datablind'
@@ -135,6 +142,13 @@ def main():
             print(gen.col('Target')+targetname)
             print(gen.col('Measurement Set')+myms)
             print(gen.col('Code')+code)
+            mod_regions = sorted(glob.glob(f'{SELFCAL_MOD_DIR}/*{filename_targetname}*.reg'))
+            target_mod_region = mod_regions[0] if mod_regions else None
+            if cfg.MOD_MODEL_SELFCAL and cfg.WSC_POL != 'I':
+                if target_mod_region is not None:
+                    print(gen.col('Selfcal MOD Region')+f'{target_mod_region} (using first of {len(mod_regions)} match(es))')
+                else:
+                    print(gen.col('Selfcal MOD Region')+'None found (will fallback to imaging mask)')
 
             n = 0
             step = {}
@@ -218,6 +232,7 @@ def main():
             prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
             imcall = gen.generate_syscall_wsclean(mslist = [myms],
                     imgname = data_img_prefix,
+                    mfweight = False,
                     datacol = 'DATA',
                     mask = mask,
                     chanout = cfg.WSC_DMASK_CHANNELSOUT,
@@ -226,6 +241,8 @@ def main():
                     minuvl = minuvl,
                     maxuvl = maxuvl,
                     automask = cfg.WSC_SHALLOWMASK,
+                    localrms = cfg.WSC_INTER_LOCALRMS,
+                    autothreshold = cfg.WSC_INTER_AUTOTHRESHOLD,
                     nomodel = True,
                     sourcelist = False,
                     absmem = absmem)
@@ -238,14 +255,11 @@ def main():
             if cfg.WSC_MAX_CHANNELS < cfg.WSC_DMASK_CHANNELSOUT or cfg.WSC_HOMOGENIZEBEAM:
                 step = {}
                 step['step'] = n
-                step['comment'] = f'Homogenize the MASK resolution across frequency channels'
+                step['comment'] = f'Fix image naming for DATA images'
                 step['dependency'] = n - 1
-                step['id'] = 'HODMA' +code
-                step['slurm_config'] = cfg.SLURM_WSCLEAN
-                step['pbs_config'] = cfg.PBS_WSCLEAN
+                step['id'] = 'FXDMA' +code
                 prefix = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
                 syscall =  prefix + f'python3 {cfg.TOOLS}/fix_image_naming.py {cfg.WSC_DMASK_CHANNELSOUT} {data_img_prefix}\n\n'
-                syscall +=  prefix + f'python3 {cfg.TOOLS}/homogenize_beams.py {data_img_prefix}'
                 step['syscall'] = syscall
                 steps.append(step)
                 n += 1
@@ -260,6 +274,11 @@ def main():
             absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
             prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
             syscall = prefix + 'python3 '+TOOLS+'/fix_nan_models.py ' + data_img_prefix + '\n\n'
+            if cfg.MOD_MODEL_SELFCAL and cfg.WSC_POL != 'I':
+                spatial_arg  = target_mod_region if target_mod_region is not None else mask
+                syscall += prefix + (f'python3 {TOOLS}/mod_model_selfcal.py '
+                                     f'--identifier {data_img_prefix} --stokes VI '
+                                     f'--spatial {spatial_arg} --zero-all-neg-I\n\n')
             syscall += prefix + gen.generate_syscall_predict(msname = myms,
                     imgname = data_img_prefix,
                     chanout = cfg.WSC_DMASK_CHANNELSOUT,
@@ -270,7 +289,7 @@ def main():
 
             step = {}
             step['step'] = n
-            step['comment'] = 'Run Quartical self-calibration on the target {}'.format(targetname)
+            step['comment'] = 'Run Quartical phase self-calibration (stage 1) on the target {}'.format(targetname)
             step['dependency'] = n - 1
             step['id'] = 'C02G2'+code
             step['slurm_config'] = cfg.SLURM_WSCLEAN
@@ -288,6 +307,20 @@ def main():
             steps.append(step)
             n += 1
 
+            # Split CORRECTED_DATA into stage 2 MS for amplitude self-calibration
+            step = {}
+            step['step'] = n
+            step['comment'] = 'Split CORRECTED_DATA into stage 2 MS for {}'.format(targetname)
+            step['dependency'] = n - 1
+            step['id'] = 'SPLCD'+code
+            step['slurm_config'] = cfg.SLURM_DEFAULTS
+            step['pbs_config'] = cfg.PBS_DEFAULTS
+            syscall = CONTAINER_RUNNER + CASA_CONTAINER+' ' if USE_SINGULARITY else ''
+            syscall += gen.generate_syscall_casa(casascript=f'{cfg.TOOLS}/casa_split_corrected_ms.py {myms} {stage2_ms}')
+            step['syscall'] = syscall
+            steps.append(step)
+            n += 1
+
             step = {}
             step['step'] = n
             step['comment'] = f'Run wsclean, masked deconvolution of the CORRECTED_DATA (self-calibrated, stage 1) for {targetname}'
@@ -298,14 +331,18 @@ def main():
             absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
             syscall = ''
             prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
-            imcall = gen.generate_syscall_wsclean(mslist = [myms],
+            imcall = gen.generate_syscall_wsclean(mslist = [stage2_ms],
                     imgname = inter_img_prefix,
-                    datacol = 'CORRECTED_DATA',
+                    datacol = 'DATA',
                     mask = mask,
                     chanout = cfg.WSC_DMASK_CHANNELSOUT,
                     tukeytaper=tukeytaper,
                     minuvl = minuvl,
                     maxuvl = maxuvl,
+                    qu_automask_scale = 1.0,
+                    localrms = cfg.WSC_INTER_LOCALRMS,
+                    automask = cfg.WSC_INTER_AUTOMASK,
+                    autothreshold = cfg.WSC_INTER_AUTOTHRESHOLD,
                     nomodel=True,
                     sourcelist = False,
                     absmem = absmem)
@@ -315,16 +352,15 @@ def main():
             steps.append(step)
             n += 1
 
-            if cfg.WSC_MAX_CHANNELS < cfg.WSC_DMASK_CHANNELSOUT:
+            if cfg.WSC_MAX_CHANNELS < cfg.WSC_DMASK_CHANNELSOUT or cfg.WSC_HOMOGENIZEBEAM:
                 step = {}
                 step['step'] = n
-                step['comment'] = f'Fix image naming for INTER images'
+                step['comment'] = f'Fix image naming and homogenize beams for INTER images'
                 step['dependency'] = n - 1
-                step['id'] = 'FXCMI' + code
-                step['slurm_config'] = cfg.SLURM_WSCLEAN
-                step['pbs_config'] = cfg.PBS_WSCLEAN
+                step['id'] = 'HOCMI' + code
                 prefix = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
-                syscall =  prefix + f'python3 {cfg.TOOLS}/fix_image_naming.py {cfg.WSC_DMASK_CHANNELSOUT} {inter_img_prefix}'
+                syscall =  prefix + f'python3 {cfg.TOOLS}/fix_image_naming.py {cfg.WSC_DMASK_CHANNELSOUT} {inter_img_prefix}\n\n'
+                syscall +=  prefix + f'python3 {cfg.TOOLS}/homogenize_beams.py {inter_img_prefix}'
                 step['syscall'] = syscall
                 steps.append(step)
                 n += 1
@@ -339,7 +375,12 @@ def main():
             absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
             prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
             syscall = prefix + 'python3 '+TOOLS+'/fix_nan_models.py ' + inter_img_prefix + '\n\n'
-            syscall += prefix + gen.generate_syscall_predict(msname = myms,
+            if cfg.MOD_MODEL_SELFCAL and cfg.WSC_POL != 'I':
+                spatial_arg = target_mod_region if target_mod_region is not None else mask
+                syscall += prefix + (f'python3 {TOOLS}/mod_model_selfcal.py '
+                                     f'--identifier {inter_img_prefix} --stokes V '
+                                     f'--spatial {spatial_arg}\n\n')
+            syscall += prefix + gen.generate_syscall_predict(msname = stage2_ms,
                     imgname = inter_img_prefix,
                     chanout = cfg.WSC_DMASK_CHANNELSOUT,
                     absmem = absmem)
@@ -349,23 +390,48 @@ def main():
 
             step = {}
             step['step'] = n
-            step['comment'] = 'Run Quartical self-calibration on the target {}'.format(targetname)
+            step['comment'] = 'Run Quartical amplitude self-calibration (stage 2) on the target {}'.format(targetname)
             step['dependency'] = n - 1
             step['id'] = 'CL2GC'+code
             step['slurm_config'] = cfg.SLURM_WSCLEAN
             step['pbs_config'] = cfg.PBS_WSCLEAN
             syscall = CONTAINER_RUNNER + QUARTICAL_CONTAINER+' ' if USE_SINGULARITY else ''
-            extra_args = f'output.gain_directory={gain_outdir_2GC} output.log_directory={log_outdir_2GC}'
+            extra_args = f'output.gain_directory={gain_outdir_stage2} output.log_directory={log_outdir_stage2}'
+            if not cfg.CAL_1GC_APPLYPARANG:
+                # Parang not applied in 1GC — apply it here as the final calibration step
+                extra_args += ' output.apply_p_jones_inv=true'
             if maxuvl != '' or minuvl != '':
-                minuv_val = minuvl if minuvl != '' else '0'
-                maxuv_val = maxuvl if maxuvl != '' else '0'
                 extra_args += f' input_ms.select_uv_range=[{minuv_val},{maxuv_val}]'
-            syscall += gen.generate_syscall_quartical(yaml = cfg.CAL_2GC_YAML,
-                    myms = myms,
+            syscall += gen.generate_syscall_quartical(yaml = cfg.CAL_2GC_YAML_COMPLEX,
+                    myms = stage2_ms,
                     extra_args = extra_args)
             step['syscall'] = syscall
             steps.append(step)
             n += 1
+
+            # Safety check: verify parang solve succeeded; fall back to feed-frame + CASA applycal if not
+            if not cfg.CAL_1GC_APPLYPARANG:
+                fallback_extra_args = f'output.gain_directory={gain_outdir_stage2} output.log_directory={log_outdir_stage2}'
+                if maxuvl != '' or minuvl != '':
+                    fallback_extra_args += f' input_ms.select_uv_range=[{minuv_val},{maxuv_val}]'
+                fallback_qc_cmd = (CONTAINER_RUNNER + QUARTICAL_CONTAINER + ' ' if USE_SINGULARITY else '') + \
+                    gen.generate_syscall_quartical(yaml=cfg.CAL_2GC_YAML_COMPLEX, myms=stage2_ms, extra_args=fallback_extra_args)
+
+                step = {}
+                step['step'] = n
+                step['comment'] = f'Check parang selfcal succeeded for {targetname}; fall back to feed-frame + CASA applycal if not'
+                step['dependency'] = n - 1
+                step['id'] = 'CHKPJ'+code
+                step['slurm_config'] = cfg.SLURM_DEFAULTS
+                step['pbs_config'] = cfg.PBS_DEFAULTS
+                prefix = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
+                syscall = prefix + (
+                    f'python3 {TOOLS}/check_and_fix_parang_selfcal.py '
+                    f'{log_outdir_stage2} {stage2_ms} "{fallback_qc_cmd}"'
+                )
+                step['syscall'] = syscall
+                steps.append(step)
+                n += 1
 
             step = {}
             step['step'] = n
@@ -377,7 +443,7 @@ def main():
             absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
             syscall = ''
             prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
-            imcall = gen.generate_syscall_wsclean(mslist = [myms],
+            imcall = gen.generate_syscall_wsclean(mslist = [stage2_ms],
                     imgname = pcal_img_prefix,
                     datacol = 'CORRECTED_DATA',
                     mask = mask,
@@ -385,7 +451,7 @@ def main():
                     nomodel=True,
                     sourcelist = False,
                     absmem = absmem)
-            for call in imcall: 
+            for call in imcall:
                 syscall += prefix + call + '\n\n'
             step['syscall'] = syscall
             steps.append(step)
@@ -397,8 +463,6 @@ def main():
                 step['comment'] = f'Homogenize the PCAL resolution across frequency channels'
                 step['dependency'] = n - 1
                 step['id'] = 'HOCMA' + code
-                step['slurm_config'] = cfg.SLURM_WSCLEAN
-                step['pbs_config'] = cfg.PBS_WSCLEAN
                 prefix = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
                 syscall =  prefix + f'python3 {cfg.TOOLS}/fix_image_naming.py {cfg.WSC_PCAL_CHANNELSOUT} {pcal_img_prefix}\n\n'
                 syscall +=  prefix + f'python3 {cfg.TOOLS}/homogenize_beams.py {pcal_img_prefix}'
@@ -417,7 +481,7 @@ def main():
                 absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
                 syscall = ''
                 prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
-                imcall = gen.generate_syscall_wsclean(mslist = [myms],
+                imcall = gen.generate_syscall_wsclean(mslist = [stage2_ms],
                     imgname = uniform_img_prefix,
                     datacol = 'CORRECTED_DATA',
                     mask = mask,

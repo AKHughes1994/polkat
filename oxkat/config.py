@@ -61,6 +61,7 @@ IDIA_CONTAINER_PATH = ['/idia/software/containers/',HOME+'/containers/', CWD]
 CHPC_CONTAINER_PATH = [HOME+'/containers/']
 HIPPO_CONTAINER_PATH = None
 NODE_CONTAINER_PATH = [HOME+'/containers/', '/mnt/ephem/containers']
+GLAM_CONTAINER_PATH = ['/mnt/users/hughesa', '/mnt/extraspace/thunderkat_pol', CWD]
 
 
 PYTHON3_PATTERN = 'polkat-0.2.4'
@@ -194,6 +195,51 @@ PBS_EXTRALONG = {
 
 # ------------------------------------------------------------------------
 #
+# GLAM resource settings (simplified SLURM-like for Glamdring cluster)
+#
+
+GLAM_SMALL = {
+    'CPUS': '2',
+    'MEM': '16GB',
+}
+
+GLAM_STANDARD = {
+    'CPUS': '2',
+    'MEM': '64GB',
+}
+
+GLAM_MEDIUM = {
+    'CPUS': '8',
+    'MEM': '120GB',
+}
+
+GLAM_WSC_SOURCE = {
+    'CPUS': '12',
+    'MEM': '180GB',
+}
+
+GLAM_WSC_CAL = {
+    'CPUS': '8',
+    'MEM': '64GB',
+}
+
+GLAM_CASA = {
+    'CPUS': '8',
+    'MEM': '64GB',
+}
+
+GLAM_LARGE = {
+    'CPUS': '24',
+    'MEM': '216GB',
+}
+
+GLAM_COREHEAVY = {
+    'CPUS': '24',
+    'MEM': '72GB',
+}
+
+# ------------------------------------------------------------------------
+#
 # 1GC settings
 #
 
@@ -280,6 +326,14 @@ CAL_1GC_PRIMARY_MODEL = 'auto'       # setjy = use setjy component model only
 # GBK settings
 CAL_1GC_DELAYCUT = 2.5               # [now defunct] Jy at central freq. Do not solve for K on secondaries weaker than this
 CAL_1GC_FILLGAPS = 8                 # Maximum channel gap over which to interpolate bandpass solutions
+
+# Parallactic angle correction during 1GC.
+# If True, CASA applies the P-Jones correction as part of the 1GC solve.
+# This is safe for phase-only and standard polarisation calibration.
+# For high-fidelity amplitude self-calibration, set False: the feed-frame
+# solve should remain in the antenna frame, with parallactic angle applied
+# only as the final step to rotate into the sky frame.
+CAL_1GC_APPLYPARANG = True
 
 # Band specific options
 CAL_1GC_BL_MODE = 'freq' # options are 'freq' to flag specific frequencies the 'uvrange' baselin
@@ -388,122 +442,194 @@ CAL_1GC_LINE_FILLGAPS = 48
 
 # ------------------------------------------------------------------------
 #
-# 2GC settings
+# 2GC settings — QuartiCal self-calibration
 #
 
+# Legacy CASA gaincal solution intervals (not used by QuartiCal; kept for reference)
+CAL_2GC_UVRANGE = '>150m'            # UV range for baseline selection during gain solving
+CAL_2GC_PSOLINT = '32s'              # Phase-only solution interval (DEFUNCT in QuartiCal version)
+CAL_2GC_APSOLINT = 'inf'             # Amplitude+phase solution interval (DEFUNCT in QuartiCal version)
 
-# CASA gaincal settings
-CAL_2GC_UVRANGE = '>150m'            # Selection for baselines to include during G solving
-CAL_2GC_PSOLINT = '32s'              # Solution interval for phase-only selfcal (DOES NOTHIN IN QC VERSION)
-CAL_2GC_APSOLINT = 'inf'             # Solution interval for amplitude and phase selfcal (DOES NOTHING IN QC VERSION)
+# QuartiCal YAML configurations
+# See the individual .yaml files and the QuartiCal docs for full parameter details.
+# Phase-only: solves diagonal Jones terms (XX, YY) for phase only.
+CAL_2GC_YAML         = DATA+'/quartical/2GC_delay.yaml'
 
-# Quartical
-CAL_2GC_YAML = DATA+'/quartical/2GC_phase.yaml'  # Frequency-dependent, phase-only self-calibration (diagonal terms: XX/YY only)
-                                                 # NOTE: This does NOT de-rotate or re-apply parallactic angle corrections.
-                                                 # WARNING: Since Stokes Q depends on both XX/YY and parallactic angle,
-                                                 # omitting parallactic angle correction could, in principle, affect Q.
-                                                 # However, in practice, no significant impact on Stokes Q has been observed in tests.
+# Complex: solves the full 2x2 Jones matrix (XX, YY, XY, YX) for amplitude and phase.
+# See the .yaml file for the exact solver configuration.
+CAL_2GC_YAML_COMPLEX = DATA+'/quartical/2GC_phase.yaml'
+# To use phase-only calibration for both stages (i.e. override the complex solve), uncomment:
+# CAL_2GC_YAML_COMPLEX = CAL_2GC_YAML
 
-# These YAML files perform amplitude and phase self-calibration on the full 2x2 Jones matrix (XX, YY, XY, YX).
-# Extensive testing indicates that using these options can significantly alter the measured polarized fluxes,
-# likely due to strong instrumental polarization effects from the primary beam response.
-# Without an accurate, full polarization beam model, these options SHOULD NOT BE USED.
-# Proceed with extreme caution—you have been warned!
-# CAL_2GC_YAML = DATA+'/quartical/2GC_fullpol.yaml'
-# CAL_2GC_YAML = DATA+'/quartical/2GC_amppol.yaml'
-
-# Flag to skip PB corrections
+# Skip primary beam correction in post-processing
 SKIP_PB = False
 
 # ------------------------------------------------------------------------
 #
-# wsclean and 2GC defaults
+# 2GC settings — WSClean imaging
 #
-# General
-WSC_MEM = 90
-WSC_ABSMEM = -1 # in GB; mem is used if absmem is negative, calculated automatically for HPC, see absmem_helper
-WSC_CONTINUE = False
-# Outputs
-WSC_MAKEPSF = False
-WSC_NODIRTY = False
-WSC_SOURCELIST = False
-# Data selection
-WSC_FIELD = 0
-WSC_STARTCHAN = -1
-WSC_ENDCHAN = -1
-WSC_MINUVL = ''
-WSC_MAXUVL = ''
-WSC_EVEN = False
-WSC_ODD = False
-WSC_TUKEYTAPER = False
-WSC_TAPERMASK = False
-WSC_INTERVAL0 = None
-WSC_INTERVAL1 = None
-WSC_INTERVALSOUT = False
-WSC_PARALLELREORDERING = 8
-# Image dimensions
-WSC_IMSIZE = 10240
-WSC_CAL_IMSIZE = 2560
-WSC_CELLSIZE = '1.1asec'
-# Gridding / degridding
-WSC_USEWGRIDDER = True
-WSC_WGRIDDERACCURACY = 5e-5
-WSC_BDA = False
-WSC_BDAFACTOR = 10
-WSC_NOMODEL = False
-WSC_NWLAYERSFACTOR = 5
-WSC_PADDING = 1.2
-WSC_USEIDG = False # use image-domain gridder (not useable yet)
-WSC_IDGMODE = 'CPU'
-WSC_PREDICTCHANNELS = 64
-WSC_PARALLELGRIDDING = 8
-# Weighting
-WSC_WEIGHT = 'briggs 0.0'
-WSC_WEIGHT_CAL = 'uniform'
-WSC_TAPERGAUSSIAN = ''
-WSC_MFWEIGHT = True
-# HIGH RES IMAGING
-WSC_UNIFORM_IMAGE = True
-WSC_WEIGHT_HIGHRES = 'uniform' # pick a more uniform weighting then WSC_WEIGHT -- uniform weight by default
-# Deconvolution
-WSC_PARALLELDECONVOLUTION = 2560
-WSC_MULTISCALE = False
-WSC_SCALES = '0,3,9'
-WSC_MULTISCALE_BIAS = 0.7
-WSC_CHANDECONV = False
-WSC_NITER = 800000
-WSC_GAIN = 0.15
-WSC_MGAIN = 0.9
-WSC_BLIND_CHANNELSOUT = 8
-WSC_PCAL_CHANNELSOUT = 8
-WSC_DMASK_CHANNELSOUT = WSC_PCAL_CHANNELSOUT # Incase you want a different channelisation for your datamask and pcalmask images
-WSC_CAL_CHANNELSOUT = 16
+
+# --- Memory ---
+WSC_MEM    = 90    # Memory limit as a percentage of total system RAM (-mem flag)
+WSC_ABSMEM = -1    # Absolute memory limit in GB (-abs-mem flag); if negative, WSC_MEM % is used instead
+                   # (calculated automatically for HPC configs via absmem_helper)
+
+# --- Run control ---
+WSC_CONTINUE = False  # Continue a previous deconvolution run (-continue flag)
+
+# --- Output products ---
+WSC_MAKEPSF    = False  # Force PSF image to be written even when not otherwise required
+WSC_NODIRTY    = False  # Suppress writing dirty (unconvolved) images
+WSC_SOURCELIST = False  # Save a component source list alongside the restored image
+
+# --- Data selection ---
+WSC_FIELD     = 0      # MS field ID to image
+WSC_STARTCHAN = -1     # First channel to image (-channel-range); -1 = use all
+WSC_ENDCHAN   = -1     # Last channel to image (-channel-range); -1 = use all
+WSC_MINUVL    = ''     # Minimum UV distance in wavelengths (-minuv-l); '' = no cut
+WSC_MAXUVL    = ''     # Maximum UV distance in wavelengths (-maxuv-l); '' = no cut
+WSC_EVEN      = False  # Image even time-slots only (-even-timesteps)
+WSC_ODD       = False  # Image odd time-slots only (-odd-timesteps)
+WSC_INTERVAL0 = None   # First time interval to image (-interval start)
+WSC_INTERVAL1 = None   # Last time interval to image (-interval end)
+WSC_INTERVALSOUT = False  # Number of output time intervals (-intervals-out); False = single image
+
+# --- Inner UV taper (suppress short-spacing artefacts) ---
+WSC_TUKEYTAPER  = False   # Inner Tukey taper in wavelengths (-taper-inner-tukey);
+                          # suppresses emission on scales larger than ~1/taper radians
+WSC_TAPERMASK   = False   # If True, apply WSC_MINUVL/MAXUVL/TUKEYTAPER only during
+                          # blind masking and self-cal; final image uses full UV range
+
+# --- Parallelism ---
+WSC_PARALLELREORDERING = 8  # Number of parallel threads for MS reordering (-parallel-reordering)
+WSC_PARALLELGRIDDING   = 8  # Number of parallel gridding threads (-parallel-gridding)
+
+# --- Image dimensions ---
+WSC_IMSIZE     = 10240       # Image size in pixels for science targets (must be even)
+WSC_CAL_IMSIZE = 2560        # Image size in pixels for calibrators
+WSC_CELLSIZE   = '1.1asec'   # Pixel scale (arcsec/pixel); overridden per-band below
+
+# --- Gridding ---
+WSC_USEWGRIDDER    = True   # Use the w-gridder algorithm (-gridder wgridder); recommended
+WSC_WGRIDDERACCURACY = 5e-5 # w-gridder accuracy parameter (lower = more accurate, slower)
+WSC_BDA            = False  # Enable baseline-dependent averaging during gridding
+WSC_BDAFACTOR      = 10     # BDA smearing factor (-baseline-averaging); only used if WSC_BDA=True
+WSC_NOMODEL        = False  # Skip writing model visibilities (-no-update-model-required)
+WSC_NWLAYERSFACTOR = 5      # w-layers scaling factor (-nwlayers-factor); w-projection only
+WSC_PADDING        = 1.2    # Image padding factor (-padding); w-projection only
+WSC_USEIDG         = False  # Use image-domain gridder (experimental, not yet usable)
+WSC_IDGMODE        = 'CPU'  # IDG compute mode: CPU or GPU
+WSC_PREDICTCHANNELS = 64    # Number of channels used during model prediction
+
+# --- Weighting ---
+WSC_WEIGHT       = 'briggs 0.0'  # Visibility weighting scheme for science targets
+WSC_WEIGHT_CAL   = 'uniform'     # Visibility weighting scheme for calibrators
+WSC_TAPERGAUSSIAN = ''           # Gaussian UV taper (-taper-gaussian); '' = disabled
+WSC_MFWEIGHT     = True          # Apply multi-frequency weighting (-mf-weighting / -no-mf-weighting)
+
+# High-resolution uniform-weight image (made alongside the main Briggs image)
+WSC_UNIFORM_IMAGE  = True       # Generate an additional uniform-weight image
+WSC_WEIGHT_HIGHRES = 'uniform'  # Weighting scheme for the high-resolution image
+
+# --- Deconvolution ---
+WSC_PARALLELDECONVOLUTION = 2560  # Tile size in pixels for parallel deconvolution (-parallel-deconvolution)
+WSC_MULTISCALE       = False      # Enable multi-scale CLEAN (-multiscale)
+WSC_SCALES           = '0,3,9'   # Multi-scale CLEAN scale sizes in pixels
+WSC_MULTISCALE_BIAS  = 0.7       # Multi-scale bias parameter; higher = prefer smaller scales
+WSC_CHANDECONV       = False      # Number of sub-band images used during deconvolution
+                                  # (--deconvolution-channels); False = same as channels-out
+WSC_NITER  = 800000  # Maximum number of CLEAN minor-cycle iterations (-niter)
+WSC_GAIN   = 0.15    # Minor-cycle loop gain; fraction of peak subtracted per iteration (-gain)
+WSC_MGAIN  = 0.9     # Major-cycle loop gain; fraction of residual cleaned per major cycle (-mgain)
+WSC_NONEGATIVE  = False  # Forbid negative CLEAN components (-no-negative)
+WSC_STOPNEGATIVE = False # Stop deconvolution when the first negative component is found (-stop-negative)
+WSC_CIRCULARBEAM = False # Force a circular (not elliptical) restoring beam (-circular-beam)
+
+# --- Channel strategy ---
+WSC_BLIND_CHANNELSOUT = 8     # Blind (shallow, no mask) image — used only to generate initial mask
+WSC_PCAL_CHANNELSOUT  = 8     # Final self-calibrated (pcalmask) image
+WSC_DMASK_CHANNELSOUT = WSC_PCAL_CHANNELSOUT  # Data-masked image (stage 1 selfcal model);
+                                               # set independently if a different channelisation is needed
+WSC_CAL_CHANNELSOUT   = 16    # Calibrator images (secondaries / primary)
+
+# Memory-safe channel chunking: if WSC_MAX_CHANNELS < channels-out, wsclean is called
+# multiple times in channel-range blocks of WSC_MAX_CHANNELS, then the results are
+# assembled into a full cube. Must divide evenly into both PRE_NCHANS and channels-out.
 WSC_MAX_CHANNELS = 16
+
+# Spectral polynomial fitting across output channels (-fit-spectral-pol N)
+# Applied during deconvolution to constrain spectral index. 0 = disabled.
 WSC_FITSPECTRALPOL = 4
+
+# --- Channel joining and polarisation ---
+# Join all output channels during peak finding to improve sensitivity (-join-channels)
 WSC_JOINCHANNELS = True
-WSC_NONEGATIVE = False
-WSC_STOPNEGATIVE = False
-WSC_CIRCULARBEAM = False
+
+# Use sum-of-squares (squared channel joining) for peak finding across channels
+# (-squared-channel-joining). Only active when WSC_JOINCHANNELS = True.
+# Appropriate for Q/U which can rapidly oscillate positive/negative across channels
+# (e.g. due to Faraday rotation); the sum-of-squares avoids cancellation.
+WSC_SQUARECHANS  = False
+
+# Auto-mask scaling factor for QU images when WSC_SQUARECHANS is active and
+# WSC_SPLITPOL is True. QU images tend to have higher noise in squared-channel mode,
+# so the auto-mask threshold is scaled up to avoid over-cleaning.
+#   'auto'  : scale by 5/3 if automask < 10, otherwise no change (recommended)
+#   float   : always multiply the automask threshold by this value
+WSC_QU_AUTOMASK_SCALE = 'auto'
+
+# Stokes parameters to image. Standard options: 'I', 'IQUV', 'QU', etc.
 WSC_POL = 'IQUV'
-WSC_SPLITPOL = False # Image V/I and Q/U separately (necessary for High RM and MFS fitting)
+
+# Image QU and IV in separate wsclean calls:
+#   QU: no fit-spectral-pol — MFS polynomial fitting is inappropriate for sources
+#       with large RMs where Q/U vary rapidly and non-smoothly across the band
+#   IV: no squared-channel-joining — not appropriate for Stokes V
+# Recommended for targets with large rotation measures (>~100 rad/m^2).
+WSC_SPLITPOL = False
+
+# Join polarisations during peak finding (-join-polarizations).
+# Useful for faint sources where combining Stokes improves peak detection.
+# Avoid for dynamic-range-limited sources or when amplitude self-calibrating,
+# as it can fold Q/U artefacts into the model.
 WSC_JOINPOLARIZATIONS = True
-WSC_SQUAREPOLARIZATIONS = False
-WSC_LOCALRMS_STRENGTH = 0.25
-# Masking for BLIND mask creation
-WSC_AUTOMASK_BLIND = 5.0
-WSC_AUTOTHRESHOLD_BLIND = 1.0
-WSC_THRESHOLD_BLIND = False
-WSC_LOCALRMS_BLIND = True
-# Masking for SCIENCE
-WSC_MASK = False
-WSC_THRESHOLD = False
-WSC_SHALLOWMASK = 35.0
-WSC_AUTOMASK = 4.0
-WSC_AUTOTHRESHOLD = 1.0
-WSC_LOCALRMS = False
-# Determines if you want to Homogenize the resolution
-WSC_HOMOGENIZEBEAM = False # Homogenize in freq
-WSC_HOMOGENIZETIME = False # Homogenize in freq AND time
+
+# Local RMS weighting strength for -local-rms (-local-rms-strength).
+# 0.5 = weight by sqrt of local noise; see WSClean docs for full details.
+WSC_LOCALRMS_STRENGTH = 0.5
+
+# --- Masking: blind image (stage 0 — mask generation only) ---
+WSC_AUTOMASK_BLIND    = 5.0   # Auto-mask threshold (sigma) for blind image
+WSC_AUTOTHRESHOLD_BLIND = 1.0 # Auto-threshold (sigma) at which CLEAN stops for blind image
+WSC_THRESHOLD_BLIND   = False # Absolute flux threshold for blind image; False = use auto-threshold
+WSC_LOCALRMS_BLIND    = True  # Use a local RMS map for masking in the blind image
+
+# --- Masking: main self-calibration images ---
+WSC_MASK          = False    # FITS mask to use; False = no mask (blind deconvolution)
+                              # Can also be a list of per-field mask paths
+WSC_THRESHOLD     = False    # Absolute flux threshold (Jy) at which to stop cleaning; False = use auto
+WSC_SHALLOWMASK   = 15.0     # Initial auto-mask threshold (sigma) for the first deconvolution pass;
+                              # in the two-stage self-calibration workflow, calibrators use 2x this value
+WSC_AUTOMASK      = 3.0      # Auto-mask threshold (sigma) for main deconvolution
+WSC_AUTOTHRESHOLD = 1.0      # Auto-threshold (sigma) at which CLEAN stops
+WSC_LOCALRMS      = False    # Use a local RMS map for adaptive masking during main deconvolution
+
+# --- Masking: intermediate image (two-stage self-calibration only) ---
+# In the two-stage workflow, an intermediate image is made from CORRECTED_DATA
+# after stage 1 phase self-calibration. This model is then used for amplitude
+# self-calibration in stage 2. These masking parameters apply to that image only.
+WSC_INTER_LOCALRMS      = True   # Use local RMS map for intermediate image masking
+WSC_INTER_AUTOMASK      = 5.0    # Auto-mask threshold (sigma) for intermediate image
+WSC_INTER_AUTOTHRESHOLD = 1.0    # Auto-threshold (sigma) for intermediate image
+
+# --- Post-processing: beam homogenisation ---
+WSC_HOMOGENIZEBEAM = False  # Homogenise across frequency channels only
+WSC_HOMOGENIZETIME = False  # Homogenise across both frequency channels and time intervals
+
+# --- Model modification before predict (two-stage self-calibration only) ---
+# If True, runs mod_model_selfcal.py after fix_nan_models.py before each predict step
+# in the two-stage self-calibration workflow. Has no effect in a single-round workflow.
+MOD_MODEL_SELFCAL = False
 # Determine if you want to match the large resolvable angular scale by frequency
 WSC_MATCHSCALES = WSC_HOMOGENIZEBEAM
 if WSC_MATCHSCALES:
@@ -548,6 +674,25 @@ if BAND == 'S3':
     WSC_CELLSIZE = '0.54asec'    
 if BAND == 'S4':
     WSC_CELLSIZE = '0.5asec'
+
+
+# ------------------------------------------------------------------------
+#
+# Calibrator imaging settings (setup_2GC_cals.py)
+#
+
+# Comma-separated list of field names to image and self-calibrate as calibrators.
+# By default uses the polarization angle calibrator defined above.
+CALS_TO_IMAGE = POLANG_NAME
+
+# If True, combine all scans per field into a single MS before imaging.
+# If False, split per field per scan (one MS per field+scan).
+CAL_COMBINESCAN = False
+
+# Blind mask threshold for calibrator imaging — by default 3x the target blind mask.
+# Calibrators are typically brighter and more compact so a higher threshold
+# avoids cleaning noise into the model before self-calibration.
+WSC_CALS_BLINDMASK = WSC_AUTOMASK_BLIND * 3
 
 
 # ------------------------------------------------------------------------

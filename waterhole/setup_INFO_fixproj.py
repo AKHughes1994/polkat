@@ -48,6 +48,21 @@ def main():
     SHADEMS_CONTAINER = gen.get_container(CONTAINER_PATH,cfg.SHADEMS_PATTERN,USE_SINGULARITY)
     PYTHON3_CONTAINER = gen.get_container(CONTAINER_PATH,cfg.PYTHON3_PATTERN,USE_SINGULARITY)
 
+    # Determine MS to pass to scan_times, preferring working_ms from project_info.
+    scantimes_ms = None
+    if o.isfile('project_info.json'):
+        with open('project_info.json') as f:
+            project_info = json.load(f)
+        scantimes_ms = project_info.get('working_ms')
+    if not scantimes_ms:
+        myms = sorted(glob.glob('*.ms'))
+        if len(myms) > 0:
+            scantimes_ms = myms[0]
+    if not scantimes_ms:
+        print(gen.col('ERROR')+'Could not determine MS for scan_times (project_info working_ms or *.ms).')
+        gen.print_spacer()
+        sys.exit()
+
 
     # ------------------------------------------------------------------------------
     #
@@ -65,6 +80,9 @@ def main():
     step['id'] = 'FIXPI'+ str(random.randint(100,999))
     syscall = CONTAINER_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
     syscall += gen.generate_syscall_casa(casascript=cfg.TOOLS+'/fix_project_info.py')
+    syscall += '\n'
+    syscall += CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
+    syscall += ' python3 '+cfg.TOOLS+'/scan_times.py '+scantimes_ms
     step['syscall'] = syscall
     steps.append(step)
     n += 1

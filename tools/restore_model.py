@@ -12,6 +12,7 @@ import shutil
 import time
 import string
 import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from astropy.io import fits
 from astropy.convolution import convolve,Gaussian2DKernel
@@ -25,6 +26,66 @@ from oxkat import config as cfg
 def msg(txt):
     stamp = time.strftime(' %Y-%m-%d %H:%M:%S | ')
     print(stamp+txt)
+
+
+def get_available_memory_bytes():
+    try:
+        import psutil
+        return psutil.virtual_memory().available
+    except ImportError:
+        pass
+    try:
+        with open('/proc/meminfo') as f:
+            for line in f:
+                if line.startswith('MemAvailable:'):
+                    return int(line.split()[1]) * 1024
+    except OSError:
+        pass
+    msg('WARNING: Could not determine available memory. Assuming 4 GB.')
+    return 4 * 1024 ** 3
+
+
+def estimate_memory_per_worker_bytes(fitsfile):
+    """Conservative peak estimate: 4 array copies + 100 MB process overhead."""
+    with fits.open(fitsfile) as hdul:
+        return 4 * hdul[0].data.nbytes + 100 * 1024 ** 2
+
+
+def compute_max_workers(image_list):
+    available  = get_available_memory_bytes()
+    per_worker = estimate_memory_per_worker_bytes(image_list[0])
+    mem_cap    = max(1, int(available // per_worker))
+    # --- SLURM-aware CPU cap ---
+    # SLURM_CPUS_ON_NODE is intentionally excluded: it reports total node CPUs,
+    # not the allocation. We multiply cpus_per_task x ntasks when both are set.
+    import re as _re
+    _cpus_per_task = os.environ.get('SLURM_CPUS_PER_TASK')
+    _ntasks        = os.environ.get('SLURM_NTASKS')
+    _job_cpus      = os.environ.get('SLURM_JOB_CPUS_PER_NODE', '')
+    _job_cpus_m    = _re.match(r'(\d+)', _job_cpus)
+
+    if _cpus_per_task and _ntasks:
+        cpu_cap    = int(_cpus_per_task) * int(_ntasks)
+        _cpu_src   = f'SLURM_CPUS_PER_TASK={_cpus_per_task} x SLURM_NTASKS={_ntasks}'
+    elif _cpus_per_task:
+        cpu_cap    = int(_cpus_per_task)
+        _cpu_src   = f'SLURM_CPUS_PER_TASK={_cpus_per_task}'
+    elif _job_cpus_m:
+        cpu_cap    = int(_job_cpus_m.group(1))
+        _cpu_src   = f'SLURM_JOB_CPUS_PER_NODE={_job_cpus} -> {cpu_cap}'
+    elif _ntasks:
+        cpu_cap    = int(_ntasks)
+        _cpu_src   = f'SLURM_NTASKS={_ntasks}'
+    else:
+        cpu_cap    = os.cpu_count() or 1
+        _cpu_src   = 'os.cpu_count() (no SLURM allocation detected)'
+    workers    = min(mem_cap, cpu_cap, len(image_list))
+    msg(f'Memory available   : {available / 1024**3:.2f} GB  [{"SLURM" if any(os.environ.get(v) for v in ("SLURM_MEM_PER_NODE","SLURM_MEM_PER_CPU")) else "psutil/proc"}]')
+    msg(f'Est. memory/worker : {per_worker / 1024**3:.2f} GB')
+    msg(f'Workers (mem cap)  : {mem_cap}')
+    msg(f'Workers (CPU cap)  : {cpu_cap}  [{_cpu_src}]')
+    msg(f'Workers (selected) : {workers}  [min(mem={mem_cap}, cpu={cpu_cap}, images={len(image_list)})]')
+    return workers
 
 def get_image(fitsfile):
         input_hdu = fits.open(fitsfile)[0]
@@ -104,6 +165,42 @@ def restore_fits(modelsub_image, model_data, psf):
         flush_fits(restored_data, restored_image)
         msg('Restoring complete: ' + restored_image.split(cfg.INTERVALS + '/')[-1] + '\n')
 
+def process_one(modelsub_image, model_images, truncate_model, modelsub_shape, cropsize, target_prefix):
+    """Worker: restore a single modelsub image. Returns a status string."""
+    suffix    = '-'.join(modelsub_image.split(target_prefix + '-t')[-1].split('-')[1:]).replace('image.fits', 'model.fits')
+    psf_image = modelsub_image[:]
+    for substring in ['-I-image.fits', '-Q-image.fits', '-U-image.fits', '-V-image.fits']:
+        psf_image = psf_image.replace(substring, '-image.fits')
+    psf_image = psf_image.replace('-image.fits', '-psf.fits')
+    psf = get_header(psf_image)
+
+    model_image = [im for im in model_images if im.endswith(suffix)]
+    if model_image:
+        model_image = model_image[0]
+    else:
+        model_image = [im for im in model_images if im.endswith(suffix.replace('-model.fits', '-I-model.fits'))][0]
+
+    bmaj = psf[0]
+    if bmaj is None:
+        bmaj = 0.0
+
+    if bmaj > 1.0e-14:
+        subprocess.run([f'cp {psf_image} {psf_image.replace("modelsub", "restored")}'], shell=True)
+
+        if truncate_model:
+            temp_model = model_image.replace('.fits', '.tmp.fits')
+            subprocess.run([f'fitstool.py -f -z {modelsub_shape[0]} -o {temp_model} {model_image}'], shell=True)
+            model_data = get_image(temp_model)
+            subprocess.run([f'rm -rf {temp_model}'], shell=True)
+        else:
+            model_data = get_image(model_image)
+
+        restore_fits(modelsub_image, model_data, psf)
+        return f'Restored: {modelsub_image}'
+    else:
+        return f'Skipped (flagged channel): {modelsub_image}'
+
+
 if __name__ == '__main__':  
     
         if len(sys.argv) != 4:
@@ -120,7 +217,7 @@ if __name__ == '__main__':
         # Convolution parameters 
         cropsize = 51 # Size of convolving kernel in pixels 
 
-        # Get the array of modelsub images and restoring model iamges
+        # Get the array of modelsub images and restoring model images
         modelsub_images = sorted(glob.glob(f'{target_prefix}*image.fits'))
         if mfs_only:
             modelsub_images = [im for im in modelsub_images if '-MFS-' in im]
@@ -128,7 +225,7 @@ if __name__ == '__main__':
 
         # Check to see if the model has different dimension than the snapshot imaging
         truncate_model = False
-        model_shape = get_image(model_images[0]).shape
+        model_shape    = get_image(model_images[0]).shape
         modelsub_shape = get_image(modelsub_images[0]).shape
     
         # Check that images are square
@@ -138,52 +235,16 @@ if __name__ == '__main__':
         if model_shape != modelsub_shape:
             truncate_model = True
 
-        # Match the modelsub image with its static counterpart 
-        for modelsub_image in modelsub_images[:]:
+        # Parallelise restoration across modelsub images
+        max_workers = compute_max_workers(modelsub_images)
 
-            # A bunch of string manipulation to get the relevant images
-            suffix = '-'.join(modelsub_image.split(target_prefix + '-t')[-1].split('-')[1:]).replace('image.fits', 'model.fits') # this will extract frequency/stokes suffix for model matching
-            psf_image = modelsub_image[:]
-            for substring in ['-I-image.fits','-Q-image.fits','-U-image.fits','-V-image.fits']:
-                psf_image = psf_image.replace(substring, '-image.fits')
-            psf_image = psf_image.replace('-image.fits','-psf.fits')
-            psf = get_header(psf_image)
-
-            # Get the model image
-            model_image = [im for im in model_images if im.endswith(suffix)]
-            if model_image != []:
-                model_image = model_image[0]
-            else:
-                # This is necessary if you did IQUV imaging for pcalmask, but only I imaging for snapshots
-                model_image = [im for im in model_images if im.endswith(suffix.replace('-model.fits', '-I-model.fits'))][0]
-
-            # Finally -- Restore images
-
-            # Check channel is flagged (i.e., BEAM information is 0.0)
-            bmaj = psf[0]
-            if bmaj == None:
-                bmaj = 0.0
-
-            if bmaj > 1.0e-14:
-                
-                # Copy psf naming for restored image -- necessary for beam homogenizing routine
-                subprocess.run([f'cp {psf_image} {psf_image.replace("modelsub", "restored")}'], shell = True)
-
-                msg('Restoring image: ' + modelsub_image.split(cfg.INTERVALS + '/')[-1])
-                msg('Restoring model: ' + model_image)
-            
-                # Get model data and truncate as necessary
-                if truncate_model:
-                    temp_model = model_image.replace('.fits', '.tmp.fits')
-                    subprocess.run([f'fitstool.py -f -z {modelsub_shape[0]} -o {temp_model} {model_image}'], shell = True)
-                    model_data = get_image(temp_model)
-                    subprocess.run([f'rm -rf {temp_model}'], shell = True)
-                else:
-                    model_data = get_image(model_image)
-
-                # Restore static model
-                restore_fits(modelsub_image, model_data, psf)
-
-            else:
-                msg('Cannot Restore Image: ' + modelsub_image.split(cfg.INTERVALS + '/')[-1] + '; Channel Likely Flagged\n')            
-                
+        with ProcessPoolExecutor(max_workers=max_workers) as pool:
+            futures = {
+                pool.submit(process_one, im, model_images, truncate_model, modelsub_shape, cropsize, target_prefix): im
+                for im in modelsub_images
+            }
+            for future in as_completed(futures):
+                try:
+                    msg(future.result())
+                except Exception as e:
+                    msg(f'ERROR processing {futures[future]}: {e}')

@@ -240,11 +240,8 @@ def main():
                 step['comment'] = f'Homogenize the MASK resolution across frequency channels'
                 step['dependency'] = n - 1
                 step['id'] = 'HODMA' +code
-                step['slurm_config'] = cfg.SLURM_WSCLEAN
-                step['pbs_config'] = cfg.PBS_WSCLEAN
                 prefix = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
-                syscall =  prefix + f'python3 {cfg.TOOLS}/fix_image_naming.py {cfg.WSC_DMASK_CHANNELSOUT} {data_img_prefix}\n\n'
-                syscall +=  prefix + f'python3 {cfg.TOOLS}/homogenize_beams.py {data_img_prefix}'
+                syscall =  prefix + f'python3 {cfg.TOOLS}/fix_image_naming.py {cfg.WSC_DMASK_CHANNELSOUT} {data_img_prefix}'
                 step['syscall'] = syscall
                 steps.append(step)
                 n += 1
@@ -303,6 +300,9 @@ def main():
             step['pbs_config'] = cfg.PBS_WSCLEAN
             syscall = CONTAINER_RUNNER + QUARTICAL_CONTAINER+' ' if USE_SINGULARITY else ''
             extra_args = f'output.gain_directory={gain_outdir_2GC} output.log_directory={log_outdir_2GC}'
+            if not cfg.CAL_1GC_APPLYPARANG:
+                # Parang was not applied in 1GC so QuartiCal must handle it
+                extra_args += ' output.apply_p_jones_inv=true'
             if maxuvl != '' or minuvl != '':
                 minuv_val = minuvl if minuvl != '' else '0'
                 maxuv_val = maxuvl if maxuvl != '' else '0'
@@ -313,6 +313,32 @@ def main():
             step['syscall'] = syscall
             steps.append(step)
             n += 1
+
+            # Safety check: if parang was handled by QuartiCal, verify the solve
+            # succeeded and fall back to a feed-frame solve + CASA applycal if not
+            if not cfg.CAL_1GC_APPLYPARANG:
+                # Build the fallback QC command (identical but without apply_p_jones_inv)
+                fallback_extra_args = f'output.gain_directory={gain_outdir_2GC} output.log_directory={log_outdir_2GC}'
+                if maxuvl != '' or minuvl != '':
+                    fallback_extra_args += f' input_ms.select_uv_range=[{minuv_val},{maxuv_val}]'
+                fallback_qc_cmd = (CONTAINER_RUNNER + QUARTICAL_CONTAINER + ' ' if USE_SINGULARITY else '') + \
+                    gen.generate_syscall_quartical(yaml=cfg.CAL_2GC_YAML, myms=myms, extra_args=fallback_extra_args)
+
+                step = {}
+                step['step'] = n
+                step['comment'] = f'Check parang selfcal succeeded for {targetname}; fall back to feed-frame solve + CASA applycal if not'
+                step['dependency'] = n - 1
+                step['id'] = 'CHKPJ'+code
+                step['slurm_config'] = cfg.SLURM_DEFAULTS
+                step['pbs_config'] = cfg.PBS_DEFAULTS
+                prefix = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
+                syscall = prefix + (
+                    f'python3 {TOOLS}/check_and_fix_parang_selfcal.py '
+                    f'{log_outdir_2GC} {myms} "{fallback_qc_cmd}"'
+                )
+                step['syscall'] = syscall
+                steps.append(step)
+                n += 1
 
             step = {}
             step['step'] = n
@@ -344,8 +370,6 @@ def main():
                 step['comment'] = f'Homogenize the PCAL resolution across frequency channels'
                 step['dependency'] = n - 1
                 step['id'] = 'HOCMA' + code
-                step['slurm_config'] = cfg.SLURM_WSCLEAN
-                step['pbs_config'] = cfg.PBS_WSCLEAN
                 prefix = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
                 syscall =  prefix + f'python3 {cfg.TOOLS}/fix_image_naming.py {cfg.WSC_PCAL_CHANNELSOUT} {pcal_img_prefix}\n\n'
                 syscall +=  prefix + f'python3 {cfg.TOOLS}/homogenize_beams.py {pcal_img_prefix}'
@@ -429,7 +453,7 @@ def main():
                 
                 # Only make Plin images
                 only_Plin = True
-                if project_info['polang_name'] == ''
+                if project_info['polang_name'] == '':
                     only_Plin = False
     
                 step = {}

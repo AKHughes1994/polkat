@@ -249,7 +249,7 @@ if DEBUG_PRINT_FLAGS:
 applycal(vis=myms,
     gaintable=[ktab0, bptab0, gtab0, dftab0],
     field=bpcal_name,
-    parang=True,
+    parang=False,
     gainfield=[bpcal_name, bpcal_name, bpcal_name, bpcal_name],
     interp=['nearest', 'linear', 'linear', 'linear'],
     flagbackup=False)
@@ -457,7 +457,7 @@ if pacal_name != '':
     applycal(vis=myms,
         gaintable=[ktab0, bptab, gtab0, dftab],
         field=pacal_name,
-        parang=True,
+        parang=False,
         gainfield=[pacal_name, bpcal_name, pacal_name, bpcal_name],
         interp=['nearest', 'linear', 'linear', 'linear'],
         flagbackup=False)
@@ -499,7 +499,7 @@ for i in range(0,len(pcal_names)):
     applycal(vis=myms,
         gaintable=[ktab0, bptab, gtab0, dftab],
         field=pcal,
-        parang=True,
+        parang=False,
         gainfield=[pcal, bpcal_name, pcal, bpcal_name],
         interp=['nearest', 'linear', 'linear', 'linear'],
         flagbackup=False)
@@ -645,9 +645,9 @@ if pacal_name != '':
 
     manual_XF = False
     
-    # Force manual mode for UIHF band
-    if band == 'UIHF':
-        print("UIHF band detected, forcing manual XF mode")
+    # Force manual mode for UHF band
+    if band == 'UHF':
+        print("UHF band detected, forcing manual XF mode")
         manual_XF = True
         XF_MODE = 'manual'
     
@@ -850,7 +850,7 @@ if pacal_name != '':
 applycal(vis = myms,
     gaintable = [ktab, bptab, ftab, dftab],
     field = bpcal_name,
-    parang = True,
+    parang = False,
     gainfield = [bpcal_name, bpcal_name, bpcal_name, bpcal_name],
     interp = ['nearest','linear','linear','linear'],
     flagbackup=False)
@@ -916,13 +916,13 @@ if pacal_name == '':
 
     sys.exit('Ending Early! No polarization angle calibrator')
 
-# -------- Full polarization 
+# -------- Full polarization  # CAL_1GC_APPLYPARANG controls parang from here; above is XF-less path (no sky-frame rotation needed)
 
 # ------- PACAL
 
 applycal(vis = myms,
         field = pacal_name,
-        parang = True,
+        parang = CAL_1GC_APPLYPARANG,
         gaintable = [ktab, bptab, ftab, dftab] + cross_table,
         gainfield = [pacal_name, bpcal_name, pacal_name, bpcal_name] + cross_field,
         interp = ['nearest','linear','linear','linear'] + cross_interp,
@@ -941,7 +941,7 @@ for i in range(0,len(pcal_names)):
 
     applycal(vis = myms,
         field = pcal,
-        parang = True,
+        parang = CAL_1GC_APPLYPARANG,
         gaintable = [ktab, bptab, ftab, dftab] + cross_table,
         gainfield = [pcal, bpcal_name, pcal, bpcal_name] + cross_field,
         interp = ['nearest','linear','linear','linear'] + cross_interp,
@@ -955,7 +955,7 @@ for i in range(0,len(targets)):
 
     applycal(vis=myms,
                 field=target,
-                parang=True,
+                parang=CAL_1GC_APPLYPARANG,
                 gaintable = [ktab, bptab, ftab, dftab] + cross_table,
                 gainfield = [related_pcal, bpcal_name, related_pcal, bpcal_name] + cross_field,
                 interp = ['nearest','linear','linear','linear'] + cross_interp,
