@@ -17,7 +17,7 @@ If you make use of this software, please cite:
 ---
 
 
-### Latest modification (December 9, 2025)
+### Latest modification (April, 2026)
 
 #### Update: UHF Band and Manual Cross-Hand Solver
 
@@ -44,9 +44,9 @@ This routine is designed primarily for use on the ILIFU clusters operated by The
 
 ```
 # The main container 
-singularity pull polkat-0.2.1.sif docker://hughesakh/polkat:0.2.0
+singularity pull polkat-0.2.4.sif docker://hughesakh/polkat:0.2.4
 
-# ALBUS container for ionospheric corrections
+# ALBUS container for ionospheric corrections (no longer needed as the main has SPINIFEX)
 singularity pull polkat-albus.sif docker://hughesakh/polkat_albus:latest
 ```
 

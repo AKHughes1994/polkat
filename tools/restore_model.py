@@ -29,16 +29,45 @@ def msg(txt):
 
 
 def get_available_memory_bytes():
+    # Prefer SLURM allocation over node-wide figures so we don't over-subscribe
+    slurm_mem_node = os.environ.get('SLURM_MEM_PER_NODE')
+    if slurm_mem_node:
+        try:
+            allocated = int(slurm_mem_node) * 1024 ** 2  # MB -> bytes
+            msg(f'SLURM memory detected: SLURM_MEM_PER_NODE={slurm_mem_node} MB -> {allocated / 1024**3:.1f} GB')
+            return allocated
+        except ValueError:
+            pass
+
+    slurm_mem_cpu = os.environ.get('SLURM_MEM_PER_CPU')
+    _cpus_per_task = os.environ.get('SLURM_CPUS_PER_TASK')
+    _ntasks        = os.environ.get('SLURM_NTASKS')
+    _alloc_cpus    = (int(_cpus_per_task) * int(_ntasks) if _cpus_per_task and _ntasks
+                      else int(_cpus_per_task) if _cpus_per_task
+                      else int(_ntasks) if _ntasks
+                      else None)
+    if slurm_mem_cpu and _alloc_cpus:
+        try:
+            allocated = int(slurm_mem_cpu) * _alloc_cpus * 1024 ** 2  # MB -> bytes
+            msg(f'SLURM memory detected: SLURM_MEM_PER_CPU={slurm_mem_cpu} MB x {_alloc_cpus} CPUs -> {allocated / 1024**3:.1f} GB')
+            return allocated
+        except ValueError:
+            pass
+
     try:
         import psutil
-        return psutil.virtual_memory().available
+        available = psutil.virtual_memory().available
+        msg(f'No SLURM memory allocation detected — using node available memory: {available / 1024**3:.1f} GB')
+        return available
     except ImportError:
         pass
     try:
         with open('/proc/meminfo') as f:
             for line in f:
                 if line.startswith('MemAvailable:'):
-                    return int(line.split()[1]) * 1024
+                    available = int(line.split()[1]) * 1024
+                    msg(f'No SLURM memory allocation detected — using /proc/meminfo: {available / 1024**3:.1f} GB')
+                    return available
     except OSError:
         pass
     msg('WARNING: Could not determine available memory. Assuming 4 GB.')

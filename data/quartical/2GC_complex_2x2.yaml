@@ -56,7 +56,7 @@ dask:
   address:
   scheduler: threads
 G:
-  type: complex
+  type: diag_complex
   solve_per: antenna
   direction_dependent: false
   pinned_directions:

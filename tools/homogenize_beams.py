@@ -57,7 +57,8 @@ def get_available_memory_gb() -> float:
 
     SLURM environment variables checked (in order):
       SLURM_MEM_PER_NODE  — total MB allocated to this job
-      SLURM_MEM_PER_CPU   — MB per CPU; multiplied by SLURM_CPUS_ON_NODE
+      SLURM_MEM_PER_CPU   — MB per CPU; multiplied by allocated CPUs
+                            (SLURM_CPUS_PER_TASK x SLURM_NTASKS, not SLURM_CPUS_ON_NODE)
     Falls back to psutil.virtual_memory().available if neither is set.
     """
     slurm_mem_node = os.environ.get('SLURM_MEM_PER_NODE')

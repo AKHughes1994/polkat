@@ -26,10 +26,18 @@ from oxkat import config as cfg
 # =============================================================================
 
 # Set True to always fix the Stokes V position to Stokes I, regardless of S/N.
-# Stokes V is typically faint and noisy in MeerKAT data; allowing it to fit
-# freely can produce spurious offsets that bias the flux measurement.  Setting
-# this to True is the recommended default for most science cases.
+# Circular polarization is intrinsically weak for most synchrotron sources
+# (typically << 1% for optically thin emission), and residual instrumental
+# polarization leakage from Stokes I can dominate the measured V signal.
+# Allowing the position to fit freely in this regime produces spurious offsets
+# that bias the flux measurement.  Setting this to True is the recommended
+# default for most science cases.
 FORCE_FIX_STOKES_V = True
+
+# Set False to skip fitting if the output JSON already exists and jump
+# straight to plotting.  Useful for re-generating plots without re-running
+# the (slow) imfit loop.
+OVERWRITE = True
 
 # =============================================================================
 
@@ -555,7 +563,7 @@ def extract_polarization_properties(src_name,
     # MFS images may use 'image.homogenized.fits' if per-channel splitting
     # has already consumed the standard image.fits products
     mfs_im_suffix = src_im_suffix[:]
-    if not glob.glob(f'{src_im_identifier}MFS*{src_im_suffix}'):
+    if not glob.glob(f'{src_im_identifier}*MFS*{src_im_suffix}'):
         msg(f'WARNING: No MFS {src_im_suffix} images found; '
             f'falling back to image.homogenized.fits')
         mfs_im_suffix = 'image.homogenized.fits'
@@ -564,7 +572,7 @@ def extract_polarization_properties(src_name,
 
     # Check whether polarization images (Q, U, V, P) exist, or if this run
     # is Stokes I only (e.g. early-stage pipeline without polarization calibration)
-    if not glob.glob(f'{src_im_identifier}MFS-I-{mfs_im_suffix}'):
+    if not glob.glob(f'{src_im_identifier}*MFS-I-{mfs_im_suffix}'):
         only_intensity = True
         msg('No MFS polarization images found -- running in Stokes I only mode')
     else:
@@ -573,10 +581,47 @@ def extract_polarization_properties(src_name,
 
     # Build the list of unique image prefixes.  Each prefix corresponds to one
     # time interval (or the full observation if image_timing=false in rmsynth_info.json).
-    prefix_arr = glob.glob(f'{src_im_identifier}MFS*{mfs_im_suffix}')
+    prefix_arr = glob.glob(f'{src_im_identifier}*MFS*{mfs_im_suffix}')
     prefix_arr = sorted(list(set([x.split('-MFS')[0] for x in prefix_arr])))
     is_time_resolved = len(prefix_arr) > 1
     msg(f'Found {len(prefix_arr)} prefix(es) (time interval(s)) to process')
+
+    # Compute the output JSON filename from the prefix list so we can
+    # check for an existing file when OVERWRITE is False.
+    if len(prefix_arr) > 0:
+        _last_prefix = prefix_arr[-1]
+        _split_id    = image_identifier.rstrip('-')
+        if len(_last_prefix.split(f'{_split_id}-t')) > 1:
+            json_basename = _last_prefix.split(f'{_split_id}-t')[0] + _split_id
+        else:
+            json_basename = _last_prefix
+        json_path = '{}_polarization.json'.format(json_basename).replace(image_directory, 'RESULTS')
+    else:
+        json_path = None
+
+    # --- If OVERWRITE is False and the JSON exists, skip fitting and just plot ---
+    if not OVERWRITE and json_path is not None and os.path.isfile(json_path):
+        msg(f'OVERWRITE is False and {json_path} exists -- skipping fitting, loading for plots')
+        with open(json_path, 'r') as j:
+            output_dictionary = json.load(j)
+
+        components = sorted([key for key in output_dictionary['MFS'].keys()])
+
+        if is_time_resolved:
+            for component in components:
+                mfs_I_arr = np.array(output_dictionary['MFS'][component]['I_flux_mJy'])
+                k_bright  = int(np.argmax(mfs_I_arr))
+                bright_prefix = prefix_arr[k_bright]
+                msg(f'  Brightest epoch for {component}: {k_bright} '
+                    f'({mfs_I_arr[k_bright]:.2f} mJy) -- plotting spectrum')
+                plot_stokes_spectrum(output_dictionary, src_name, bright_prefix,
+                                    component, k_bright, save_plot=True)
+            plot_light_curve(output_dictionary, src_name, prefix_arr)
+        else:
+            for component in components:
+                plot_stokes_spectrum(output_dictionary, src_name, prefix_arr[0],
+                                    component, 0, save_plot=True)
+        return 0
     
     for k, prefix in enumerate(prefix_arr[:]):
 
@@ -783,8 +828,9 @@ def extract_polarization_properties(src_name,
             MFS_U_dec_pix = [MFS_U_imfit['results'][key]['pixelcoords'][1] for key in components]
 
             # --- Fit Stokes V, referenced back to Stokes I ------------------
-            # V is expected to be small and noisy in MeerKAT data; anchoring
-            # to I avoids noise-driven position bias.  When FORCE_FIX_STOKES_V
+            # Circular polarization is intrinsically weak for synchrotron
+            # sources and residual I->V leakage can dominate; anchoring to I
+            # avoids noise-driven position bias.  When FORCE_FIX_STOKES_V
             # is True (the global default), ALL components are held fixed via
             # force_fix_all, bypassing the S/N check entirely.
             check_position(f'estimate_V_{src_name}.txt', MFS_images[4],
@@ -828,7 +874,7 @@ def extract_polarization_properties(src_name,
                 
                 # Calculate the other Polarisation parameters
                 LP_frac     = flux_P0 / flux_I * 100.0
-                LP_frac_err = LP_frac * np.sqrt( (rms_I / flux_I) ** 2 + (rms_P / flux_P0) ** 2 )
+                LP_frac_err = abs(LP_frac) * np.sqrt( (rms_I / flux_I) ** 2 + (rms_P / flux_P0) ** 2 )
 
                 if pol_flag:
                     LP_EVPA     = np.arctan2(flux_U, flux_Q) * 180.0 / np.pi * 0.5
@@ -1017,15 +1063,15 @@ def extract_polarization_properties(src_name,
 
                         output_dictionary['CHAN'][component] = {}
                 
-                        output_dictionary['CHAN'][component]['freq_GHz'] = [[freq_GHz]] + (len(prefix_arr) - 1) * [[]]
-                        output_dictionary['CHAN'][component]['bmaj_asec'] = [[bmaj]] + (len(prefix_arr) - 1) * [[]]
-                        output_dictionary['CHAN'][component]['bmin_asec'] = [[bmin]] + (len(prefix_arr) - 1) * [[]]
-                        output_dictionary['CHAN'][component]['bpa_deg'] = [[bpa]] + (len(prefix_arr) - 1) * [[]]
-                        output_dictionary['CHAN'][component]['I_flux_mJy'] = [[flux_I]] + (len(prefix_arr) - 1) * [[]]
-                        output_dictionary['CHAN'][component]['I_err_mJy'] = [[err_I]] + (len(prefix_arr) - 1) * [[]]
-                        output_dictionary['CHAN'][component]['I_rms_mJy'] = [[rms_I]] + (len(prefix_arr) - 1) * [[]]
-                        output_dictionary['CHAN'][component]['I_RA_deg'] = [[RA_I]] + (len(prefix_arr) - 1) * [[]]
-                        output_dictionary['CHAN'][component]['I_DEC_deg'] = [[DEC_I]] + (len(prefix_arr) - 1) * [[]]
+                        output_dictionary['CHAN'][component]['freq_GHz'] = [[freq_GHz]] + [[] for _ in range(len(prefix_arr) - 1)]
+                        output_dictionary['CHAN'][component]['bmaj_asec'] = [[bmaj]] + [[] for _ in range(len(prefix_arr) - 1)]
+                        output_dictionary['CHAN'][component]['bmin_asec'] = [[bmin]] + [[] for _ in range(len(prefix_arr) - 1)]
+                        output_dictionary['CHAN'][component]['bpa_deg'] = [[bpa]] + [[] for _ in range(len(prefix_arr) - 1)]
+                        output_dictionary['CHAN'][component]['I_flux_mJy'] = [[flux_I]] + [[] for _ in range(len(prefix_arr) - 1)]
+                        output_dictionary['CHAN'][component]['I_err_mJy'] = [[err_I]] + [[] for _ in range(len(prefix_arr) - 1)]
+                        output_dictionary['CHAN'][component]['I_rms_mJy'] = [[rms_I]] + [[] for _ in range(len(prefix_arr) - 1)]
+                        output_dictionary['CHAN'][component]['I_RA_deg'] = [[RA_I]] + [[] for _ in range(len(prefix_arr) - 1)]
+                        output_dictionary['CHAN'][component]['I_DEC_deg'] = [[DEC_I]] + [[] for _ in range(len(prefix_arr) - 1)]
                          
                     else:
                         output_dictionary['CHAN'][component]['freq_GHz'][k].append(freq_GHz)
@@ -1063,7 +1109,7 @@ def extract_polarization_properties(src_name,
                     
                         # Calculate the other Polarisation parameters
                         LP_frac     = flux_P0 / flux_I * 100.0
-                        LP_frac_err = LP_frac * np.sqrt( (rms_I / flux_I) ** 2 + (rms_P / flux_P0) ** 2 )
+                        LP_frac_err = abs(LP_frac) * np.sqrt( (rms_I / flux_I) ** 2 + (rms_P / flux_P0) ** 2 )
 
                         if pol_flag:
                             LP_EVPA     = np.arctan2(flux_U, flux_Q) * 180.0 / np.pi * 0.5
@@ -1075,29 +1121,29 @@ def extract_polarization_properties(src_name,
                         # Append values to dictionary -- Initialize if it doesn't exist
                         if 'P_flux_mJy' not in output_dictionary['CHAN'][component]:
     
-                            output_dictionary['CHAN'][component]['Q_flux_mJy'] = [[flux_Q]] + (len(prefix_arr) - 1) * [[]]      
-                            output_dictionary['CHAN'][component]['U_flux_mJy'] = [[flux_U]] + (len(prefix_arr) - 1) * [[]]              
-                            output_dictionary['CHAN'][component]['V_flux_mJy'] = [[flux_V]] + (len(prefix_arr) - 1) * [[]]              
-                            output_dictionary['CHAN'][component]['P_flux_mJy'] = [[flux_P]] + (len(prefix_arr) - 1) * [[]]         
-                            output_dictionary['CHAN'][component]['P0_flux_mJy'] = [[flux_P0]] + (len(prefix_arr) - 1) * [[]]   
+                            output_dictionary['CHAN'][component]['Q_flux_mJy'] = [[flux_Q]] + [[] for _ in range(len(prefix_arr) - 1)]      
+                            output_dictionary['CHAN'][component]['U_flux_mJy'] = [[flux_U]] + [[] for _ in range(len(prefix_arr) - 1)]              
+                            output_dictionary['CHAN'][component]['V_flux_mJy'] = [[flux_V]] + [[] for _ in range(len(prefix_arr) - 1)]              
+                            output_dictionary['CHAN'][component]['P_flux_mJy'] = [[flux_P]] + [[] for _ in range(len(prefix_arr) - 1)]         
+                            output_dictionary['CHAN'][component]['P0_flux_mJy'] = [[flux_P0]] + [[] for _ in range(len(prefix_arr) - 1)]   
     
-                            output_dictionary['CHAN'][component]['Q_err_mJy'] = [[err_Q]] + (len(prefix_arr) - 1) * [[]]            
-                            output_dictionary['CHAN'][component]['U_err_mJy'] = [[err_U]]  + (len(prefix_arr) - 1) * [[]]              
-                            output_dictionary['CHAN'][component]['V_err_mJy'] = [[err_V]]  + (len(prefix_arr) - 1) * [[]]              
-                            output_dictionary['CHAN'][component]['P_err_mJy'] = [[err_P]]  + (len(prefix_arr) - 1) * [[]]         
+                            output_dictionary['CHAN'][component]['Q_err_mJy'] = [[err_Q]] + [[] for _ in range(len(prefix_arr) - 1)]            
+                            output_dictionary['CHAN'][component]['U_err_mJy'] = [[err_U]]  + [[] for _ in range(len(prefix_arr) - 1)]              
+                            output_dictionary['CHAN'][component]['V_err_mJy'] = [[err_V]]  + [[] for _ in range(len(prefix_arr) - 1)]              
+                            output_dictionary['CHAN'][component]['P_err_mJy'] = [[err_P]]  + [[] for _ in range(len(prefix_arr) - 1)]         
 
-                            output_dictionary['CHAN'][component]['Q_rms_mJy'] = [[rms_Q]] + (len(prefix_arr) - 1) * [[]]            
-                            output_dictionary['CHAN'][component]['U_rms_mJy'] = [[rms_U]]  + (len(prefix_arr) - 1) * [[]]              
-                            output_dictionary['CHAN'][component]['V_rms_mJy'] = [[rms_V]]  + (len(prefix_arr) - 1) * [[]]              
-                            output_dictionary['CHAN'][component]['P_rms_mJy'] = [[rms_P]]  + (len(prefix_arr) - 1) * [[]]      
+                            output_dictionary['CHAN'][component]['Q_rms_mJy'] = [[rms_Q]] + [[] for _ in range(len(prefix_arr) - 1)]            
+                            output_dictionary['CHAN'][component]['U_rms_mJy'] = [[rms_U]]  + [[] for _ in range(len(prefix_arr) - 1)]              
+                            output_dictionary['CHAN'][component]['V_rms_mJy'] = [[rms_V]]  + [[] for _ in range(len(prefix_arr) - 1)]              
+                            output_dictionary['CHAN'][component]['P_rms_mJy'] = [[rms_P]]  + [[] for _ in range(len(prefix_arr) - 1)]      
 
-                            output_dictionary['CHAN'][component]['P_RA_deg'] = [[RA_P]] + (len(prefix_arr) - 1) * [[]]
-                            output_dictionary['CHAN'][component]['P_DEC_deg'] = [[DEC_P]] + (len(prefix_arr) - 1) * [[]]    
+                            output_dictionary['CHAN'][component]['P_RA_deg'] = [[RA_P]] + [[] for _ in range(len(prefix_arr) - 1)]
+                            output_dictionary['CHAN'][component]['P_DEC_deg'] = [[DEC_P]] + [[] for _ in range(len(prefix_arr) - 1)]    
 
-                            output_dictionary['CHAN'][component]['LP_frac'] = [[LP_frac]] + (len(prefix_arr) - 1) * [[]]
-                            output_dictionary['CHAN'][component]['LP_frac_err'] = [[LP_frac_err]] + (len(prefix_arr) - 1) * [[]]
-                            output_dictionary['CHAN'][component]['LP_EVPA'] = [[LP_EVPA]] + (len(prefix_arr) - 1) * [[]]
-                            output_dictionary['CHAN'][component]['LP_EVPA_err'] = [[LP_EVPA_err]] + (len(prefix_arr) - 1) * [[]]      
+                            output_dictionary['CHAN'][component]['LP_frac'] = [[LP_frac]] + [[] for _ in range(len(prefix_arr) - 1)]
+                            output_dictionary['CHAN'][component]['LP_frac_err'] = [[LP_frac_err]] + [[] for _ in range(len(prefix_arr) - 1)]
+                            output_dictionary['CHAN'][component]['LP_EVPA'] = [[LP_EVPA]] + [[] for _ in range(len(prefix_arr) - 1)]
+                            output_dictionary['CHAN'][component]['LP_EVPA_err'] = [[LP_EVPA_err]] + [[] for _ in range(len(prefix_arr) - 1)]      
                 
                         else:
 
@@ -1147,14 +1193,28 @@ def extract_polarization_properties(src_name,
                 msg(f'  RM synthesis file written: {rmsynth_fname}')
 
         # Compute the spectral index for every epoch (stored in JSON).
-        # For time-resolved data the spectrum plot is deferred to the brightest
-        # epoch only (see below); for single-epoch data plot immediately.
+        # Plotting is deferred until after the JSON is saved, so that data
+        # is preserved even if a plotting call crashes.
         for component in components:
             plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k,
-                                save_plot=(not is_time_resolved))
+                                save_plot=False)
 
     # ------------------------------------------------------------------
-    # Post-loop diagnostics for time-resolved data
+    # Save all data files before any plotting
+    # ------------------------------------------------------------------
+    if len(prefix_arr) == 0:
+        msg('WARNING: No prefixes found -- nothing to process. '
+            'Check image_directory, image_identifier, and image_suffix in rmsynth_info.json.')
+        return 0
+
+    # Save the full dictionary
+    os.makedirs(os.path.dirname(json_path), exist_ok=True)
+    with open(json_path, 'w') as j:
+        json.dump(output_dictionary, j, indent = 4)
+    msg(f'  Output JSON saved: {json_path}')
+
+    # ------------------------------------------------------------------
+    # Plotting (after all files are safely on disk)
     # ------------------------------------------------------------------
     if is_time_resolved:
         # Plot the IQUV spectrum for the brightest epoch only (by MFS Stokes I)
@@ -1169,16 +1229,11 @@ def extract_polarization_properties(src_name,
 
         # Plot MFS light curve across all epochs
         plot_light_curve(output_dictionary, src_name, prefix_arr)
-
-    # Save the full dictionary with all times, etc.
-    # Remove trailing dash from image_identifier for splitting if present
-    split_identifier = image_identifier.rstrip('-')
-    if len(prefix.split(f'{split_identifier}-t')) > 1:
-        file_name = prefix.split(f'{split_identifier}-t')[0] + split_identifier
     else:
-        file_name = prefix
-    with open('{}_polarization.json'.format(file_name).replace(image_directory, 'RESULTS'), 'w') as j:
-        json.dump(output_dictionary, j, indent = 4)
+        # Single-epoch: plot spectrum for each component
+        for component in components:
+            plot_stokes_spectrum(output_dictionary, src_name, prefix_arr[0],
+                                component, 0, save_plot=True)
 
     return 0
 
@@ -1192,11 +1247,11 @@ def plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k,
     Layout
     ------
     Four panels stacked vertically, sharing the same x-axis:
-      - Panel 1 (top):  Stokes I  -- log-log axes; MFS reference dashed line;
+      - Panel 1 (top):  Stokes I  -- linear frequency, log flux axis; MFS reference dashed line;
                                       spectral index power-law fit overlaid when
                                       MFS S/N > 30 and >= 3 valid channels.
       - Panels 2-4:     Stokes Q, U, V -- linear y-axis (fluxes can be negative);
-                                          symmetric y-axis centred on zero;
+                                          robust MAD-based y-axis range;
                                           MFS value as a dashed horizontal reference.
 
     All panels use RMS error bars (not the imfit formal errors, which are stored
@@ -1336,28 +1391,42 @@ def plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k,
                     fmt='o', markersize=4, capsize=3, color='royalblue',
                     label='Stokes I', zorder=3)
 
-        # Zoom y-axis to the 5th–95th percentile of plotted fluxes, with 10%
-        # padding on the log scale, so a handful of flagged/outlier channels
-        # don't collapse the bulk of the data into a tiny portion of the panel.
-        p05 = np.nanpercentile(I_flux[plot_mask], 5)
-        p95 = np.nanpercentile(I_flux[plot_mask], 95)
-        if p05 > 0 and p95 > p05:
-            log_pad = 0.1 * (np.log10(p95) - np.log10(p05))
-            ax.set_ylim(10 ** (np.log10(p05) - log_pad),
-                        10 ** (np.log10(p95) + log_pad))
+        # Robust y-axis range in log space: use median + MAD to reject
+        # outlier channels (> 5 sigma_MAD from log-median), then set the
+        # range from inlier data + MFS reference.
+        log_flux = np.log10(I_flux[plot_mask])
+        log_med  = np.nanmedian(log_flux)
+        log_mad  = np.nanmedian(np.abs(log_flux - log_med))
+        log_sigma = 1.4826 * log_mad
+        if log_sigma > 0:
+            inlier = np.abs(log_flux - log_med) <= 5.0 * log_sigma
+        else:
+            inlier = np.ones(len(log_flux), dtype=bool)
+
+        inlier_flux = I_flux[plot_mask][inlier]
+        inlier_rms  = I_rms[plot_mask][inlier]
+        lo = np.nanmin(inlier_flux - inlier_rms)
+        hi = np.nanmax(inlier_flux + inlier_rms)
+        # Include the MFS reference in the range
+        if mfs_I > 0:
+            lo = min(lo, mfs_I)
+            hi = max(hi, mfs_I)
+        if lo > 0 and hi > lo:
+            log_pad = 0.1 * (np.log10(hi) - np.log10(lo))
+            ax.set_ylim(10 ** (np.log10(lo) - log_pad),
+                        10 ** (np.log10(hi) + log_pad))
 
     ax.axhline(y=mfs_I, color='k', linestyle='--', linewidth=1.5,
                label=f'MFS: {mfs_I:.2f} mJy  (S/N = {mfs_snr:.1f})', zorder=2)
     if fit_nu is not None:
         ax.plot(fit_nu, fit_S, color='tomato', linewidth=1.8,
                 label=rf'$\alpha$ = {alpha:.2f} $\pm$ {alpha_err:.2f}', zorder=4)
-    ax.set_xscale('log')
     ax.set_yscale('log')
     ax.set_ylabel('I  (mJy/beam)', fontsize=10)
     ax.grid(True, which='both', alpha=0.3, linestyle=':')
     ax.legend(fontsize=9, loc='best')
 
-    # --- Panels 1-3: Stokes Q, U, V (linear y, symmetric about zero) ---
+    # --- Panels 1-3: Stokes Q, U, V (linear y, actual data range) ---
     if not only_intensity:
         for ax, flux, rms, label, mfs_val, colour in zip(
                 axes[1:],
@@ -1374,20 +1443,27 @@ def plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k,
                        label=f'MFS: {mfs_val:.2f} mJy', zorder=2)
             ax.axhline(y=0, color='grey', linestyle=':', linewidth=0.8, zorder=1)
 
-            # Zoom to the 5th–95th percentile range of |flux|, with 10% linear
-            # padding.  The y-axis is kept symmetric about zero so positive and
-            # negative excursions read at the same scale.
-            p05 = np.nanpercentile(flux, 5)
-            p95 = np.nanpercentile(flux, 95)
-            span = p95 - p05
-            if np.isfinite(span) and span > 0:
-                pad    = 0.10 * span
-                centre = 0.5 * (p05 + p95)
-                half   = 0.5 * span + pad
-                # Enforce symmetry about zero: use the larger of the two half-widths
-                # so the zero line and MFS reference always stay visible
-                half = max(half, abs(centre) + pad)
-                ax.set_ylim(-half, half)
+            # Robust y-axis range: MAD-based 5-sigma outlier rejection,
+            # then use the actual min/max of inlier data +/- error bars
+            # and the MFS reference value.
+            med   = np.nanmedian(flux)
+            mad   = np.nanmedian(np.abs(flux - med))
+            sigma = 1.4826 * mad
+            if sigma > 0:
+                inlier = np.abs(flux - med) <= 5.0 * sigma
+            else:
+                inlier = np.ones(len(flux), dtype=bool)
+
+            range_vals = np.concatenate([
+                flux[inlier] + rms[inlier],
+                flux[inlier] - rms[inlier],
+                [mfs_val, 0.0]])
+            lo = np.nanmin(range_vals)
+            hi = np.nanmax(range_vals)
+            if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
+                span = hi - lo
+                pad  = 0.15 * span
+                ax.set_ylim(lo - pad, hi + pad)
 
             ax.set_ylabel(f'{label}  (mJy/beam)', fontsize=10)
             ax.grid(True, which='both', alpha=0.3, linestyle=':')
@@ -1409,12 +1485,16 @@ def plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k,
 
 def plot_light_curve(output_dictionary, src_name, prefix_arr):
     '''
-    Plot MFS Stokes I light curve for time-resolved data.
+    Plot MFS light curves for time-resolved data.
 
-    One figure per source containing one panel per component, showing
-    MFS flux density vs time with RMS error bars.  If polarization data
-    is available, a second row of panels shows the linear polarization
-    fraction.
+    One figure per source with one column per component and up to three rows:
+      Row 1: Stokes I flux density (mJy/beam) vs time
+      Row 2: Linear polarization fraction LP = P0/I (%) vs time
+      Row 3: Circular polarization fraction CP = V/I (%) vs time
+
+    Rows 2 and 3 are only shown when polarization data is available.
+    All panels use MAD-based 5-sigma outlier rejection for robust y-axis
+    ranging.
 
     Parameters
     ----------
@@ -1432,47 +1512,120 @@ def plot_light_curve(output_dictionary, src_name, prefix_arr):
 
     # Determine whether polarization data exists
     has_pol = 'LP_frac' in mfs[components[0]]
-    n_rows  = 2 if has_pol else 1
+    n_rows  = 3 if has_pol else 1
     n_cols  = len(components)
 
     fig, axes = plt.subplots(n_rows, n_cols,
-                             figsize=(5 * n_cols, 3.5 * n_rows),
+                             figsize=(8 * n_cols, 3.5 * n_rows),
                              squeeze=False, sharex=True)
 
     # Component colours
     colours = ['royalblue', 'tomato', 'forestgreen', 'mediumpurple',
                'darkorange', 'teal', 'crimson', 'goldenrod']
 
+    def robust_ylim_linear(ax, vals, errs, floor_lo=None):
+        """Apply MAD-based 5-sigma outlier rejection and set y-limits."""
+        med   = np.nanmedian(vals)
+        mad   = np.nanmedian(np.abs(vals - med))
+        sigma = 1.4826 * mad
+        if sigma > 0:
+            inlier = np.abs(vals - med) <= 5.0 * sigma
+        else:
+            inlier = np.ones(len(vals), dtype=bool)
+        lo = np.nanmin(vals[inlier] - errs[inlier])
+        hi = np.nanmax(vals[inlier] + errs[inlier])
+        if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
+            span = hi - lo
+            pad  = 0.15 * span if span > 0 else 0.5
+            if floor_lo is not None:
+                lo = max(floor_lo, lo - pad)
+            else:
+                lo = lo - pad
+            ax.set_ylim(lo, hi + pad)
+
     for j, component in enumerate(components):
         comp = mfs[component]
 
         # Parse observation dates
-        dates = [datetime.datetime.fromisoformat(d) for d in comp['date_isot']]
+        dates = np.array([datetime.datetime.fromisoformat(d) for d in comp['date_isot']])
 
         I_flux = np.array(comp['I_flux_mJy'])
         I_rms  = np.array(comp['I_rms_mJy'])
         col    = colours[j % len(colours)]
 
-        # --- Stokes I panel ---
-        ax = axes[0, j]
-        ax.errorbar(dates, I_flux, yerr=I_rms,
-                    fmt='o', markersize=5, capsize=3, color=col,
-                    label=component)
-        ax.set_ylabel('Stokes I (mJy/beam)', fontsize=10)
-        ax.set_title(component, fontsize=10)
-        ax.grid(True, alpha=0.3, linestyle=':')
-        ax.legend(fontsize=8, loc='best')
+        # --- Row 0: Stokes I (independent 5σ filter) ---
+        snr_I  = np.where(I_rms > 0, I_flux / I_rms, 0.0)
+        det_I  = snr_I >= 5.0
+        n_det_I = int(np.sum(det_I))
+        msg(f'  Light curve {component}: Stokes I  {n_det_I}/{len(det_I)} epochs with S/N >= 5')
 
-        # --- LP fraction panel (if available) ---
+        ax = axes[0, j]
+        ax.set_title(component, fontsize=10)
+        ax.set_ylabel('Stokes I (mJy/beam)', fontsize=10)
+        ax.grid(True, alpha=0.3, linestyle=':')
+        if n_det_I > 0:
+            ax.errorbar(dates[det_I], I_flux[det_I], yerr=I_rms[det_I],
+                        fmt='o', markersize=5, capsize=3, color=col,
+                        label=component)
+            ax.legend(fontsize=8, loc='best')
+            robust_ylim_linear(ax, I_flux[det_I], I_rms[det_I], floor_lo=0)
+        else:
+            ax.set_title(f'{component} (no I detections)', fontsize=10)
+
         if has_pol and 'LP_frac' in comp:
-            ax2 = axes[1, j]
+
+            # --- Row 1: LP fraction (independent 5σ filter on P0/rms_P) ---
+            P0_flux = np.array(comp['P0_flux_mJy'])
+            P_rms   = np.array(comp['P_rms_mJy'])
             LP      = np.array(comp['LP_frac'])
             LP_err  = np.array(comp['LP_frac_err'])
-            ax2.errorbar(dates, LP, yerr=LP_err,
-                         fmt='s', markersize=5, capsize=3, color=col)
-            ax2.axhline(y=0, color='grey', linestyle=':', linewidth=0.8)
-            ax2.set_ylabel('LP fraction (%)', fontsize=10)
-            ax2.grid(True, alpha=0.3, linestyle=':')
+
+            # Validity mask: finite, positive errors, and S/N >= 5
+            valid_LP = (np.isfinite(LP) & np.isfinite(LP_err)
+                        & (LP_err > 0) & (P_rms > 0))
+            snr_LP   = np.where(valid_LP & (P_rms > 0), P0_flux / P_rms, 0.0)
+            det_LP   = valid_LP & (snr_LP >= 5.0)
+            n_det_LP = int(np.sum(det_LP))
+            msg(f'  Light curve {component}: LP frac   {n_det_LP}/{len(det_LP)} epochs with S/N >= 5')
+
+            ax_lp = axes[1, j]
+            ax_lp.axhline(y=0, color='grey', linestyle=':', linewidth=0.8)
+            ax_lp.set_ylabel('LP fraction (%)', fontsize=10)
+            ax_lp.grid(True, alpha=0.3, linestyle=':')
+            if n_det_LP > 0:
+                ax_lp.errorbar(dates[det_LP], LP[det_LP], yerr=LP_err[det_LP],
+                               fmt='s', markersize=5, capsize=3, color=col)
+                robust_ylim_linear(ax_lp, LP[det_LP], LP_err[det_LP], floor_lo=0)
+
+            # --- Row 2: CP fraction (independent 5σ filter on |V|/rms_V) ---
+            V_flux = np.array(comp['V_flux_mJy'])
+            V_rms  = np.array(comp['V_rms_mJy'])
+
+            snr_CP  = np.where(V_rms > 0, np.abs(V_flux) / V_rms, 0.0)
+            det_CP  = snr_CP >= 5.0
+            n_det_CP = int(np.sum(det_CP))
+            msg(f'  Light curve {component}: CP frac   {n_det_CP}/{len(det_CP)} epochs with S/N >= 5')
+
+            # Compute CP and error only for detected epochs
+            # Need Stokes I at same epochs for the ratio
+            CP     = V_flux[det_CP] / I_flux[det_CP] * 100.0
+            CP_err = np.sqrt((V_rms[det_CP] / I_flux[det_CP]) ** 2 +
+                             (V_flux[det_CP] * I_rms[det_CP] / I_flux[det_CP] ** 2) ** 2) * 100.0
+
+            # Filter to finite, positive-error entries only
+            valid_cp  = np.isfinite(CP) & np.isfinite(CP_err) & (CP_err > 0)
+            dates_cp  = dates[det_CP][valid_cp]
+            CP        = CP[valid_cp]
+            CP_err    = CP_err[valid_cp]
+
+            ax_cp = axes[2, j]
+            ax_cp.axhline(y=0, color='grey', linestyle=':', linewidth=0.8)
+            ax_cp.set_ylabel('CP fraction (%)', fontsize=10)
+            ax_cp.grid(True, alpha=0.3, linestyle=':')
+            if len(CP) > 0:
+                ax_cp.errorbar(dates_cp, CP, yerr=CP_err,
+                               fmt='D', markersize=5, capsize=3, color=col)
+                robust_ylim_linear(ax_cp, CP, CP_err)
 
     # Format the time axis on the bottom row
     for ax in axes[-1, :]:
