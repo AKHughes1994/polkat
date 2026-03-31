@@ -314,7 +314,7 @@ def main():
         if minuvl != '':
             extra_args += f' input_ms.select_uv_range=[{minuvl},0]'
         syscall += gen.generate_syscall_quartical(
-            yaml       = cfg.CAL_2GC_YAML_COMPLEX,
+            yaml       = cfg.CAL_2GC_FILE,
             myms       = calms,
             extra_args = extra_args)
         step['syscall'] = syscall

@@ -120,18 +120,43 @@ def main():
         # scan0001-t0000 becomes t100 (easier indexing imo and avoids scan boundaries without the need to split MS files)
         images= sorted(glob.glob(f'{image_prefix}*'))
         
-        msg('Removing "scan" label in image names to standardize the snapshots')
         for image in images:
             image_prefix_fix = image_prefix.replace(f'_scan{scan_n:04d}','') # remove scan string
             image_fix = image.replace(image_prefix, image_prefix_fix) # replace it in image name
             suffix = image_fix.split(image_prefix_fix + '-t')[-1] # get suffix with improper t-label number
-            suffix_fix = suffix.split('-') 
+            suffix_fix = suffix.split('-')
             suffix_fix[0] = '{:04d}'.format(int(suffix_fix[0]) + (sum(nint_arr[:scan_n]) if scan_n > 0 else 0))
             image_fix = image_fix.replace(suffix, '-'.join(suffix_fix)) # replace t-label in image
-            syscall = f'mv {image} {image_fix}'
-            subprocess.run([syscall], shell = True)
+            rename_pairs.append((image, image_fix))
 
         scan_n += 1
         
+    # After all scans are processed, validate and perform renames
+    msg(f'Validating {len(rename_pairs)} image rename operations')
+
+    # Check for 1-to-1 mapping (no duplicate target names)
+    target_names = [pair[1] for pair in rename_pairs]
+    if len(target_names) != len(set(target_names)):
+        msg('ERROR: Duplicate target filenames detected in rename operations!')
+        msg('Rename operations aborted to prevent file overwrites.')
+        sys.exit(1)
+
+    # Check that all source files exist
+    for old_path, new_path in rename_pairs:
+        if not os.path.exists(old_path):
+            msg(f'ERROR: Source file does not exist: {old_path}')
+            msg('Rename operations aborted.')
+            sys.exit(1)
+
+    # All checks passed, perform the renames
+    msg('Removing "scan" label in image names to standardize the snapshots')
+    for old_path, new_path in rename_pairs:
+        syscall = f'mv {old_path} {new_path}'
+        subprocess.run([syscall], shell = True)
+
+    msg(f'Successfully renamed {len(rename_pairs)} images')
+
+
+
 if __name__ == "__main__":
     main()

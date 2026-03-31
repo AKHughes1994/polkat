@@ -1247,7 +1247,7 @@ def plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k,
     Layout
     ------
     Four panels stacked vertically, sharing the same x-axis:
-      - Panel 1 (top):  Stokes I  -- linear frequency, log flux axis; MFS reference dashed line;
+      - Panel 1 (top):  Stokes I  -- linear axes; MFS reference dashed line;
                                       spectral index power-law fit overlaid when
                                       MFS S/N > 30 and >= 3 valid channels.
       - Panels 2-4:     Stokes Q, U, V -- linear y-axis (fluxes can be negative);
@@ -1382,46 +1382,37 @@ def plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k,
     if n_panels == 1:
         axes = [axes]   # make iterable
 
-    # --- Panel 0: Stokes I (log-log) ---
+    # --- Panel 0: Stokes I (linear axes) ---
     ax = axes[0]
-    plot_mask = I_flux > 0
-    if np.sum(plot_mask) > 0:
-        ax.errorbar(freq_arr[plot_mask], I_flux[plot_mask],
-                    yerr=I_rms[plot_mask],
-                    fmt='o', markersize=4, capsize=3, color='royalblue',
-                    label='Stokes I', zorder=3)
+    ax.errorbar(freq_arr, I_flux, yerr=I_rms,
+                fmt='o', markersize=4, capsize=3, color='royalblue',
+                label='Stokes I', zorder=3)
 
-        # Robust y-axis range in log space: use median + MAD to reject
-        # outlier channels (> 5 sigma_MAD from log-median), then set the
-        # range from inlier data + MFS reference.
-        log_flux = np.log10(I_flux[plot_mask])
-        log_med  = np.nanmedian(log_flux)
-        log_mad  = np.nanmedian(np.abs(log_flux - log_med))
-        log_sigma = 1.4826 * log_mad
-        if log_sigma > 0:
-            inlier = np.abs(log_flux - log_med) <= 5.0 * log_sigma
-        else:
-            inlier = np.ones(len(log_flux), dtype=bool)
+    # Robust y-axis range: MAD-based 5-sigma outlier rejection
+    med_I   = np.nanmedian(I_flux)
+    mad_I   = np.nanmedian(np.abs(I_flux - med_I))
+    sigma_I = 1.4826 * mad_I
+    if sigma_I > 0:
+        inlier = np.abs(I_flux - med_I) <= 5.0 * sigma_I
+    else:
+        inlier = np.ones(len(I_flux), dtype=bool)
 
-        inlier_flux = I_flux[plot_mask][inlier]
-        inlier_rms  = I_rms[plot_mask][inlier]
-        lo = np.nanmin(inlier_flux - inlier_rms)
-        hi = np.nanmax(inlier_flux + inlier_rms)
-        # Include the MFS reference in the range
-        if mfs_I > 0:
-            lo = min(lo, mfs_I)
-            hi = max(hi, mfs_I)
-        if lo > 0 and hi > lo:
-            log_pad = 0.1 * (np.log10(hi) - np.log10(lo))
-            ax.set_ylim(10 ** (np.log10(lo) - log_pad),
-                        10 ** (np.log10(hi) + log_pad))
+    range_vals = np.concatenate([
+        I_flux[inlier] + I_rms[inlier],
+        I_flux[inlier] - I_rms[inlier],
+        [mfs_I, 0.0]])
+    lo = np.nanmin(range_vals)
+    hi = np.nanmax(range_vals)
+    if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
+        span = hi - lo
+        pad  = 0.15 * span
+        ax.set_ylim(max(0, lo - pad), hi + pad)
 
     ax.axhline(y=mfs_I, color='k', linestyle='--', linewidth=1.5,
                label=f'MFS: {mfs_I:.2f} mJy  (S/N = {mfs_snr:.1f})', zorder=2)
     if fit_nu is not None:
         ax.plot(fit_nu, fit_S, color='tomato', linewidth=1.8,
                 label=rf'$\alpha$ = {alpha:.2f} $\pm$ {alpha_err:.2f}', zorder=4)
-    ax.set_yscale('log')
     ax.set_ylabel('I  (mJy/beam)', fontsize=10)
     ax.grid(True, which='both', alpha=0.3, linestyle=':')
     ax.legend(fontsize=9, loc='best')

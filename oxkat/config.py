@@ -694,6 +694,8 @@ CAL_COMBINESCAN = False
 # avoids cleaning noise into the model before self-calibration.
 WSC_CALS_BLINDMASK = WSC_AUTOMASK_BLIND * 3
 
+# Self-calibration file: Default is full 2x2 complex solutions (assuming this is for a pol cal)
+CAL_2GC_FILE = DATA+'/quartical/2GC_complex.yaml'
 
 # ------------------------------------------------------------------------
 #

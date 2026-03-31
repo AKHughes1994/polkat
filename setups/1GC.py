@@ -218,6 +218,7 @@ def main():
                 splitpol = True,                
                 mfweight = False,
                 # mask = mask_prefix +'-MFS-image.mask.fits',
+                mask = False,
                 automask = 5.0,
                 intervalsout = False,
                 autothreshold = 1.0,

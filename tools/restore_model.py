@@ -232,13 +232,13 @@ def process_one(modelsub_image, model_images, truncate_model, modelsub_shape, cr
 
 if __name__ == '__main__':  
     
-        if len(sys.argv) != 4:
+        mfs_only = '--mfs-only' in sys.argv
+        args = [a for a in sys.argv[1:] if not a.startswith('--')]
+
+        if len(args) != 3:
                 print('Incorrect number of inputs should just be (in order) model prefix, target image prefix, stokes parameters (I or IQUV)')
                 sys.exit()
 
-        # Inputs
-        mfs_only = '--mfs-only' in sys.argv
-        args = [a for a in sys.argv[1:] if not a.startswith('--')]
         model_prefix = args[0]
         target_prefix = args[1]
         pol = args[2]
