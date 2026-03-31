@@ -197,6 +197,7 @@ def main():
             imsize        = cfg.WSC_CAL_IMSIZE,
             nomodel       = True,
             pol           = 'I',
+            mask          = False,
             intervalsout  = False,
             mfweight      = True,
             localrms      = False,
