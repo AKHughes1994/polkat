@@ -368,7 +368,7 @@ def main():
                 step['dependency'] = n - 1
                 step['id'] = 'PISNA'+code
                 syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
-                syscall += f"python3 {cfg.TOOLS}/make_pol_images.py {cfg.INTERVALS}"
+                syscall += f"python3 {cfg.TOOLS}/make_pol_images.py {cfg.INTERVALS} True"
                 step['syscall'] = syscall
                 steps.append(step)
                 n += 1

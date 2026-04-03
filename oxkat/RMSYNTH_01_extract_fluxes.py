@@ -39,6 +39,11 @@ FORCE_FIX_STOKES_V = True
 # the (slow) imfit loop.
 OVERWRITE = True
 
+# Minimum MFS Stokes I S/N for an epoch to get a per-channel spectrum plot.
+# Epochs below this threshold still have their spectral index computed and
+# stored in the JSON, but no PNG is generated.
+SPEC_PLOT_SNR_THRESH = 20
+
 # =============================================================================
 
 
@@ -610,12 +615,14 @@ def extract_polarization_properties(src_name,
         if is_time_resolved:
             for component in components:
                 mfs_I_arr = np.array(output_dictionary['MFS'][component]['I_flux_mJy'])
-                k_bright  = int(np.argmax(mfs_I_arr))
-                bright_prefix = prefix_arr[k_bright]
-                msg(f'  Brightest epoch for {component}: {k_bright} '
-                    f'({mfs_I_arr[k_bright]:.2f} mJy) -- plotting spectrum')
-                plot_stokes_spectrum(output_dictionary, src_name, bright_prefix,
-                                    component, k_bright, save_plot=True)
+                mfs_rms_arr = np.array(output_dictionary['MFS'][component]['I_rms_mJy'])
+                mfs_snr_arr = np.where(mfs_rms_arr > 0, mfs_I_arr / mfs_rms_arr, 0.0)
+                det_mask = mfs_snr_arr >= SPEC_PLOT_SNR_THRESH
+                n_det = int(np.sum(det_mask))
+                msg(f'  {component}: {n_det}/{len(det_mask)} epochs with MFS S/N >= {SPEC_PLOT_SNR_THRESH} -- plotting spectra')
+                for k in np.where(det_mask)[0]:
+                    plot_stokes_spectrum(output_dictionary, src_name, prefix_arr[k],
+                                        component, int(k), save_plot=True)
             plot_light_curve(output_dictionary, src_name, prefix_arr)
         else:
             for component in components:
@@ -1217,15 +1224,17 @@ def extract_polarization_properties(src_name,
     # Plotting (after all files are safely on disk)
     # ------------------------------------------------------------------
     if is_time_resolved:
-        # Plot the IQUV spectrum for the brightest epoch only (by MFS Stokes I)
+        # Plot IQUV spectrum for all epochs meeting the MFS S/N threshold
         for component in components:
             mfs_I_arr = np.array(output_dictionary['MFS'][component]['I_flux_mJy'])
-            k_bright  = int(np.argmax(mfs_I_arr))
-            bright_prefix = prefix_arr[k_bright]
-            msg(f'  Brightest epoch for {component}: {k_bright} '
-                f'({mfs_I_arr[k_bright]:.2f} mJy) -- plotting spectrum')
-            plot_stokes_spectrum(output_dictionary, src_name, bright_prefix,
-                                component, k_bright, save_plot=True)
+            mfs_rms_arr = np.array(output_dictionary['MFS'][component]['I_rms_mJy'])
+            mfs_snr_arr = np.where(mfs_rms_arr > 0, mfs_I_arr / mfs_rms_arr, 0.0)
+            det_mask = mfs_snr_arr >= SPEC_PLOT_SNR_THRESH
+            n_det = int(np.sum(det_mask))
+            msg(f'  {component}: {n_det}/{len(det_mask)} epochs with MFS S/N >= {SPEC_PLOT_SNR_THRESH} -- plotting spectra')
+            for k in np.where(det_mask)[0]:
+                plot_stokes_spectrum(output_dictionary, src_name, prefix_arr[k],
+                                    component, int(k), save_plot=True)
 
         # Plot MFS light curve across all epochs
         plot_light_curve(output_dictionary, src_name, prefix_arr)

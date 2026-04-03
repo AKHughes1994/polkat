@@ -70,6 +70,9 @@ def main():
     int_arr = get_total_ints(myms)
     nint_arr = []
 
+    # Lists to store rename pairs
+    rename_pairs = []
+
     # Iterate through scans:
     scan_n = 0
     for ints in int_arr:
@@ -118,8 +121,8 @@ def main():
         # Fix 'scan' naming to obey the 't0...' wsclean naming convention -- again has to be a bettter way to do this but this'll work
         # Basic idea is to add the scan number to the t-label; e.g., if scan 0 has 100 integrations:
         # scan0001-t0000 becomes t100 (easier indexing imo and avoids scan boundaries without the need to split MS files)
-        images= sorted(glob.glob(f'{image_prefix}*'))
-        
+        images= sorted(glob.glob(f'{image_prefix}*')) 
+
         for image in images:
             image_prefix_fix = image_prefix.replace(f'_scan{scan_n:04d}','') # remove scan string
             image_fix = image.replace(image_prefix, image_prefix_fix) # replace it in image name

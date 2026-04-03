@@ -201,9 +201,26 @@ def main():
                  '  target_name - (Optional) Target name to filter images\n'
                  '  plin_only   - (Optional) If "true", only create Plin images (not Ptot)')
 
-    directory   = sys.argv[1]
-    target_name = sys.argv[2] if len(sys.argv) >= 3 else None
-    plin_only   = len(sys.argv) == 4 and sys.argv[3].lower() == 'true'
+    directory = sys.argv[1]
+
+    # plin_only can appear as either the 2nd or 3rd positional argument.
+    # If the 2nd arg is 'true' or 'false' treat it as plin_only (no target filter).
+    target_name = None
+    plin_only   = False
+
+    if len(sys.argv) >= 3:
+        if sys.argv[2].lower() in ('true', 'false'):
+            plin_only = sys.argv[2].lower() == 'true'
+        else:
+            target_name = sys.argv[2]
+
+    if len(sys.argv) == 4:
+        plin_only = sys.argv[3].lower() == 'true'
+
+    if plin_only:
+        msg('Mode: Plin only (Ptot will not be computed)')
+    else:
+        msg('Mode: Plin + Ptot')
 
     if not os.path.isdir(directory):
         sys.exit(f'ERROR: Directory "{directory}" does not exist')

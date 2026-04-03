@@ -282,7 +282,7 @@ XF_SKIP_KCROSS = True # weather to skip the cross-hand delay and only solve for 
                       # my experimentation has found that some times this exclusion can give better solutions.
 
 # XF table targets
-XF_CHANINT = 16  # Channels per solution interval default is 1024 frequency channels so 1024 / 16 = 64 cross-hand phase intervals
+XF_CHANINT = 4  # Channels per solution interval default is 1024 frequency channels so 1024 / 4 = 256 cross-hand phase intervals
 XF_MAX_AVG_CHANNELS = None # If None, auto calculate will be the same as the number of cross-hand solution intervals
 
 # Calibration and outlier thresholds
