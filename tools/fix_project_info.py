@@ -123,11 +123,11 @@ else:
         m060_idx     = idx_list[m060_pos]
         median_flag  = np.median(pc_list)
         std_flag     = np.std(pc_list)
-        if abs(m060_flag_pc - median_flag) <= std_flag:
+        if abs(m060_flag_pc - median_flag) <= 3 * std_flag:
             if m060_idx in ranked_list:
                 ranked_list.remove(m060_idx)
             ranked_list.insert(0, m060_idx)
-            print(f'fix_project_info: m060 ({m060_flag_pc:.4f}%) within 1-sigma of median '
+            print(f'fix_project_info: m060 ({m060_flag_pc:.4f}%) within 3-sigma of median '
                   f'({median_flag:.4f}%), placing at front of list')
 
     ref_ant = ','.join(ranked_list)
