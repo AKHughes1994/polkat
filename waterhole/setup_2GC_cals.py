@@ -3,15 +3,40 @@
 # fraser.cowie@physics.ox.a.uk
 
 import json
+import math
 import os
 import os.path as o
 import glob
 import re
 import sys
+import yaml
 sys.path.append(o.abspath(o.join(o.dirname(sys.modules[__name__].__file__), "..")))
 
 from oxkat import generate_jobs as gen
 from oxkat import config as cfg
+
+
+SET_REFANT        = True
+ADAPTIVE_CHANNELS = True
+
+
+def get_adaptive_freq_intervals(yaml_path, n_model_channels):
+    """Parse a QuartiCal YAML and return (ratio, overrides, zeros) where:
+      overrides — list of (term, original_fi, new_fi) for terms that need coarsening
+      zeros     — list of term names with freq_interval=0 (whole-band, left alone)
+    ratio = ceil(PRE_NCHANS / n_model_channels)."""
+    ratio = math.ceil(cfg.PRE_NCHANS / n_model_channels)
+    overrides = []
+    zeros = []
+    with open(yaml_path) as f:
+        qc = yaml.safe_load(f)
+    for term in qc.get('solver', {}).get('terms', []):
+        fi = int(str(qc.get(term, {}).get('freq_interval', 0)).strip())
+        if fi == 0:
+            zeros.append(term)
+        elif fi < ratio:
+            overrides.append((term, fi, ratio))
+    return ratio, overrides, zeros
 
 
 def main():
@@ -52,6 +77,23 @@ def main():
 
     band  = project_info['band']
     myms  = project_info['working_ms']
+
+    ref_ant_arg = None
+    if SET_REFANT:
+        raw_ref_ant = project_info.get('ref_ant', None)
+        if raw_ref_ant is None:
+            print(gen.col('Reference Antenna')+'WARNING: ref_ant not found in project_info.json — defaulting to antenna index 0')
+            ref_ant_arg = 0
+        elif not isinstance(raw_ref_ant, str):
+            print(gen.col('Reference Antenna')+f'WARNING: ref_ant value "{raw_ref_ant}" is not a string — defaulting to antenna index 0')
+            ref_ant_arg = 0
+        else:
+            try:
+                ref_ant_arg = int(raw_ref_ant.split(',')[0].strip())
+                print(gen.col('Reference Antenna')+str(ref_ant_arg))
+            except (ValueError, IndexError):
+                print(gen.col('Reference Antenna')+f'WARNING: ref_ant value "{raw_ref_ant}" could not be parsed as a comma-separated list of ints — defaulting to antenna index 0')
+                ref_ant_arg = 0
 
     # UV taper settings
     if not cfg.WSC_TAPERMASK:
@@ -146,6 +188,18 @@ def main():
     # ------------------------------------------------------------------------------
     # Build steps for each calibrator MS
     # ------------------------------------------------------------------------------
+
+    freq_int_overrides = []
+    if ADAPTIVE_CHANNELS:
+        ratio, freq_int_overrides, zeros = get_adaptive_freq_intervals(cfg.CAL_2GC_FILE, cfg.WSC_CAL_CHANNELSOUT)
+        yaml_name = o.basename(cfg.CAL_2GC_FILE)
+        parts = []
+        if zeros:
+            parts.append(', '.join(f'{t}: 0 (all channels, skipping)' for t in zeros))
+        if freq_int_overrides:
+            parts.append(', '.join(f'{t}: {old}→{new}' for t, old, new in freq_int_overrides))
+        summary = ' | '.join(parts) if parts else 'no overrides needed'
+        print(gen.col('Adaptive Channels')+f'{yaml_name} | ratio {ratio} — {summary}')
 
     stamp      = gen.timenow()
     all_steps  = []   # list of (steps, kill_file, label)
@@ -310,6 +364,10 @@ def main():
         step['id']         = 'CL2GC' + code
         syscall     = CONTAINER_RUNNER + QUARTICAL_CONTAINER + ' ' if USE_SINGULARITY else ''
         extra_args  = f'output.gain_directory={gain_outdir} output.log_directory={log_outdir}'
+        if ref_ant_arg is not None:
+            extra_args += f' solver.reference_antenna={ref_ant_arg}'
+        for term, _, new_fi in freq_int_overrides:
+            extra_args += f' {term}.freq_interval={new_fi}'
         if not cfg.CAL_1GC_APPLYPARANG:
             extra_args += ' output.apply_p_jones_inv=true'
         if minuvl != '':

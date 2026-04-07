@@ -62,7 +62,7 @@ G:
   pinned_directions:
   - 0
   time_interval: '1'
-  freq_interval: '8'
+  freq_interval: '16'
   interp_mode: reim
   interp_method: 2dlinear
   respect_scan_boundaries: true

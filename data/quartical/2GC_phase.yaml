@@ -41,7 +41,7 @@ mad_flags:
   max_deviation: 5.0
 solver:
   terms:
-  - K
+  - G
   iter_recipe:
   - 50
   propagate_flags: true
@@ -55,14 +55,14 @@ dask:
   workers: 1
   address:
   scheduler: threads
-K:
+G:
   type: phase
   solve_per: antenna
   direction_dependent: false
   pinned_directions:
   - 0
   time_interval: '1'
-  freq_interval: '8'
+  freq_interval: '16'
   interp_mode: reim
   interp_method: 2dlinear
   respect_scan_boundaries: true

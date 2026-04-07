@@ -1315,6 +1315,41 @@ def plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k,
         V_flux = np.array(chan['V_flux_mJy'][k])
         V_rms  = np.array(chan['V_rms_mJy'][k])
 
+    # ------------------------------------------------------------------
+    # MAD-based outlier rejection on error bars: if ANY Stokes parameter
+    # has a crazy RMS in a channel, mask that channel from all arrays.
+    # This prevents single pathological channels from distorting the plot.
+    # ------------------------------------------------------------------
+    all_rms = [I_rms]
+    if not only_intensity:
+        all_rms += [Q_rms, U_rms, V_rms]
+
+    good = np.ones(len(freq_arr), dtype=bool)
+    for rms_arr in all_rms:
+        med  = np.nanmedian(rms_arr)
+        mad  = np.nanmedian(np.abs(rms_arr - med))
+        sig  = 1.4826 * mad
+        if sig > 0:
+            good &= np.abs(rms_arr - med) <= 5.0 * sig
+
+    n_masked = int(np.sum(~good))
+    if n_masked > 0:
+        msg(f'  Masking {n_masked}/{len(good)} channels with outlier RMS values')
+        freq_arr = freq_arr[good]
+        I_flux   = I_flux[good]
+        I_rms    = I_rms[good]
+        if not only_intensity:
+            Q_flux = Q_flux[good]
+            Q_rms  = Q_rms[good]
+            U_flux = U_flux[good]
+            U_rms  = U_rms[good]
+            V_flux = V_flux[good]
+            V_rms  = V_rms[good]
+
+    if len(freq_arr) == 0:
+        msg(f'  plot_stokes_spectrum: all channels masked for {component} epoch {k}, skipping plot')
+        return
+
     # MFS reference values for this epoch
     mfs       = output_dictionary['MFS'][component]
     mfs_I     = mfs['I_flux_mJy'][k]
@@ -1409,13 +1444,13 @@ def plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k,
     range_vals = np.concatenate([
         I_flux[inlier] + I_rms[inlier],
         I_flux[inlier] - I_rms[inlier],
-        [mfs_I, 0.0]])
+        [mfs_I]])
     lo = np.nanmin(range_vals)
     hi = np.nanmax(range_vals)
     if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
         span = hi - lo
         pad  = 0.15 * span
-        ax.set_ylim(max(0, lo - pad), hi + pad)
+        ax.set_ylim(lo - pad, hi + pad)
 
     ax.axhline(y=mfs_I, color='k', linestyle='--', linewidth=1.5,
                label=f'MFS: {mfs_I:.2f} mJy  (S/N = {mfs_snr:.1f})', zorder=2)
@@ -1568,7 +1603,7 @@ def plot_light_curve(output_dictionary, src_name, prefix_arr):
                         fmt='o', markersize=5, capsize=3, color=col,
                         label=component)
             ax.legend(fontsize=8, loc='best')
-            robust_ylim_linear(ax, I_flux[det_I], I_rms[det_I], floor_lo=0)
+            robust_ylim_linear(ax, I_flux[det_I], I_rms[det_I])
         else:
             ax.set_title(f'{component} (no I detections)', fontsize=10)
 
@@ -1649,9 +1684,11 @@ def plot_light_curve(output_dictionary, src_name, prefix_arr):
     fig.suptitle(f'{src_name}  |  MFS light curve', fontsize=12, y=1.02)
     plt.tight_layout()
 
+    # Strip the time index (e.g. -t0051) from the prefix for the filename
+    lc_basename = re.sub(r'-t\d+$', '', os.path.basename(prefix_arr[0]))
     plot_fname = os.path.join(
         plot_dir,
-        f'{os.path.basename(prefix_arr[0])}_{src_name}_MFS_lightcurve.png')
+        f'{lc_basename}_{src_name}_MFS_lightcurve.png')
     plt.savefig(plot_fname, dpi=150, bbox_inches='tight')
     plt.close()
     msg(f'  MFS light curve plot saved: {plot_fname}')

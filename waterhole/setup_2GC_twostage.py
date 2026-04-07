@@ -4,13 +4,38 @@
 
 import glob
 import json
+import math
 import os.path as o
 import sys
+import yaml
 sys.path.append(o.abspath(o.join(o.dirname(sys.modules[__name__].__file__), "..")))
 
 
 from oxkat import generate_jobs as gen
 from oxkat import config as cfg
+
+
+SET_REFANT       = True
+ADAPTIVE_CHANNELS = True
+
+
+def get_adaptive_freq_intervals(yaml_path, n_model_channels):
+    """Parse a QuartiCal YAML and return (ratio, overrides, zeros) where:
+      overrides — list of (term, original_fi, new_fi) for terms that need coarsening
+      zeros     — list of term names with freq_interval=0 (whole-band, left alone)
+    ratio = ceil(PRE_NCHANS / n_model_channels)."""
+    ratio = math.ceil(cfg.PRE_NCHANS / n_model_channels)
+    overrides = []
+    zeros = []
+    with open(yaml_path) as f:
+        qc = yaml.safe_load(f)
+    for term in qc.get('solver', {}).get('terms', []):
+        fi = int(str(qc.get(term, {}).get('freq_interval', 0)).strip())
+        if fi == 0:
+            zeros.append(term)
+        elif fi < ratio:
+            overrides.append((term, fi, ratio))
+    return ratio, overrides, zeros
 
 
 def main():
@@ -64,9 +89,26 @@ def main():
         project_info = json.load(f)
     
     band = project_info['band']
-    target_ids = project_info['target_ids'] 
+    target_ids = project_info['target_ids']
     target_names = project_info['target_names']
     target_ms = project_info['target_ms']
+
+    ref_ant_arg = None
+    if SET_REFANT:
+        raw_ref_ant = project_info.get('ref_ant', None)
+        if raw_ref_ant is None:
+            print(gen.col('Reference Antenna')+'WARNING: ref_ant not found in project_info.json — defaulting to antenna index 0')
+            ref_ant_arg = 0
+        elif not isinstance(raw_ref_ant, str):
+            print(gen.col('Reference Antenna')+f'WARNING: ref_ant value "{raw_ref_ant}" is not a string — defaulting to antenna index 0')
+            ref_ant_arg = 0
+        else:
+            try:
+                ref_ant_arg = int(raw_ref_ant.split(',')[0].strip())
+                print(gen.col('Reference Antenna')+str(ref_ant_arg))
+            except (ValueError, IndexError):
+                print(gen.col('Reference Antenna')+f'WARNING: ref_ant value "{raw_ref_ant}" could not be parsed as a comma-separated list of ints — defaulting to antenna index 0')
+                ref_ant_arg = 0
 
 
     # Determine if the blind/datamask images are going to be tapered
@@ -87,6 +129,22 @@ def main():
     #
     # ------------------------------------------------------------------------------
 
+
+    freq_int_overrides_stage1 = []
+    freq_int_overrides_stage2 = []
+    if ADAPTIVE_CHANNELS:
+        ratio1, freq_int_overrides_stage1, zeros1 = get_adaptive_freq_intervals(cfg.CAL_2GC_YAML, cfg.WSC_DMASK_CHANNELSOUT)
+        ratio2, freq_int_overrides_stage2, zeros2 = get_adaptive_freq_intervals(cfg.CAL_2GC_YAML_COMPLEX, cfg.WSC_DMASK_CHANNELSOUT)
+        for label, yaml_name, ratio, overrides, zeros in [
+                ('Adaptive Chan (S1)', o.basename(cfg.CAL_2GC_YAML),        ratio1, freq_int_overrides_stage1, zeros1),
+                ('Adaptive Chan (S2)', o.basename(cfg.CAL_2GC_YAML_COMPLEX), ratio2, freq_int_overrides_stage2, zeros2)]:
+            parts = []
+            if zeros:
+                parts.append(', '.join(f'{t}: 0 (all channels, skipping)' for t in zeros))
+            if overrides:
+                parts.append(', '.join(f'{t}: {old}→{new}' for t, old, new in overrides))
+            summary = ' | '.join(parts) if parts else 'no overrides needed'
+            print(gen.col(label)+f'{yaml_name} | ratio {ratio} — {summary}')
 
     target_steps = []
     codes = []
@@ -296,6 +354,10 @@ def main():
             step['pbs_config'] = cfg.PBS_WSCLEAN
             syscall = CONTAINER_RUNNER + QUARTICAL_CONTAINER+' ' if USE_SINGULARITY else ''
             extra_args = f'output.gain_directory={gain_outdir_2GC} output.log_directory={log_outdir_2GC}'
+            if ref_ant_arg is not None:
+                extra_args += f' solver.reference_antenna={ref_ant_arg}'
+            for term, _, new_fi in freq_int_overrides_stage1:
+                extra_args += f' {term}.freq_interval={new_fi}'
             if maxuvl != '' or minuvl != '':
                 minuv_val = minuvl if minuvl != '' else '0'
                 maxuv_val = maxuvl if maxuvl != '' else '0'
@@ -397,6 +459,10 @@ def main():
             step['pbs_config'] = cfg.PBS_WSCLEAN
             syscall = CONTAINER_RUNNER + QUARTICAL_CONTAINER+' ' if USE_SINGULARITY else ''
             extra_args = f'output.gain_directory={gain_outdir_stage2} output.log_directory={log_outdir_stage2}'
+            if ref_ant_arg is not None:
+                extra_args += f' solver.reference_antenna={ref_ant_arg}'
+            for term, _, new_fi in freq_int_overrides_stage2:
+                extra_args += f' {term}.freq_interval={new_fi}'
             if not cfg.CAL_1GC_APPLYPARANG:
                 # Parang not applied in 1GC — apply it here as the final calibration step
                 extra_args += ' output.apply_p_jones_inv=true'
