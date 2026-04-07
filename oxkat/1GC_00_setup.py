@@ -134,14 +134,17 @@ def get_refant(master_ms,field_id):
         median_flag_pc = numpy.median(pc_list)
         std_flag_pc = numpy.std(pc_list)
         
-        # Check if m060's flag fraction is within one standard deviation of median
-        if abs(m060_flag_pc - median_flag_pc) <= std_flag_pc:
+        # Check if m060's flag fraction is within three standard deviations of median
+        deviation = abs(m060_flag_pc - median_flag_pc)
+        if deviation <= 3.0 * std_flag_pc:
             # Remove m060 from its current position in ranked list
             if m060_idx in ranked_list:
                 ranked_list.remove(m060_idx)
             # Place m060 at the front of the list
             ranked_list.insert(0, m060_idx)
-            mylogger.info('m060 flag percentage ('+str(round(m060_flag_pc,2))+'%) is within 1-sigma of median ('+str(round(median_flag_pc,2))+'%), placing at front of list')
+            mylogger.info('m060 flag percentage ('+str(round(m060_flag_pc,2))+'%) is within 3-sigma of median ('+str(round(median_flag_pc,2))+'% ± '+str(round(3.0*std_flag_pc,2))+'%), placing at front of list')
+        else:
+            mylogger.info('m060 flag percentage ('+str(round(m060_flag_pc,2))+'%) is outside 3-sigma of median ('+str(round(median_flag_pc,2))+'% ± '+str(round(3.0*std_flag_pc,2))+'%) — not prioritised')
     
     # Convert list to comma-separated string
     ranked_list = ','.join(ranked_list)
