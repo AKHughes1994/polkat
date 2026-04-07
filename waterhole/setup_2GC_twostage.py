@@ -20,13 +20,15 @@ ADAPTIVE_CHANNELS = True
 
 
 def get_adaptive_freq_intervals(yaml_path, n_model_channels):
-    """Parse a QuartiCal YAML and return (ratio, overrides, zeros) where:
+    """Parse a QuartiCal YAML and return (ratio, overrides, zeros, ok) where:
       overrides — list of (term, original_fi, new_fi) for terms that need coarsening
       zeros     — list of term names with freq_interval=0 (whole-band, left alone)
+      ok        — list of (term, fi) already at or above ratio (no change needed)
     ratio = ceil(PRE_NCHANS / n_model_channels)."""
     ratio = math.ceil(cfg.PRE_NCHANS / n_model_channels)
     overrides = []
     zeros = []
+    ok = []
     with open(yaml_path) as f:
         qc = yaml.safe_load(f)
     for term in qc.get('solver', {}).get('terms', []):
@@ -35,7 +37,9 @@ def get_adaptive_freq_intervals(yaml_path, n_model_channels):
             zeros.append(term)
         elif fi < ratio:
             overrides.append((term, fi, ratio))
-    return ratio, overrides, zeros
+        else:
+            ok.append((term, fi))
+    return ratio, overrides, zeros, ok
 
 
 def main():
@@ -133,18 +137,16 @@ def main():
     freq_int_overrides_stage1 = []
     freq_int_overrides_stage2 = []
     if ADAPTIVE_CHANNELS:
-        ratio1, freq_int_overrides_stage1, zeros1 = get_adaptive_freq_intervals(cfg.CAL_2GC_YAML, cfg.WSC_DMASK_CHANNELSOUT)
-        ratio2, freq_int_overrides_stage2, zeros2 = get_adaptive_freq_intervals(cfg.CAL_2GC_YAML_COMPLEX, cfg.WSC_DMASK_CHANNELSOUT)
-        for label, yaml_name, ratio, overrides, zeros in [
-                ('Adaptive Chan (S1)', o.basename(cfg.CAL_2GC_YAML),        ratio1, freq_int_overrides_stage1, zeros1),
-                ('Adaptive Chan (S2)', o.basename(cfg.CAL_2GC_YAML_COMPLEX), ratio2, freq_int_overrides_stage2, zeros2)]:
+        ratio1, freq_int_overrides_stage1, zeros1, ok1 = get_adaptive_freq_intervals(cfg.CAL_2GC_YAML, cfg.WSC_DMASK_CHANNELSOUT)
+        ratio2, freq_int_overrides_stage2, zeros2, ok2 = get_adaptive_freq_intervals(cfg.CAL_2GC_YAML_COMPLEX, cfg.WSC_DMASK_CHANNELSOUT)
+        for label, yaml_name, ratio, overrides, zeros, ok in [
+                ('Adaptive Chan (S1)', o.basename(cfg.CAL_2GC_YAML),        ratio1, freq_int_overrides_stage1, zeros1, ok1),
+                ('Adaptive Chan (S2)', o.basename(cfg.CAL_2GC_YAML_COMPLEX), ratio2, freq_int_overrides_stage2, zeros2, ok2)]:
             parts = []
-            if zeros:
-                parts.append(', '.join(f'{t}: 0 (all channels, skipping)' for t in zeros))
-            if overrides:
-                parts.append(', '.join(f'{t}: {old}→{new}' for t, old, new in overrides))
-            summary = ' | '.join(parts) if parts else 'no overrides needed'
-            print(gen.col(label)+f'{yaml_name} | ratio {ratio} — {summary}')
+            parts += [f'{t}: 0 (all channels)'   for t in zeros]
+            parts += [f'{t}: {old}→{new}'         for t, old, new in overrides]
+            parts += [f'{t}: {fi} (no change)'    for t, fi in ok]
+            print(gen.col(label)+f'{yaml_name} | ratio {ratio} — '+', '.join(parts))
 
     target_steps = []
     codes = []

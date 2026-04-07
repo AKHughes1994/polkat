@@ -21,13 +21,15 @@ ADAPTIVE_CHANNELS = True
 
 
 def get_adaptive_freq_intervals(yaml_path, n_model_channels):
-    """Parse a QuartiCal YAML and return (ratio, overrides, zeros) where:
+    """Parse a QuartiCal YAML and return (ratio, overrides, zeros, ok) where:
       overrides — list of (term, original_fi, new_fi) for terms that need coarsening
       zeros     — list of term names with freq_interval=0 (whole-band, left alone)
+      ok        — list of (term, fi) already at or above ratio (no change needed)
     ratio = ceil(PRE_NCHANS / n_model_channels)."""
     ratio = math.ceil(cfg.PRE_NCHANS / n_model_channels)
     overrides = []
     zeros = []
+    ok = []
     with open(yaml_path) as f:
         qc = yaml.safe_load(f)
     for term in qc.get('solver', {}).get('terms', []):
@@ -36,7 +38,9 @@ def get_adaptive_freq_intervals(yaml_path, n_model_channels):
             zeros.append(term)
         elif fi < ratio:
             overrides.append((term, fi, ratio))
-    return ratio, overrides, zeros
+        else:
+            ok.append((term, fi))
+    return ratio, overrides, zeros, ok
 
 
 def main():
@@ -191,15 +195,12 @@ def main():
 
     freq_int_overrides = []
     if ADAPTIVE_CHANNELS:
-        ratio, freq_int_overrides, zeros = get_adaptive_freq_intervals(cfg.CAL_2GC_FILE, cfg.WSC_CAL_CHANNELSOUT)
+        ratio, freq_int_overrides, zeros, ok = get_adaptive_freq_intervals(cfg.CAL_2GC_FILE, cfg.WSC_CAL_CHANNELSOUT)
         yaml_name = o.basename(cfg.CAL_2GC_FILE)
-        parts = []
-        if zeros:
-            parts.append(', '.join(f'{t}: 0 (all channels, skipping)' for t in zeros))
-        if freq_int_overrides:
-            parts.append(', '.join(f'{t}: {old}→{new}' for t, old, new in freq_int_overrides))
-        summary = ' | '.join(parts) if parts else 'no overrides needed'
-        print(gen.col('Adaptive Channels')+f'{yaml_name} | ratio {ratio} — {summary}')
+        parts  = [f'{t}: 0 (all channels)'  for t in zeros]
+        parts += [f'{t}: {old}→{new}'        for t, old, new in freq_int_overrides]
+        parts += [f'{t}: {fi} (no change)'   for t, fi in ok]
+        print(gen.col('Adaptive Channels')+f'{yaml_name} | ratio {ratio} — '+', '.join(parts))
 
     stamp      = gen.timenow()
     all_steps  = []   # list of (steps, kill_file, label)
