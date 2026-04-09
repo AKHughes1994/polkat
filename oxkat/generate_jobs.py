@@ -813,44 +813,54 @@ def generate_syscall_wsclean(mslist,
         if joinpolarizations and len(pol_QU) >= 2:
             joinpol_QU = '-join-polarizations '
 
+        # When splitpol is active, join-polarizations applies to QU only — not IV
         joinpol_IV = ''
-        if joinpolarizations and len(pol_IV) >= 2:
-            joinpol_IV = '-join-polarizations '
 
         k = len(syscall_arr)
         syscall_arr += syscall_arr
 
-        # Resolve the QU automask scale factor
-        # 'auto' (or unrecognised): scale by 5/3 if automask < 10, else no change
-        # float: always scale by that value
+        # Resolve the QU/IV split deconvolution behaviour from qu_automask_scale:
+        #   0       : disabled — no changes to QU or IV, local-rms not added
+        #   'auto'  : QU gets local-rms; IV auto-mask floored at 3.0, auto-threshold floored at 1.0
+        #   float   : QU gets local-rms; IV auto-mask multiplied by scale, auto-threshold floored at 1.0
         try:
             _scale = float(qu_automask_scale)
+            _qu_disabled = (_scale == 0)
+            _qu_auto_mode = False
         except (TypeError, ValueError):
-            _scale = None  # treat as 'auto'
-
-        if _scale is not None:
-            _qu_automask = round(automask * _scale, 1) if automask else automask
-        else:
-            # auto mode
-            if automask and automask < 10:
-                _qu_automask = round(automask * 5 / 3, 1)
-            else:
-                _qu_automask = automask
+            _scale = None
+            _qu_disabled = False
+            _qu_auto_mode = True  # 'auto' or unrecognised string
 
         for _k in range(k):
-            # QU: apply scaled automask when squarechans is active
-            # also strip --deconvolution-channels (only appropriate for IV)
+            # QU: strip --deconvolution-channels (only appropriate for IV)
             qu_syscall = syscall_arr[_k]
             if chandeconvolution:
                 qu_syscall = qu_syscall.replace(
                     f'--deconvolution-channels {chandeconvolution} ', '')
-            if squarechans and automask and _qu_automask != automask:
+            # Enable local-rms for QU unless disabled
+            if not _qu_disabled and not localrms:
                 qu_syscall = qu_syscall.replace(
-                    f'-auto-mask {automask} ',
-                    f'-auto-mask {_qu_automask} ')
+                    '-auto-threshold ',
+                    '-local-rms -local-rms-strength '+str(localrms_strength)+' -auto-threshold ')
             syscall_arr[_k] = qu_syscall + f'-pol {pol_QU} {joinpol_QU} '
             # IV: strip squared-channel-joining unconditionally (not appropriate for Stokes V)
             iv_syscall = syscall_arr[_k + k].replace('-squared-channel-joining ', '')
+            # Apply IV mask/threshold overrides unless disabled
+            if not _qu_disabled:
+                if _qu_auto_mode:
+                    _iv_automask = max(automask, 3.0) if automask else 3.0
+                else:
+                    _iv_automask = round(automask * _scale, 1) if automask else automask
+                if automask and _iv_automask != automask:
+                    iv_syscall = iv_syscall.replace(
+                        f'-auto-mask {automask} ',
+                        f'-auto-mask {_iv_automask} ')
+                _iv_autothreshold = max(autothreshold, 1.0) if autothreshold else 1.0
+                if autothreshold and _iv_autothreshold != autothreshold:
+                    iv_syscall = iv_syscall.replace(
+                        f'-auto-threshold {autothreshold} ',
+                        f'-auto-threshold {_iv_autothreshold} ')
             syscall_arr[_k + k] = iv_syscall + f'-pol {pol_IV} {spectralpol_IV} {joinpol_IV} '
 
     else:

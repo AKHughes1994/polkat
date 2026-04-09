@@ -571,11 +571,10 @@ WSC_JOINCHANNELS = True
 # (e.g. due to Faraday rotation); the sum-of-squares avoids cancellation.
 WSC_SQUARECHANS  = False
 
-# Auto-mask scaling factor for QU images when WSC_SQUARECHANS is active and
-# WSC_SPLITPOL is True. QU images tend to have higher noise in squared-channel mode,
-# so the auto-mask threshold is scaled up to avoid over-cleaning.
-#   'auto'  : scale by 5/3 if automask < 10, otherwise no change (recommended)
-#   float   : always multiply the automask threshold by this value
+# Controls QU/IV deconvolution behaviour when WSC_SPLITPOL is True.
+#   0       : disabled — no changes to QU or IV, local-rms not added
+#   'auto'  : QU gets local-rms only; IV auto-mask floored at 3.0, auto-threshold floored at 1.0
+#   float   : QU gets local-rms; IV auto-mask multiplied by scale, auto-threshold floored at 1.0
 WSC_QU_AUTOMASK_SCALE = 'auto'
 
 # Stokes parameters to image. Standard options: 'I', 'IQUV', 'QU', etc.

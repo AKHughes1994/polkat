@@ -337,8 +337,8 @@ def main():
             if cfg.MOD_MODEL_SELFCAL and cfg.WSC_POL != 'I':
                 spatial_arg  = target_mod_region if target_mod_region is not None else mask
                 syscall += prefix + (f'python3 {TOOLS}/mod_model_selfcal.py '
-                                     f'--identifier {data_img_prefix} --stokes VI '
-                                     f'--spatial {spatial_arg} --zero-all-neg-I\n\n')
+                                     f'--identifier {data_img_prefix} --stokes V '
+                                     f'--spatial {spatial_arg}\n\n')  # --zero-all-neg-I
             syscall += prefix + gen.generate_syscall_predict(msname = myms,
                     imgname = data_img_prefix,
                     chanout = cfg.WSC_DMASK_CHANNELSOUT,
