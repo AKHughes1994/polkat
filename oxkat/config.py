@@ -281,27 +281,32 @@ XF_AUTO_ANG_JUMP = 60.0 # angle in degrees where, if the CASA XF solver has adja
 XF_SKIP_KCROSS = True # weather to skip the cross-hand delay and only solve for the phase
                       # my experimentation has found that some times this exclusion can give better solutions.
 
-# XF table targets
-XF_CHANINT = 4  # Channels per solution interval default is 1024 frequency channels so 1024 / 4 = 256 cross-hand phase intervals
-XF_MAX_AVG_CHANNELS = None # If None, auto calculate will be the same as the number of cross-hand solution intervals
+# XF table solution interval
+XF_CHANINT = 16  # Channels per QuartiCal solution interval; e.g. 1024 ch / 16 = 64 XF phase solutions across the band
 
 # Calibration and outlier thresholds
-XF_MIN_CROSS_FLUX = 0.07  # Minimum total cross-hand flux (Jy) for reliable solutions
-XF_SIGMA_CLIP = 3.0  # N-sigma threshold for outlier flagging
-XF_CLIP_WINDOW = 16  # Window size for local scatter analysis
-XF_EX = True          # Enable gap filling
-XF_EX_FRAC = 0.2      # Use 20% of good bandwidth for extrapolation
-XF_RM_ANG_MAX = 20.0  # Maximum separation an angle [deg] from a trial RM can have from XF_TARGET_POLANG to be considered a good solution
-XF_AVG_SCAN = False # If multi-scan, average XF solutions over all scans to increase SNR
-XF_POLY_CLIP = 4.0 
+XF_POLY_SIGMA_CLIP = 3.0  # N-sigma threshold for iterative polynomial outlier clipping of XF solutions
+XF_MAD_SIGMA_CLIP  = 6.0  # N-sigma (MAD) threshold for rolling circular median outlier clipping of XF solutions
+XF_AVG_SCAN = False        # If multi-scan, average XF solutions over all scans before writing the table (increases SNR, loses scan-to-scan variation)
+XF_POLY_ORDER = 0          # Polynomial order for iterative sigma-clipping fit across frequency; set to 0 to disable polynomial clipping entirely
 
 # Smoothing control for XF table creation and interpolation
-XF_USE_SMOOTHING = False  # Apply Savitzky-Golay smoothing before interpolation
-XF_SAVGOL_WINDOW = None  # Window length (odd integer); None=auto-calculate (recommended)
-XF_SAVGOL_POLYORDER = 3  # Polynomial order for Savitzky-Golay filter
-XF_DELTARM_TRIALS = [-7,7] # min/max atmospheric RM for trialling (21 trials between) with be XF_TARGET_RM + DeltaRM
-                           # For south/north hemisphere sources negative/positive-only is sufficient
-                           # Leaving as it to be more flexible (and it should till pick out the correct one)
+XF_USE_SMOOTHING = False   # Apply Savitzky-Golay smoothing to XF solutions before table interpolation
+XF_SAVGOL_WINDOW = None    # Smoothing window length in channels (must be an odd integer); None = auto-calculate from data (recommended)
+XF_SAVGOL_POLYORDER = 3    # Polynomial order for Savitzky-Golay filter (must be less than XF_SAVGOL_WINDOW)
+
+# -----------------------------------------------------------------------
+# DEPRECATED — parameters below are no longer used in the current
+# manual XF solver (tools/manual_XF_solver.py). Retained for
+# compatibility with older workflows or the CASA-based XF path.
+# -----------------------------------------------------------------------
+XF_MAX_AVG_CHANNELS = None  # Was: upper limit on channel averaging for XF solutions
+XF_MIN_CROSS_FLUX = 0.07    # Was: minimum total cross-hand flux (Jy) threshold for reliable solutions
+XF_CLIP_WINDOW = 16         # Was: window size (channels) for local scatter analysis
+XF_EX = True                # Was: enable gap-filling by extrapolation into flagged regions
+XF_EX_FRAC = 0.2            # Was: fraction of good bandwidth to use for extrapolation
+XF_RM_ANG_MAX = 20.0        # Was: max angular separation [deg] from XF_TARGET_POLANG for a valid RM trial solution
+XF_DELTARM_TRIALS = [-7,7]  # Was: [min, max] RM offsets (rad/m²) defining the atmospheric RM trial grid
 
 # Reference antennas
 CAL_1GC_REF_ANT = 'auto'             # Comma-separated list to manually specify refant(s)

@@ -4,50 +4,52 @@
 """
 Manual Cross-Hand Phase (XF) Polarization Calibration Solver - Per-Scan Version
 
-This script performs sophisticated polarization calibration analysis on radio 
-interferometric data to solve for instrumental cross-hand phase corrections
-on a per-scan basis, properly accounting for time-variable parallactic angles.
+This script performs polarization calibration to solve for instrumental
+cross-hand phase corrections on a per-scan basis, properly accounting for
+time-variable parallactic angles.
 
 SCIENTIFIC BACKGROUND:
-The cross-hand phase (XF) represents the phase offset between the XY and YX 
-correlations in a dual-polarization feed system. This instrumental effect 
-rotates the observed Stokes U and V parameters in the UV plane, which must 
-be corrected before accurate polarization measurements can be made.
+The cross-hand phase (XF) represents the phase offset between the XY and YX
+correlations in a dual-polarization feed system. This instrumental effect
+rotates the observed Stokes U and V parameters in the UV plane, which must be
+corrected before accurate polarization measurements can be made.
 
-For a linearly polarized source, the cross-hand phase ρ can be determined from:
-    ρ = arctan2(-V_obs, U_obs)
-
-However, this measurement has a ±π degeneracy. This script resolves the 
-degeneracy by comparing Faraday-derotated polarization angles to a known 
-source polarization angle across a range of rotation measures (RM).
+The ±π degeneracy inherent in the CASA polcal Xf solution is resolved by
+comparing the de-rotated polarization angle (after applying the trial gain,
+parallactic angle correction, and Faraday de-rotation) to the known source
+EVPA. The ionospheric RM contribution is estimated using Spinifex and folded
+into the RM trial grid.
 
 WORKFLOW SUMMARY:
-1. Load and average visibility data per scan (collapse baseline/time axes)
-2. Compute parallactic angles at each scan's mid-time
-3. Calculate raw cross-hand phase: ρ = arctan2(-V, U)
-4. Three-stage RM trial analysis to find global RM and resolve ±π per channel
-5. Flag outliers based on cross-hand flux and local phase scatter
-6. Apply frequency averaging if needed (complex-plane vector averaging)
-7. Generate CASA XF calibration table (scan-averaged or per-scan)
-8. Apply corrections and generate diagnostic plots
+1.  Apply calibration tables and split to temporary MS (with weight spectrum)
+2.  Solve for XF at full channel resolution (1ch) → *_fullres.Xf
+3.  Solve for XF at working channelisation (XF_CHANINT ch) → xftab structure
+4.  Load IQUV visibilities per scan (weighted average, preserving scan structure)
+5.  Compute parallactic angles at each scan's mid-time
+6.  Run Spinifex to estimate ionospheric RM contribution per scan
+7.  Resolve ±π degeneracy per scan: trial RM grid centred on
+    XF_TARGET_RM + ionospheric RM; for each (RM, sign) pair apply XF, parang,
+    Faraday de-rotation and compare EVPA to target. Best pair adopted globally
+    per scan.
+8.  Global 10σ circular phase clip across all channels
+9.  Iterative polynomial sigma clipping (5σ) per scan until convergence
+10. Frequency-bin averaging (complex-plane vector average) with edge extrapolation
+11. Map averaged solutions onto the xftab frequency grid and write the final table
+12. Diagnostic plots: pre/post Stokes spectra; XF phase before/after flagging;
+    post-correction check that Stokes V is driven to zero
 
 DIAGNOSTIC OUTPUTS:
 - Pre-XF Stokes I,Q,U,V spectra (multi-scan)
-- Cross-hand flux and phase before correction
-- Delta_RM analysis (trial distribution and angle convergence)
-- Final rho values with outlier flagging
-- Post-XF corrected Stokes spectra (zoomed to show structure)
+- XF phase spectra: raw, after flagging, final averaged
+- Post-XF corrected Stokes spectra (showing V → 0)
 """
 
 # Standard library imports
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.lines import Line2D
 import sys
 import os
-import glob
 import shutil
-import time
 import datetime
 import subprocess
 
@@ -68,28 +70,32 @@ if PRE_FIELDS != '':
     pcal_names = user_pcals
     target_cal_map = user_cal_map
 
-def stamp():
-    """Generate timestamp string for logging."""
-    now = str(datetime.datetime.now()).replace(' ','-').replace(':','-').split('.')[0]
-    return now
+# ============================
+# USER GLOBALS
+# ============================
+# If True, applycal is run on myms with the full table chain including xftab,
+# and CORRECTED_DATA is re-extracted to overlay the MS-derived Stokes V on the
+# V-zeroing check plot. True by default.
+XF_APPLY_TO_MS = False
 
 
 # ============================
-# FUNCTIONS
+# HELPER FUNCTIONS (unchanged)
 # ============================
+
 
 def build_iquv_flag(raw_flag, nchan, nrow):
     """
     Convert raw FLAG array to IQUV-compatible flag array.
-    
+
     Inputs:
         raw_flag : array - Raw FLAG array from MS (various shapes supported)
         nchan : int - Number of frequency channels
         nrow : int - Number of rows (baselines × times)
-    
+
     Outputs:
         flag_iquv : array - Flag array with shape (4, nchan, nrow) for I,Q,U,V
-    
+
     Maps correlation flags to Stokes parameter flags:
         - I,Q flagged if XX or YY flagged
         - U,V flagged if XY or YX flagged
@@ -103,8 +109,8 @@ def build_iquv_flag(raw_flag, nchan, nrow):
             f_xy = raw_flag[1, :, :]
             f_yx = raw_flag[2, :, :]
             f_yy = raw_flag[3, :, :]
-            f_iq = f_xx | f_yy  # I,Q from XX|YY
-            f_uv = f_xy | f_yx  # U,V from XY|YX
+            f_iq = f_xx | f_yy
+            f_uv = f_xy | f_yx
             return np.stack([f_iq, f_iq, f_uv, f_uv], axis=0)
         elif c == 1:
             print("Single-plane flags; broadcasting to I,Q,U,V.")
@@ -115,181 +121,121 @@ def build_iquv_flag(raw_flag, nchan, nrow):
         print("Per-channel flags (nchan,nrow); broadcasting to I,Q,U,V.")
         return np.broadcast_to(raw_flag[None, :, :], (4, nchan, nrow))
     else:
-        raise ValueError(f"Unrecognised FLAG shape: {raw_flag.shape}. Expected (4,nchan,nrow), (1,nchan,nrow), or (nchan,nrow).")
+        raise ValueError(f"Unrecognised FLAG shape: {raw_flag.shape}.")
 
 
 def build_iquv_weights(weight_data, have_wspec, nchan, nrow):
     """
     Convert raw WEIGHT or WEIGHT_SPECTRUM to IQUV-compatible weight array.
-    
+
     Inputs:
-        weight_data : dict - Dictionary containing 'weight_spectrum' or 'weight' from MS
-        have_wspec : bool - True if WEIGHT_SPECTRUM available, False if only WEIGHT
+        weight_data : dict - Dictionary containing 'weight_spectrum' or 'weight'
+        have_wspec : bool - True if WEIGHT_SPECTRUM available
         nchan : int - Number of frequency channels
         nrow : int - Number of rows
-    
+
     Outputs:
         W : array - Weight array with shape (4, nchan, nrow) for I,Q,U,V
-    
-    Maps correlation weights to Stokes parameter weights:
-        - I,Q weights = average of XX and YY weights
-        - U,V weights = average of XY and YX weights
     """
     if have_wspec:
         W = np.asarray(weight_data['weight_spectrum'])
         print(f"Using WEIGHT_SPECTRUM with original shape {W.shape}")
-
         if W.ndim == 2 and W.shape == (nchan, nrow):
             print("Single weight per channel → broadcasting to (4, nchan, nrow).")
             W = np.broadcast_to(W[np.newaxis, :, :], (4, nchan, nrow))
         elif W.ndim == 3:
             c = W.shape[0]
             if c == 4:
-                print("Converting 4-corr WEIGHT_SPECTRUM (XX,XY,YX,YY) → I,Q,U,V weights.")
+                print("Converting 4-corr WEIGHT_SPECTRUM → I,Q,U,V weights.")
                 w_xx = W[0, :, :]
                 w_xy = W[1, :, :]
                 w_yx = W[2, :, :]
                 w_yy = W[3, :, :]
-                w_iq = 0.5*(w_xx + w_yy)
-                w_uv = 0.5*(w_xy + w_yx)
+                w_iq = 0.5 * (w_xx + w_yy)
+                w_uv = 0.5 * (w_xy + w_yx)
                 W = np.stack([w_iq, w_iq, w_uv, w_uv], axis=0)
             elif c == 1:
                 print("Single-pol WEIGHT_SPECTRUM → broadcasting to (4, nchan, nrow).")
                 W = np.broadcast_to(W, (4, nchan, nrow))
             else:
-                raise ValueError(f"Unexpected number of correlation planes in WEIGHT_SPECTRUM: {c}. Expected 1 or 4.")
+                raise ValueError(f"Unexpected correlations in WEIGHT_SPECTRUM: {c}.")
         else:
-            raise ValueError(f"Unexpected WEIGHT_SPECTRUM dimensions: {W.shape}. Expected (nchan,nrow) or (corr,nchan,nrow).")
+            raise ValueError(f"Unexpected WEIGHT_SPECTRUM dimensions: {W.shape}.")
     else:
         Wraw = np.asarray(weight_data['weight'])
         print(f"Using WEIGHT with original shape {Wraw.shape}")
-
         if Wraw.ndim == 1 and Wraw.shape[0] == nrow:
             print("Single weight per row → broadcasting to (4, nchan, nrow).")
-            wrow = Wraw
-            W = np.ones((4, nchan, nrow), dtype=float) * wrow[None, None, :]
+            W = np.ones((4, nchan, nrow), dtype=float) * Wraw[None, None, :]
         elif Wraw.ndim == 2 and Wraw.shape[-1] == nrow:
             c = Wraw.shape[0]
             if c == 4:
-                print("Converting 4-corr WEIGHT (XX,XY,YX,YY) → I,Q,U,V weights.")
-                w_iq = 0.5*(Wraw[0, :] + Wraw[3, :])
-                w_uv = 0.5*(Wraw[1, :] + Wraw[2, :])
+                print("Converting 4-corr WEIGHT → I,Q,U,V weights.")
+                w_iq = 0.5 * (Wraw[0, :] + Wraw[3, :])
+                w_uv = 0.5 * (Wraw[1, :] + Wraw[2, :])
                 W = np.zeros((4, nchan, nrow), dtype=float)
-                W[0, :, :] = w_iq[None, :]  # I
-                W[1, :, :] = w_iq[None, :]  # Q
-                W[2, :, :] = w_uv[None, :]  # U
-                W[3, :, :] = w_uv[None, :]  # V
+                W[0, :, :] = w_iq[None, :]
+                W[1, :, :] = w_iq[None, :]
+                W[2, :, :] = w_uv[None, :]
+                W[3, :, :] = w_uv[None, :]
             elif c == 1:
                 print("Single correlation WEIGHT → broadcasting to (4, nchan, nrow).")
                 W = np.ones((4, nchan, nrow), dtype=float) * Wraw[0, :][None, None, :]
             else:
-                raise ValueError(f"Unexpected number of correlations in WEIGHT: {c}. Expected 1 or 4.")
+                raise ValueError(f"Unexpected correlations in WEIGHT: {c}.")
         else:
-            raise ValueError(f"Unexpected WEIGHT shape: {Wraw.shape}. Expected (nrow,) or (corr,nrow).")
-    
+            raise ValueError(f"Unexpected WEIGHT shape: {Wraw.shape}.")
     return W
 
 
 def compute_weighted_averages(data, weights, flags):
     """
     Compute weighted vector averages per channel, accounting for flags.
-    
+
     Inputs:
-        data : array - Complex visibility data with shape (4, nchan, nrow)
-        weights : array - Weight array with shape (4, nchan, nrow)
-        flags : array - Flag array with shape (4, nchan, nrow)
-    
+        data : array - Complex visibility data (4, nchan, nrow)
+        weights : array - Weight array (4, nchan, nrow)
+        flags : array - Flag array (4, nchan, nrow)
+
     Outputs:
-        vis_avg : array - Complex averaged visibilities with shape (4, nchan)
-        sigma_proxy : array - Uncertainty proxy (1/sqrt(sum(weights))) with shape (4, nchan)
-    
-    Applies flags by zeroing weights, then computes weighted mean per channel.
-    Returns both averaged visibilities and uncertainty estimates.
+        vis_avg : array - Complex averaged visibilities (4, nchan)
+        sigma_proxy : array - Uncertainty proxy 1/sqrt(sum(W)) (4, nchan)
     """
     W_eff = np.where(flags, 0.0, weights)
-    
-    den = np.sum(W_eff, axis=-1)  # (4, nchan)
-    num = np.sum(W_eff * data, axis=-1, dtype=np.complex128)  # (4, nchan)
-    
+    den = np.sum(W_eff, axis=-1)
+    num = np.sum(W_eff * data, axis=-1, dtype=np.complex128)
     with np.errstate(invalid='ignore', divide='ignore'):
         vis_avg = num / den
         sigma_proxy = 1.0 / np.sqrt(den)
-    
     return vis_avg, sigma_proxy
 
 
 def compute_3c286_evpa(freq_ghz):
     """
     Compute frequency-dependent EVPA for 3C286 (J1331+3030).
-    
-    Inputs:
-        freq_ghz : array - Frequency in GHz
-    
-    Outputs:
-        evpa_deg : array - EVPA in degrees
-    
-    Reference: Perley & Butler (2013), standard 3C286 polarization model
-    
-    EVPA(ν_GHz) [deg] =
-        32.64 - 85.37λ²           if ν_GHz ∈ [1.7, 12]
-        29.53 + λ²(4005.88(log₁₀(ν_GHz))³ - 39.38)   if ν_GHz < 1.7
-    
-    where λ = c/ν is wavelength in meters, λ² in m²
+
+    Reference: Perley & Butler (2013) / Hugo & Perley (2024)
+
+    EVPA(ν) [deg] =
+        32.64 - 85.37λ²                              for ν ∈ [1.7, 12] GHz
+        29.53 + λ²(4005.88(log₁₀ν)³ - 39.38)        for ν < 1.7 GHz
     """
-    c = 2.99792458e8  # Speed of light in m/s
+    c = 2.99792458e8
     freq_hz = freq_ghz * 1e9
     lambda_m = c / freq_hz
-    lambda_sq = lambda_m**2
-    
+    lambda_sq = lambda_m ** 2
     evpa_deg = np.zeros_like(freq_ghz)
-    
-    # High frequency regime: 1.7 - 12 GHz
     high_freq_mask = freq_ghz >= 1.7
     evpa_deg[high_freq_mask] = 32.64 - 85.37 * lambda_sq[high_freq_mask]
-    
-    # Low frequency regime: < 1.7 GHz
     low_freq_mask = freq_ghz < 1.7
     if np.any(low_freq_mask):
-        log_nu_cubed = np.log10(freq_ghz[low_freq_mask])**3
+        log_nu_cubed = np.log10(freq_ghz[low_freq_mask]) ** 3
         evpa_deg[low_freq_mask] = 29.53 + lambda_sq[low_freq_mask] * (4005.88 * log_nu_cubed - 39.38)
-    
     return evpa_deg
 
 
-def align_stokes_arrays(freq_ghz, I_flux, Q_flux, U_flux, V_flux):
-    """
-    Align Stokes parameter arrays to common minimum length.
-    
-    Inputs:
-        freq_ghz : array - Frequency array in GHz
-        I_flux, Q_flux, U_flux, V_flux : arrays - Stokes parameter flux arrays
-    
-    Outputs:
-        f, I, Q, U, V : arrays - Aligned arrays truncated to common length
-    
-    Handles cases where frequency and Stokes arrays may have different lengths
-    due to processing steps. Truncates all to minimum common length.
-    """
-    m = min(freq_ghz.size, I_flux.size, Q_flux.size, U_flux.size, V_flux.size)
-    if m != freq_ghz.size:
-        print(f"Note: Aligning arrays to {m} entries (was {freq_ghz.size}).")
-    return freq_ghz[:m], I_flux[:m], Q_flux[:m], U_flux[:m], V_flux[:m]
-
-
 def quick_stats(name, arr):
-    """
-    Print quick statistics for an array.
-    
-    Inputs:
-        name : str - Name of the array for display
-        arr : array - Numerical array to analyze
-    
-    Outputs:
-        None (prints to console)
-    
-    Displays median, MAD (Median Absolute Deviation), and standard deviation
-    for finite values in the array.
-    """
+    """Print quick statistics (median, MAD, std) for a numerical array."""
     finite = np.isfinite(arr)
     if not np.any(finite):
         print(f'{name}: no finite values')
@@ -301,75 +247,35 @@ def quick_stats(name, arr):
 
 
 def calc_im_fraction(complex_avg):
-    """
-    Calculate fraction of flux density in imaginary component.
-    
-    Inputs:
-        complex_avg : array - Complex visibility array
-    
-    Outputs:
-        im_frac : float - Median percentage of total amplitude in imaginary part
-    
-    For a well-calibrated point source, imaginary flux should be negligible (<10%).
-    High imaginary fractions indicate calibration problems.
-    """
+    """Calculate fraction of flux density in imaginary component (%)."""
     real_part = np.abs(np.real(complex_avg))
     imag_part = np.abs(np.imag(complex_avg))
-    total_amp = np.sqrt(real_part**2 + imag_part**2)
+    total_amp = np.sqrt(real_part ** 2 + imag_part ** 2)
     with np.errstate(invalid='ignore', divide='ignore'):
         fraction = imag_part / total_amp
     return np.nanmedian(fraction) * 100
 
 
 def q_to_rad_scalar(q):
-    """
-    Convert CASA quantity to radians, returning a Python float.
-    
-    Inputs:
-        q : CASA quantity - Angle quantity from CASA
-    
-    Outputs:
-        rad : float - Angle in radians as Python scalar
-    
-    Avoids NumPy 1.25+ warnings by ensuring scalar return type.
-    """
+    """Convert CASA quantity to radians, returning a Python float."""
     return float(np.atleast_1d(qa.getvalue(qa.convert(q, 'rad')))[0])
 
 
 def rad_to_deg_scalar(xrad):
-    """
-    Convert radians to degrees using CASA, returning a Python float.
-    
-    Inputs:
-        xrad : float - Angle in radians
-    
-    Outputs:
-        deg : float - Angle in degrees as Python scalar
-    
-    Uses CASA's quantity conversion for consistency with CASA conventions.
-    """
+    """Convert radians to degrees using CASA, returning a Python float."""
     return float(np.atleast_1d(qa.getvalue(qa.convert({'value': xrad, 'unit': 'rad'}, 'deg')))[0])
 
 
-def compute_parallactic_angle(temp_ms, field_name, time_mjd, field_id=None):
+def compute_parallactic_angle(vis, field_name, time_mjd, field_id=None):
     """
     Compute parallactic angle at specified time using CASA AZ/EL method.
-    
-    Inputs:
-        temp_ms : str - Path to measurement set
-        field_name : str - Name of the field/source
-        time_mjd : float - Time in MJD seconds
-        field_id : int or None - Field ID (auto-determined if None)
-    
-    Outputs:
-        chi_deg : float - Parallactic angle at specified time in degrees
-        diagnostics : dict - Dictionary with AZ, EL, LAT, time, and observatory name
-    
-    Computes parallactic angle using: χ = atan2(-sin(A), tan(φ)cos(e) - cos(A)sin(e))
-    where A=azimuth, e=elevation, φ=site latitude (CASA convention: A=0 at N, +E).
+
+    χ = atan2(-sin(A), tan(φ)cos(e) - cos(A)sin(e))
+    where A=azimuth, e=elevation, φ=site latitude.
+
+    Returns chi_deg (float) and diagnostics (dict).
     """
-    # Resolve field ID
-    msmd.open(temp_ms)
+    msmd.open(vis)
     try:
         fids = msmd.fieldsforname(field_name)
         field_id = int(fids[0]) if len(fids) else None
@@ -377,17 +283,17 @@ def compute_parallactic_angle(temp_ms, field_name, time_mjd, field_id=None):
         field_id = None
 
     if field_id is None:
-        tb.open(temp_ms)
+        tb.open(vis)
         field_ids_all = tb.getcol('FIELD_ID')
         tb.close()
         vals, cnts = np.unique(field_ids_all, return_counts=True)
         field_id = int(vals[np.argmax(cnts)])
         print(f'WARNING: field "{field_name}" not found; using modal FIELD_ID {field_id}')
-    
+
     phase_dir = msmd.phasecenter(field_id)
     msmd.close()
 
-    tb.open(temp_ms + '/OBSERVATION')
+    tb.open(vis + '/OBSERVATION')
     tel_names = tb.getcol('TELESCOPE_NAME')
     tb.close()
     obsname = str(tel_names[0]) if tel_names.size > 0 else 'UNKNOWN'
@@ -403,2392 +309,2121 @@ def compute_parallactic_angle(temp_ms, field_name, time_mjd, field_id=None):
     az_rad = q_to_rad_scalar(azel['m0'])
     el_rad = q_to_rad_scalar(azel['m1'])
 
-    # Compute parallactic angle: χ = atan2(-sin(A), tan(φ)cos(e) - cos(A)sin(e))
     num = -np.sin(az_rad)
-    den = np.tan(lat_rad)*np.cos(el_rad) - np.cos(az_rad)*np.sin(el_rad)
+    den = np.tan(lat_rad) * np.cos(el_rad) - np.cos(az_rad) * np.sin(el_rad)
     chi_rad = np.arctan2(num, den)
     chi_deg = rad_to_deg_scalar(chi_rad)
-    chi_deg = ((chi_deg + 180.0) % 360.0) - 180.0  # Wrap to (-180, 180]
+    chi_deg = ((chi_deg + 180.0) % 360.0) - 180.0
 
-    az_deg = rad_to_deg_scalar(az_rad)
-    el_deg = rad_to_deg_scalar(el_rad)
-    lt_deg = rad_to_deg_scalar(lat_rad)
-    
     diagnostics = {
-        'az_deg': az_deg, 
-        'el_deg': el_deg, 
-        'lat_deg': lt_deg,
+        'az_deg': rad_to_deg_scalar(az_rad),
+        'el_deg': rad_to_deg_scalar(el_rad),
+        'lat_deg': rad_to_deg_scalar(lat_rad),
         'time': time_mjd,
         'observatory': obsname
     }
-    
     return chi_deg, diagnostics
 
 
 def correct_crosshand_phase(u_prime, v_prime, rho):
     """
-    Apply cross-hand phase correction using inverse rotation.
-    
-    Inputs:
-        u_prime : float/array - Uncorrected Stokes U
-        v_prime : float/array - Uncorrected Stokes V
-        rho : float/array - Cross-hand phase in radians
-    
-    Outputs:
-        u_corrected : float/array - Corrected Stokes U
-        v_corrected : float/array - Corrected Stokes V
-    
-    Applies rotation matrix to remove instrumental cross-hand phase:
-        U_corr = U'cos(ρ) - V'sin(ρ)
-        V_corr = U'sin(ρ) + V'cos(ρ)
+    Apply cross-hand phase correction.
+
+    U_corr = U'cos(ρ) - V'sin(ρ)
+    V_corr = U'sin(ρ) + V'cos(ρ)
     """
     cos_rho = np.cos(rho)
     sin_rho = np.sin(rho)
-    
     u_corrected = u_prime * cos_rho - v_prime * sin_rho
     v_corrected = u_prime * sin_rho + v_prime * cos_rho
-    
     return u_corrected, v_corrected
 
 
 def correct_parallactic_angle(q, u, parang_deg):
     """
     Apply parallactic angle correction (feed → sky frame).
-    
-    Inputs:
-        q : float/array - Stokes Q in feed frame
-        u : float/array - Stokes U in feed frame
-        parang_deg : float - Parallactic angle in degrees
-    
-    Outputs:
-        q_corrected : float/array - Stokes Q in sky frame
-        u_corrected : float/array - Stokes U in sky frame
-    
-    Rotates Q,U from feed frame to sky frame using inverse rotation by -2χ:
-        Q_sky = Q_feed·cos(-2χ) + U_feed·sin(-2χ)
-        U_sky = -Q_feed·sin(-2χ) + U_feed·cos(-2χ)
+
+    Rotates Q,U from feed frame to sky frame by -2χ.
     """
     parang_rad = np.radians(-2 * parang_deg)
-    
     q_corrected = q * np.cos(parang_rad) + u * np.sin(parang_rad)
     u_corrected = -q * np.sin(parang_rad) + u * np.cos(parang_rad)
-    
     return q_corrected, u_corrected
 
 
 def calculate_derotated_angle(q, u, rm, lambda_sq_val):
     """
     Calculate de-rotated polarization angle after RM correction.
-    
-    Inputs:
-        q : float/array - Stokes Q
-        u : float/array - Stokes U
-        rm : float - Rotation Measure in rad/m²
-        lambda_sq_val : float - Wavelength squared in m²
-    
-    Outputs:
-        pol_angle_deg : float/array - Polarization angle in degrees, range (-90, 90]
-    
-    Applies Faraday rotation correction and computes intrinsic polarization angle:
-        Rotation: θ = 2·RM·λ²
-        Q' = Q·cos(θ) + U·sin(θ), U' = -Q·sin(θ) + U·cos(θ)
-        Angle = 0.5·arctan2(U', Q')
+
+    Applies Faraday de-rotation: θ = 2·RM·λ², then returns
+    0.5·arctan2(U', Q') in degrees, wrapped to (-90, 90].
     """
     rot_angle = 2 * rm * lambda_sq_val
     cos_rot = np.cos(rot_angle)
     sin_rot = np.sin(rot_angle)
-    
     q_derot = q * cos_rot + u * sin_rot
     u_derot = -q * sin_rot + u * cos_rot
-    
     pol_angle_rad = 0.5 * np.arctan2(u_derot, q_derot)
     pol_angle_deg = np.degrees(pol_angle_rad)
-    
-    # Wrap to (-90, 90] for polarization angle
     pol_angle_deg = ((pol_angle_deg + 90.0) % 180.0) - 90.0
-    
     return pol_angle_deg
 
 
-def angle_difference(angle1, angle2):
-    """
-    Calculate smallest angular difference between two angles.
-    
-    Inputs:
-        angle1 : float - First angle in degrees
-        angle2 : float - Second angle in degrees
-    
-    Outputs:
-        abs_diff : float - Absolute angular difference in degrees
-    
-    Handles 2π wrapping to find the smallest angular separation,
-    accounting for angles wrapping around ±180°.
-    """
-    diff = angle1 - angle2
-    diff = ((diff + 180.0) % 360.0) - 180.0
-    return abs(diff)
-
-
-def plot_stokes_spectra(freq, I_scans, Q_scans, U_scans, V_scans, scan_numbers, output_dir, filename='stokes_spectra.png', title='Stokes Parameters', zoom_percentile=None, zoom_stokes=None):
+def plot_stokes_spectra(freq, I_scans, Q_scans, U_scans, V_scans, scan_numbers,
+                        output_dir, filename='stokes_spectra.png',
+                        title='Stokes Parameters', zoom_percentile=None,
+                        zoom_stokes=None):
     """
     Generate per-channel spectra for all Stokes parameters with multiple scans.
-    
-    Inputs:
-        freq : array - Frequency array in GHz (nchan,)
-        I_scans, Q_scans, U_scans, V_scans : arrays - Stokes flux densities (n_scans, nchan)
-        scan_numbers : array - Scan number labels (n_scans,)
-        output_dir : str - Directory path for saving plot
-        filename : str - Output filename
-        title : str - Plot title
-        zoom_percentile : float or None - If provided, zoom to inner percentile range (e.g., 90 = 5th to 95th percentile)
-        zoom_stokes : list or None - List of Stokes parameters to zoom (e.g., ['V'] to zoom only Stokes V). If None, zoom all.
-    
-    Outputs:
-        None (saves plot to disk)
-    
-    Creates 4-panel plot showing flux density vs frequency for I, Q, U, V.
-    Each scan is plotted with a different color. For single scan (n_scans=1), 
-    plots a single trace.
+
+    Creates 4-panel plot (I, Q, U, V) vs frequency. Each scan in a different
+    colour. Optional percentile zoom on selected Stokes panels.
     """
     n_scans = I_scans.shape[0]
-    
-    if n_scans == 1:
-        colors = ['C0']
-    else:
-        colors = plt.cm.tab10(np.linspace(0, 1, min(n_scans, 10)))
-    
+    colors = ['C0'] if n_scans == 1 else plt.cm.tab10(np.linspace(0, 1, min(n_scans, 10)))
+
     fig, ax = plt.subplots(4, 1, figsize=(12, 14), sharex=True, constrained_layout=True)
-    
+
     for scan_idx in range(n_scans):
         color = colors[scan_idx % len(colors)]
         label = f'Scan {scan_numbers[scan_idx]}' if n_scans > 1 else None
-        
-        ax[0].plot(freq, I_scans[scan_idx], marker='.', linestyle='-', alpha=0.6, 
-                   color=color, label=label, markersize=3, linewidth=0.5)
-        ax[1].plot(freq, Q_scans[scan_idx], marker='.', linestyle='-', alpha=0.6, 
-                   color=color, label=label, markersize=3, linewidth=0.5)
-        ax[2].plot(freq, U_scans[scan_idx], marker='.', linestyle='-', alpha=0.6, 
-                   color=color, label=label, markersize=3, linewidth=0.5)
-        ax[3].plot(freq, V_scans[scan_idx], marker='.', linestyle='-', alpha=0.6, 
-                   color=color, label=label, markersize=3, linewidth=0.5)
-    
+        kw = dict(marker='.', linestyle='-', alpha=0.7, color=color,
+                  label=label, markersize=6, linewidth=0.8)
+        ax[0].plot(freq, I_scans[scan_idx], **kw)
+        ax[1].plot(freq, Q_scans[scan_idx], **kw)
+        ax[2].plot(freq, U_scans[scan_idx], **kw)
+        ax[3].plot(freq, V_scans[scan_idx], **kw)
+
     if zoom_percentile is not None:
         lower_p = (100 - zoom_percentile) / 2
         upper_p = 100 - lower_p
-        
         stokes_names = ['I', 'Q', 'U', 'V']
-        for idx, (data, stokes_name) in enumerate(zip([I_scans, Q_scans, U_scans, V_scans], stokes_names)):
-            # Only zoom if zoom_stokes is None (zoom all) or if this Stokes parameter is in the list
-            if zoom_stokes is None or stokes_name in zoom_stokes:
+        for idx, (data, sname) in enumerate(
+                zip([I_scans, Q_scans, U_scans, V_scans], stokes_names)):
+            if zoom_stokes is None or sname in zoom_stokes:
                 valid_data = data[np.isfinite(data)]
                 if len(valid_data) > 0:
                     y_min = np.percentile(valid_data, lower_p)
                     y_max = np.percentile(valid_data, upper_p)
-                    # Add 10% padding
                     y_range = y_max - y_min
-                    ax[idx].set_ylim(y_min - 0.1*y_range, y_max + 0.1*y_range)
-    
-    ax[0].axhline(0.0, color='gray', linestyle='--', alpha=0.7)
-    ax[0].set_ylabel('Stokes I [Jy]')
-    ax[0].set_title(f'{title} - I')
-    ax[0].grid(True, alpha=0.3)
+                    ax[idx].set_ylim(y_min - 0.1 * y_range, y_max + 0.1 * y_range)
+
+    for a, ylabel, t in zip(ax,
+                             ['Stokes I [Jy]', 'Stokes Q [Jy]', 'Stokes U [Jy]', 'Stokes V [Jy]'],
+                             ['I', 'Q', 'U', 'V']):
+        a.axhline(0.0, color='gray', linestyle='--', alpha=0.7)
+        a.set_ylabel(ylabel)
+        a.set_title(f'{title} - {t}')
+        a.grid(True, alpha=0.3)
+
     if n_scans > 1:
         ax[0].legend(fontsize=8, ncol=min(3, n_scans))
-    
-    ax[1].axhline(0.0, color='gray', linestyle='--', alpha=0.7)
-    ax[1].set_ylabel('Stokes Q [Jy]')
-    ax[1].set_title(f'{title} - Q')
-    ax[1].grid(True, alpha=0.3)
-    
-    ax[2].axhline(0.0, color='gray', linestyle='--', alpha=0.7)
-    ax[2].set_ylabel('Stokes U [Jy]')
-    ax[2].set_title(f'{title} - U')
-    ax[2].grid(True, alpha=0.3)
-    
-    ax[3].axhline(0.0, color='gray', linestyle='--', alpha=0.7)
-    ax[3].set_ylabel('Stokes V [Jy]')
+
     ax[3].set_xlabel('Frequency [GHz]')
-    ax[3].set_title(f'{title} - V')
-    ax[3].grid(True, alpha=0.3)
-    
     plt.savefig(os.path.join(output_dir, filename), dpi=150)
     plt.close(fig)
 
 
-def plot_polang_deviation(freq_ghz, Q_scans, U_scans, V_scans, rho_rad_scans, chi_deg_scans, 
-                          selected_solution_scans, scan_numbers, global_rm, target_polang_array, output_dir):
+def get_spinifex_rm_per_scan(pacal_name, scan_numbers):
     """
-    Plot deviation of de-rotated polarization angle from target (one plot per scan).
-    
-    Shows BOTH ±π options for each channel - which allows visualization of which
-    option (positive or negative ρ) deviates less from the target. The option with
-    smaller deviation (closer to zero) is the one selected in the calibration.
-    
-    Inputs:
-        freq_ghz : array - Frequency in GHz
-        Q_scans, U_scans, V_scans : arrays - Stokes parameters per scan
-        rho_rad_scans : array - Raw cross-hand phase per scan
-        chi_deg_scans : array - Parallactic angles per scan
-        selected_solution_scans : array - Solution labels ('positive'=ρ≥0, 'negative'=ρ<0)
-        scan_numbers : array - Scan numbers
-        global_rm : float - Global rotation measure
-        target_polang_array : array - Target polarization angle (per channel, can be freq-dependent)
-        output_dir : str - Output directory
-    """
-    c = 2.99792458e8  # Speed of light
-    
-    for scan_idx, scan in enumerate(scan_numbers):
-        fig, ax = plt.subplots(1, 1, figsize=(12, 6))
-        
-        Q_scan = Q_scans[scan_idx]
-        U_scan = U_scans[scan_idx]
-        V_scan = V_scans[scan_idx]
-        rho_rad_scan = rho_rad_scans[scan_idx]
-        sol_labels = selected_solution_scans[scan_idx]
-        
-        # Only channels with solutions (not empty, not outlier)
-        has_solution = (sol_labels != '') & (sol_labels != 'outlier')
-        solution_idx = np.where(has_solution)[0]
-        
-        if len(solution_idx) == 0:
-            plt.close(fig)
-            continue
-        
-        freq_hz = freq_ghz[solution_idx] * 1e9
-        lambda_sq = (c / freq_hz)**2
-        
-        Q_channels = Q_scan[solution_idx]
-        U_channels = U_scan[solution_idx]
-        V_channels = V_scan[solution_idx]
-        rho_raw = rho_rad_scan[solution_idx]
-        sol_names = sol_labels[solution_idx]
-        
-        # Compute both ±π options
-        rho_option1 = ((rho_raw + np.pi) % (2*np.pi)) - np.pi
-        rho_option2 = ((rho_raw + np.pi + np.pi) % (2*np.pi)) - np.pi
-        
-        # Label by sign: determine which option is positive and which is negative
-        rho_positive = np.where(rho_option1 >= 0, rho_option1, rho_option2)
-        rho_negative = np.where(rho_option1 < 0, rho_option1, rho_option2)
-        
-        # Apply corrections for both sign options
-        U_xh_positive, V_xh_positive = correct_crosshand_phase(U_channels, V_channels, rho_positive)
-        U_xh_negative, V_xh_negative = correct_crosshand_phase(U_channels, V_channels, rho_negative)
-        
-        Q_final_positive, U_final_positive = correct_parallactic_angle(Q_channels, U_xh_positive, chi_deg_scans[scan_idx])
-        Q_final_negative, U_final_negative = correct_parallactic_angle(Q_channels, U_xh_negative, chi_deg_scans[scan_idx])
-        
-        # De-rotate at global RM for both sign options
-        angles_positive = calculate_derotated_angle(Q_final_positive, U_final_positive, global_rm, lambda_sq)
-        angles_negative = calculate_derotated_angle(Q_final_negative, U_final_negative, global_rm, lambda_sq)
-        
-        # Get target angles for these channels
-        target_angles_channels = target_polang_array[solution_idx]
-        
-        # Compute deviations for BOTH options (not just selected)
-        deviation_positive = angles_positive - target_angles_channels
-        deviation_positive = np.where(deviation_positive > 90, deviation_positive - 180, deviation_positive)
-        deviation_positive = np.where(deviation_positive < -90, deviation_positive + 180, deviation_positive)
-        
-        deviation_negative = angles_negative - target_angles_channels
-        deviation_negative = np.where(deviation_negative > 90, deviation_negative - 180, deviation_negative)
-        deviation_negative = np.where(deviation_negative < -90, deviation_negative + 180, deviation_negative)
-        
-        # Convert rho to degrees for colormap
-        rho_positive_deg = np.degrees(rho_positive)
-        rho_negative_deg = np.degrees(rho_negative)
-        
-        # Plot BOTH options for ALL channels (not just selected)
-        # Positive option (circles)
-        scatter1 = ax.scatter(freq_ghz[solution_idx], deviation_positive, 
-                             c=rho_positive_deg, marker='o', s=50, 
-                             cmap='viridis', alpha=0.8, edgecolors='black', linewidths=0.5,
-                             vmin=-180, vmax=180)
-        
-        # Negative option (squares)
-        scatter2 = ax.scatter(freq_ghz[solution_idx], deviation_negative, 
-                             c=rho_negative_deg, marker='s', s=50,
-                             cmap='viridis', alpha=0.8, edgecolors='black', linewidths=0.5,
-                             vmin=-180, vmax=180)
-        
-        # Add colorbar (showing full ρ range from -180 to 180)
-        cbar = plt.colorbar(scatter2, ax=ax)
-        cbar.set_label('ρ [deg]', rotation=270, labelpad=20)
-        
-        # Add reference line at zero
-        ax.axhline(0, color='black', linestyle='--', alpha=0.5, linewidth=1)
-        
-        # Custom legend for markers
-        legend_elements = [
-            Line2D([0], [0], marker='o', color='w', markerfacecolor='gray', 
-                   markeredgecolor='black', markersize=8, label='Positive ρ option (ρ ≥ 0)'),
-            Line2D([0], [0], marker='s', color='w', markerfacecolor='gray',
-                   markeredgecolor='black', markersize=8, label='Negative ρ option (ρ < 0)')
-        ]
-        ax.legend(handles=legend_elements, loc='upper right', fontsize=9)
-        
-        ax.set_xlabel('Frequency [GHz]')
-        ax.set_ylabel('Deviation [deg]')
-        ax.set_title(f'Scan {scan}: Both ±π Options (RM={global_rm:.2f} rad/m²)')
-        ax.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, f'polang_deviation_scan{scan}.png'), dpi=150)
-        plt.close(fig)
+    Run Spinifex to estimate ionospheric RM and parse the output per scan.
 
+    If the output file already exists it is parsed directly; otherwise
+    Spinifex is launched via subprocess before parsing.
 
-def plot_crosshand_phase(freq, U_scans, V_scans, rho_deg_scans, scan_numbers, min_flux, output_dir):
-    """
-    Generate cross-hand phase diagnostic plot for multiple scans.
-    
     Inputs:
-        freq : array - Frequency array in GHz (nchan,)
-        U_scans : array - Stokes U flux (n_scans, nchan)
-        V_scans : array - Stokes V flux (n_scans, nchan)
-        rho_deg_scans : array - Cross-hand phase in degrees (n_scans, nchan)
-        scan_numbers : array - Scan number labels (n_scans,)
-        min_flux : float - Minimum flux threshold for reference line
-        output_dir : str - Directory path for saving plot
-    
+        pacal_name  : str   - Name of the polarization angle calibrator field
+        scan_numbers: array - MS scan numbers
+
     Outputs:
-        None (saves plot to disk)
-    
-    Top panel shows cross-hand flux amplitude, bottom panel shows phase.
-    Each scan plotted in different color. For single scan, plots single trace.
+        iono_rm     : array - Median ionospheric RM per scan (rad/m²)
+        iono_rm_err : array - Median RM uncertainty per scan (rad/m²)
     """
-    n_scans = U_scans.shape[0]
-    
-    if n_scans == 1:
-        colors = ['red']
+    spinifex_script = os.path.join(OXKAT, 'RMSYNTH_03_run_SPINIFEX.py')
+    output_file = os.path.join(RESULTS,
+                               f"{os.path.basename(myms)}_spinifex_rm.txt")
+
+    iono_rm = np.zeros(len(scan_numbers), dtype=float)
+    iono_rm_err = np.zeros(len(scan_numbers), dtype=float)
+
+    # Run Spinifex if output not already present
+    if not os.path.isfile(output_file):
+        print(f"  Spinifex output not found — running: {spinifex_script}")
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
+        result = subprocess.run(
+            ['python-spinifex', spinifex_script],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            print(f"  WARNING: Spinifex subprocess failed (returncode={result.returncode})")
+            print(f"  stderr: {result.stderr[:500]}")
+            print("  Ionospheric RM will be treated as 0 rad/m² for all scans.")
+            return iono_rm, iono_rm_err
+        print("  Spinifex completed successfully.")
     else:
-        colors = plt.cm.tab10(np.linspace(0, 1, min(n_scans, 10)))
-    
-    fig, (ax_top, ax_bottom) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
-    
-    for scan_idx in range(n_scans):
-        color = colors[scan_idx % len(colors)]
-        label = f'Scan {scan_numbers[scan_idx]}' if n_scans > 1 else None
-        
-        U = U_scans[scan_idx]
-        V = V_scans[scan_idx]
-        rho_deg = rho_deg_scans[scan_idx]
-        
-        valid = np.isfinite(U) & np.isfinite(V) & np.isfinite(freq) & np.isfinite(rho_deg)
-        
-        # Top: cross-hand flux
-        crosshand_flux = np.sqrt(U**2 + V**2)
-        ax_top.scatter(freq[valid], crosshand_flux[valid], s=8, c=[color], alpha=0.6, label=label)
-        
-        # Bottom: cross-hand phase
-        ax_bottom.scatter(freq[valid], rho_deg[valid], s=8, c=[color], alpha=0.6, label=label)
-    
-    ax_top.axhline(min_flux, color='gray', linestyle='--', alpha=0.7, 
-                   label=f'{min_flux} Jy reference')
-    ax_top.set_ylabel('Cross-hand flux [Jy] (√(U² + V²))')
-    ax_top.set_title('Per-channel cross-hand flux (before correction)')
-    ax_top.grid(True, alpha=0.3)
-    ax_top.legend(fontsize=8, ncol=min(3, n_scans+1))
-    
-    ax_bottom.set_xlabel('Frequency [GHz]')
-    ax_bottom.set_ylabel('Cross-hand phase ρ [deg]')
-    ax_bottom.set_title('Per-channel cross-hand phase (arctan2(-V, U))')
-    ax_bottom.grid(True, alpha=0.3)
-    if n_scans > 1:
-        ax_bottom.legend(fontsize=8, ncol=min(3, n_scans))
-    
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'crosshand_phase.png'), dpi=150)
-    plt.close(fig)
+        print(f"  Using existing Spinifex output: {output_file}")
+
+    # Parse output file
+    # Columns: Field_Name Position_hmsdms Scan_Number Time_ISOT Time_MJD RM RM_err
+    scan_rm_data = {int(sc): [] for sc in scan_numbers}
+    scan_rm_err_data = {int(sc): [] for sc in scan_numbers}
+    n_field_rows = 0
+
+    try:
+        with open(output_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                parts = line.split()
+                if len(parts) < 8:
+                    continue
+                field = parts[0]
+                if field != pacal_name:
+                    continue
+                n_field_rows += 1
+                scan_num = int(parts[3])
+                rm_val = float(parts[6])
+                rm_err_val = float(parts[7])
+                if scan_num in scan_rm_data:
+                    scan_rm_data[scan_num].append(rm_val)
+                    scan_rm_err_data[scan_num].append(rm_err_val)
+
+        if n_field_rows == 0:
+            print(f"  WARNING: Field '{pacal_name}' not found in Spinifex output.")
+            print("  Ionospheric RM will be treated as 0 rad/m² for all scans.")
+            return iono_rm, iono_rm_err
+
+        for scan_idx, scan in enumerate(scan_numbers):
+            sc = int(scan)
+            if scan_rm_data[sc]:
+                iono_rm[scan_idx] = np.median(scan_rm_data[sc])
+                iono_rm_err[scan_idx] = np.median(scan_rm_err_data[sc])
+                print(f"  Scan {scan}: ionospheric RM = "
+                      f"{iono_rm[scan_idx]:+.3f} ± {iono_rm_err[scan_idx]:.3f} rad/m²")
+            else:
+                print(f"  Scan {scan}: not found in Spinifex output — using 0 rad/m²")
+
+    except Exception as e:
+        print(f"  WARNING: Failed to parse Spinifex output: {e}")
+        print("  Ionospheric RM will be treated as 0 rad/m² for all scans.")
+
+    return iono_rm, iono_rm_err
 
 
-def plot_rm_sweep(rm_trials, angles_per_rm_positive, angles_per_rm_negative, target_angle, output_dir, title_suffix=''):
+def resolve_pi_degeneracy_scan(median_gains, Q_scan, U_scan, V_scan,
+                                chi_deg, freq_ghz, target_polang_array,
+                                iono_rm, iono_rm_err=0.0, rm_range=2.0):
     """
-    Plot polarization angle vs RM for both sign options (positive and negative ρ).
-    
+    Resolve the ±π degeneracy in CASA polcal Xf gains for a single scan.
+
+    For each trial RM in the grid:
+        - Per channel, pick the sign (+1 or -1) that minimises |EVPA − target|
+        - Compute robust stats across all valid channels: MAD residual and
+          number of channels preferring each sign
+    The trial RM with the lowest MAD residual is adopted globally.
+    Per-channel signs are then re-evaluated at that single adopted RM.
+
+    Grid step = iono_rm_err / 3 (minimum 0.05, fallback 0.2 if err is zero).
+
     Inputs:
-        rm_trials : array - RM values trialed
-        angles_per_rm_positive : array - Angles for positive ρ at each RM
-        angles_per_rm_negative : array - Angles for negative ρ at each RM
-        target_angle : float - Target polarization angle
-        output_dir : str - Output directory
-        title_suffix : str - Additional text for title
-    
+        median_gains    : complex array (nchan,)
+        Q_scan, U_scan, V_scan : float arrays (nchan,)
+        chi_deg         : float — parallactic angle (degrees)
+        freq_ghz        : float array (nchan,)
+        target_polang_array : float array (nchan,)
+        iono_rm         : float — Spinifex ionospheric RM (rad/m²)
+        iono_rm_err     : float — Spinifex RM uncertainty (rad/m²)
+        rm_range        : float — half-width of search grid (rad/m²)
+
     Outputs:
-        None (saves plot to disk)
+        signed_gains : complex array (nchan,) — per-channel sign applied
+        best_rm      : float — adopted RM
+        grid_centre  : float — XF_TARGET_RM + iono_rm
+        best_delta_rm: float — grid offset from centre
+        med_dev      : float — MAD residual at best RM
     """
-    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-    
-    ax.plot(rm_trials, angles_per_rm_positive, 'o-', label='Positive ρ', alpha=0.7)
-    ax.plot(rm_trials, angles_per_rm_negative, 's-', label='Negative ρ', alpha=0.7)
-    ax.axhline(target_angle, color='red', linestyle='--', label=f'Target = {target_angle}°')
-    ax.set_xlabel('RM [rad/m²]')
-    ax.set_ylabel('Polarization Angle [deg]')
-    ax.set_title(f'RM Sweep {title_suffix}')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, f'rm_sweep{title_suffix.replace(" ", "_")}.png'), dpi=150)
-    plt.close(fig)
+    c = 2.998e8
+
+    grid_centre = XF_TARGET_RM + iono_rm
+    rm_step = max(0.05, iono_rm_err / 3.0) if iono_rm_err > 0 else 0.2
+    rm_trials = np.arange(grid_centre - rm_range,
+                          grid_centre + rm_range + rm_step / 2,
+                          rm_step)
+
+    signed_gains = np.full(len(median_gains), np.nan, dtype=complex)
+
+    valid = (np.isfinite(median_gains) &
+             np.isfinite(Q_scan) & np.isfinite(U_scan) & np.isfinite(V_scan))
+
+    if np.sum(valid) < 5:
+        print(f"    WARNING: Only {np.sum(valid)} valid channels — skipping grid search")
+        signed_gains[valid] = median_gains[valid]
+        return signed_gains, grid_centre, grid_centre, 0.0, np.inf
+
+    freq_hz   = freq_ghz[valid] * 1e9
+    lambda_sq = (c / freq_hz) ** 2
+    Q_v  = Q_scan[valid]
+    U_v  = U_scan[valid]
+    V_v  = V_scan[valid]
+    g_v  = median_gains[valid]
+    target_v = target_polang_array[valid]
+    n_valid  = int(np.sum(valid))
+
+    # Pre-compute corrected Q_sky, U_sky for both signs
+    sign_results = {}
+    for sign in [+1, -1]:
+        rho = np.angle(sign * g_v)
+        U_xh, V_xh = correct_crosshand_phase(U_v, V_v, rho)
+        Q_sky, U_sky = correct_parallactic_angle(Q_v, U_xh, chi_deg)
+        sign_results[sign] = (Q_sky, U_sky)
+
+    # Grid search
+    print(f"\n    Grid search: {len(rm_trials)} trials, "
+          f"step={rm_step:.3f} rad/m², "
+          f"range=[{rm_trials[0]:.3f}, {rm_trials[-1]:.3f}] rad/m²")
+    print(f"    {'Trial RM':>12}  {'ΔRM':>8}  {'MAD resid(°)':>14}  "
+          f"{'N(+sign)':>10}  {'N(-sign)':>10}")
+    print(f"    {'-'*60}")
+
+    best_mad   = np.inf
+    best_rm    = grid_centre
+
+    for rm in rm_trials:
+        delta_rm = rm - grid_centre
+        dev_pos = np.abs(calculate_derotated_angle(
+            sign_results[+1][0], sign_results[+1][1], rm, lambda_sq) - target_v)
+        dev_neg = np.abs(calculate_derotated_angle(
+            sign_results[-1][0], sign_results[-1][1], rm, lambda_sq) - target_v)
+        dev_pos = np.where(dev_pos > 90, 180 - dev_pos, dev_pos)
+        dev_neg = np.where(dev_neg > 90, 180 - dev_neg, dev_neg)
+
+        # Per channel: pick best sign
+        best_dev_per_ch = np.minimum(dev_pos, dev_neg)
+        n_pos = int(np.sum(dev_pos <= dev_neg))
+        n_neg = n_valid - n_pos
+
+        # Robust stat: MAD of per-channel minimum residuals
+        med  = float(np.median(best_dev_per_ch))
+        mad  = float(np.median(np.abs(best_dev_per_ch - med)))
+
+        marker = ' <<<' if mad < best_mad else ''
+        print(f"    {rm:>12.4f}  {delta_rm:>+8.4f}  {mad:>14.4f}  "
+              f"{n_pos:>10d}  {n_neg:>10d}{marker}")
+
+        if mad < best_mad:
+            best_mad = mad
+            best_rm  = rm
+
+    best_delta_rm = best_rm - grid_centre
+
+    # ── Fine grid: per-channel RM and sign ─────────────────────────────────
+    # Each channel independently finds the (RM, sign) pair within ±0.2 of the
+    # coarse best_rm that minimises |EVPA − target| for that channel.
+    fine_step   = 0.04
+    fine_range  = 0.25
+    fine_trials = np.arange(best_rm - fine_range,
+                            best_rm + fine_range + fine_step / 2,
+                            fine_step)
+
+    print(f"\n    Fine grid (per-channel): {len(fine_trials)} trials, "
+          f"step={fine_step:.3f} rad/m², "
+          f"range=[{fine_trials[0]:.4f}, {fine_trials[-1]:.4f}] rad/m²")
+
+    # Pre-compute corrected skies for both signs (same as coarse, reuse sign_results)
+    per_ch_rm   = np.full(n_valid, best_rm)
+    per_ch_sign = np.ones(n_valid, dtype=int)
+    per_ch_dev  = np.full(n_valid, np.inf)
+
+    for rm in fine_trials:
+        for sign in [+1, -1]:
+            angles = calculate_derotated_angle(
+                sign_results[sign][0], sign_results[sign][1], rm, lambda_sq)
+            dev = np.abs(angles - target_v)
+            dev = np.where(dev > 90, 180 - dev, dev)
+            improved = dev < per_ch_dev
+            per_ch_rm[improved]   = rm
+            per_ch_sign[improved] = sign
+            per_ch_dev[improved]  = dev[improved]
+
+    coarse_rm     = best_rm
+    best_rm       = float(np.median(per_ch_rm))
+    best_delta_rm = best_rm - grid_centre
+    med_dev       = float(np.median(per_ch_dev))
+
+    n_pos = int(np.sum(per_ch_sign == +1))
+    n_neg = n_valid - n_pos
+    print(f"    Per-channel RM range: [{per_ch_rm.min():.4f}, {per_ch_rm.max():.4f}] rad/m²")
+    print(f"    Median per-channel RM: {best_rm:.4f} rad/m²  (MAD dev = {med_dev:.4f}°)")
+    print(f"    Per-channel sign: {n_pos} channels +1, {n_neg} channels −1")
+
+    # Compare fine-grid per-channel sign to what the coarse RM alone would give
+    dev_pos_coarse = np.abs(calculate_derotated_angle(
+        sign_results[+1][0], sign_results[+1][1], coarse_rm, lambda_sq) - target_v)
+    dev_neg_coarse = np.abs(calculate_derotated_angle(
+        sign_results[-1][0], sign_results[-1][1], coarse_rm, lambda_sq) - target_v)
+    dev_pos_coarse = np.where(dev_pos_coarse > 90, 180 - dev_pos_coarse, dev_pos_coarse)
+    dev_neg_coarse = np.where(dev_neg_coarse > 90, 180 - dev_neg_coarse, dev_neg_coarse)
+    coarse_sign_per_ch = np.where(dev_pos_coarse <= dev_neg_coarse, +1, -1)
+
+    n_swapped   = int(np.sum(per_ch_sign != coarse_sign_per_ch))
+    n_unchanged = n_valid - n_swapped
+    print(f"\n    Fine grid sign changes vs coarse RM sign:")
+    print(f"      Unchanged : {n_unchanged:5d} / {n_valid} channels "
+          f"({100.*n_unchanged/n_valid:.1f}%)")
+    print(f"      Swapped   : {n_swapped:5d} / {n_valid} channels "
+          f"({100.*n_swapped/n_valid:.1f}%)")
+
+    print(f"\n    ── Adopted RM breakdown ──────────────────────────────")
+    print(f"    Target RM (config):    XF_TARGET_RM       = {XF_TARGET_RM:+.4f} rad/m²")
+    print(f"    Ionospheric RM:        iono_rm            = {iono_rm:+.4f} rad/m²")
+    print(f"    Grid offset (ΔRM):     median(fine)−centre= {best_delta_rm:+.4f} rad/m²")
+    print(f"    ──────────────────────────────────────────────────────")
+    print(f"    Adopted RM (median of per-channel fine):   {best_rm:+.4f} rad/m²"
+          f"  (MAD dev = {med_dev:.4f}°)")
+
+    # Apply per-channel sign from fine grid and map RM back to full channel array
+    valid_idx = np.where(valid)[0]
+    for i, ch in enumerate(valid_idx):
+        signed_gains[ch] = per_ch_sign[i] * median_gains[ch]
+
+    per_ch_rm_full = np.full(len(median_gains), np.nan)
+    for i, ch in enumerate(valid_idx):
+        per_ch_rm_full[ch] = per_ch_rm[i]
+
+    return signed_gains, best_rm, grid_centre, best_delta_rm, med_dev, coarse_rm, per_ch_rm_full
 
 
-def plot_delta_rm_diagnostics(all_delta_rms, all_min_deviations, all_best_angles, filtered_delta_rms, 
-                                filtered_deviations, filtered_angles, global_delta_rm, scan_labels, 
-                                filtered_scan_labels, target_angle, output_dir):
+def global_sigma_clip_gains(per_scan_gains, per_scan_flags, scan_numbers, sigma=10.0):
     """
-    Generate 3-panel diagnostic plot for delta_RM analysis.
-    
+    Global σ-clip on XF phase, using circular statistics to handle the
+    -180°/+180° wrap correctly.
+
+    For each channel, the gain lies on the unit circle. We compute the
+    circular mean phase across all unflagged channels, then measure each
+    channel's angular deviation from that mean (wrapped to (-180, 180]).
+    Channels where |deviation| > sigma × 1.4826 × MAD(deviations) are flagged.
+
     Inputs:
-        all_delta_rms : array - All delta_RM values from Stage 1
-        all_min_deviations : array - Corresponding minimum deviations
-        all_best_angles : array - Actual de-rotated angles at best delta_RM
-        filtered_delta_rms : array - Good delta_RM values after filtering
-        filtered_deviations : array - Corresponding deviations
-        filtered_angles : array - Corresponding actual angles
-        global_delta_rm : float - Selected global delta_RM
-        scan_labels : array - Scan labels for all points
-        filtered_scan_labels : array - Scan labels for filtered points
-        target_angle : float - Target polarization angle
-        output_dir : str - Output directory
-    
+        per_scan_gains : dict {scan: complex array (nchan,)}
+        per_scan_flags : dict {scan: bool array (nchan,)}
+        scan_numbers   : array
+        sigma          : float — clipping threshold (default 10σ)
+
     Outputs:
-        None (saves plot to disk)
+        per_scan_flags       : dict — updated flag arrays
+        global_flagged_per_scan : dict {scan: bool array} — channels newly
+                                  flagged by this step (not pre-existing flags)
     """
-    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 12))
-    
-    # Panel 1: All delta_RM trials
-    unique_scans = np.unique(scan_labels)
-    colors = plt.cm.tab10(np.linspace(0, 1, len(unique_scans)))
-    
-    for i, scan in enumerate(unique_scans):
-        mask = scan_labels == scan
-        ax1.scatter(all_delta_rms[mask], all_min_deviations[mask], 
-                   c=[colors[i]], label=f'Scan {scan}', alpha=0.5, s=10)
-    
-    ax1.axvline(global_delta_rm, color='red', linestyle='--', linewidth=2, 
-               label=f'Global δRM = {global_delta_rm:.2f}')
-    ax1.set_xlabel('Delta RM [rad/m²]')
-    ax1.set_ylabel('Min Deviation from Target [deg]')
-    ax1.set_title('Stage 1: All Delta_RM Trials')
-    ax1.legend(fontsize=8, ncol=2)
-    ax1.grid(True, alpha=0.3)
-    
-    # Panel 2: Filtered (good) delta_RM trials
-    for i, scan in enumerate(unique_scans):
-        if len(filtered_scan_labels) > 0:
-            mask = filtered_scan_labels == scan
-            if np.any(mask):
-                ax2.scatter(filtered_delta_rms[mask], filtered_deviations[mask], 
-                           c=[colors[i]], label=f'Scan {scan}', alpha=0.6, s=15)
-    
-    ax2.axvline(global_delta_rm, color='red', linestyle='--', linewidth=2, 
-               label=f'Global δRM = {global_delta_rm:.2f}')
-    ax2.set_xlabel('Delta RM [rad/m²]')
-    ax2.set_ylabel('Min Deviation from Target [deg]')
-    ax2.set_title('Stage 2: Filtered (Good Quality) Delta_RM Trials')
-    ax2.legend(fontsize=8, ncol=2)
-    ax2.grid(True, alpha=0.3)
-    
-    # Panel 3: Scatter plot of actual de-rotated angles for good values (colored by scan)
-    for i, scan in enumerate(unique_scans):
-        if len(filtered_scan_labels) > 0:
-            mask = filtered_scan_labels == scan
-            if np.any(mask):
-                ax3.scatter(filtered_delta_rms[mask], filtered_angles[mask], 
-                           c=[colors[i]], label=f'Scan {scan}', alpha=0.6, s=15)
-    
-    ax3.axvline(global_delta_rm, color='red', linestyle='--', linewidth=2, 
-               label=f'Median δRM = {global_delta_rm:.2f}')
-    ax3.axhline(target_angle, color='green', linestyle=':', linewidth=2, alpha=0.7,
-               label=f'Target = {target_angle}°')
-    ax3.set_xlabel('Delta RM [rad/m²]')
-    ax3.set_ylabel('De-rotated Polarization Angle [deg]')
-    ax3.set_title('Stage 2: De-rotated Angles at Good Delta_RM Values')
-    ax3.legend(fontsize=8, ncol=2)
-    ax3.grid(True, alpha=0.3)
-    
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'delta_rm_diagnostics.png'), dpi=150)
-    plt.close(fig)
+    # Pool all unflagged phases
+    all_phases_deg = []
+    for scan in scan_numbers:
+        g = per_scan_gains[scan]
+        f = per_scan_flags[scan]
+        good = ~f & np.isfinite(g)
+        all_phases_deg.extend(np.degrees(np.angle(g[good])))
+
+    all_phases_deg = np.array(all_phases_deg)
+
+    global_flagged_per_scan = {scan: np.zeros(len(per_scan_flags[scan]), dtype=bool)
+                               for scan in scan_numbers}
+
+    if len(all_phases_deg) < 10:
+        print("  WARNING: Too few unflagged gains for global clip — skipping")
+        return per_scan_flags, global_flagged_per_scan
+
+    # Circular mean via unit-vector averaging
+    mean_complex = np.mean(np.exp(1j * np.radians(all_phases_deg)))
+    circ_mean_deg = np.degrees(np.angle(mean_complex))
+
+    # Angular deviations, wrapped to (-180, 180]
+    deviations = all_phases_deg - circ_mean_deg
+    deviations = (deviations + 180) % 360 - 180
+
+    mad_dev = np.median(np.abs(deviations - np.median(deviations)))
+    sig_dev = 1.4826 * mad_dev
+    threshold = sigma * sig_dev
+
+    print(f"  Circular mean phase: {circ_mean_deg:+.3f}°, "
+          f"MAD={mad_dev:.3f}°, threshold={threshold:.3f}° ({sigma:.0f}σ)")
+
+    total_new = 0
+    for scan in scan_numbers:
+        g = per_scan_gains[scan]
+        f = per_scan_flags[scan].copy()
+        good = ~f & np.isfinite(g)
+
+        phases = np.degrees(np.angle(g))
+        dev = (phases - circ_mean_deg + 180) % 360 - 180
+        clip = np.abs(dev) > threshold
+
+        new_flags = good & clip
+        n_new = int(np.sum(new_flags))
+        total_new += n_new
+        per_scan_flags[scan] = f | new_flags
+        global_flagged_per_scan[scan] = new_flags
+
+        if n_new > 0:
+            print(f"    Scan {scan}: {n_new} channels flagged by {sigma:.0f}σ global clip")
+        else:
+            print(f"    Scan {scan}: 0 channels flagged by global clip")
+
+    print(f"  Total newly flagged by global clip: {total_new}")
+    return per_scan_flags, global_flagged_per_scan
 
 
-def plot_final_rho_values(freq_ghz, U_scans, V_scans, rho_raw_scans, rho_final_scans, 
-                          freq_averaged_data_scans, selected_solution_scans, scan_numbers, output_dir, min_flux):
+def iterative_poly_clip_scan(gains, flags, freq_ghz, poly_order, sigma=None,
+                              max_iter=20):
     """
-    Generate 3-panel plot of final rho values with flagging information.
-    
+    Iterative polynomial sigma-clipping on complex XF gains.
+
+    Fits a polynomial of order `poly_order` to the real and imaginary parts
+    of the unflagged gains vs frequency, flags channels where
+    |residual| > sigma × 1.4826 × MAD, repeats until convergence.
+
     Inputs:
-        freq_ghz : array - Frequency in GHz
-        U_scans : array - Stokes U per scan (n_scans, nchan)
-        V_scans : array - Stokes V per scan (n_scans, nchan)
-        rho_raw_scans : array - Raw rho values per scan in radians (n_scans, nchan)
-        rho_final_scans : array - Final selected rho values in radians (n_scans, nchan)
-        freq_averaged_data_scans : list - Frequency averaged data per scan (or None)
-        selected_solution_scans : array - Solution labels per scan (n_scans, nchan)
-        scan_numbers : array - Scan number labels
-        output_dir : str - Output directory
-        min_flux : float - Minimum flux threshold for reference
-    
+        gains     : complex array (nchan,)
+        flags     : bool array (nchan,)
+        freq_ghz  : float array (nchan,)
+        poly_order: int
+        sigma     : float — uses XF_SIGMA_CLIP if None
+        max_iter  : int
+
     Outputs:
-        None (saves plot to disk)
+        flags     : bool array — updated
+        p_real    : polynomial coefficients for real part (or None)
+        p_imag    : polynomial coefficients for imag part (or None)
+    """
+    if sigma is None:
+        sigma = float(XF_POLY_SIGMA_CLIP) if XF_POLY_SIGMA_CLIP else 5.0
+
+    flags  = flags.copy()
+    p_real = None
+    p_imag = None
+
+    for iteration in range(max_iter):
+        good   = ~flags & np.isfinite(gains)
+        n_good = int(np.sum(good))
+
+        if n_good < poly_order + 3:
+            break
+
+        freq_good = freq_ghz[good]
+        real_good = np.real(gains[good])
+        imag_good = np.imag(gains[good])
+
+        try:
+            p_real_iter = np.polyfit(freq_good, real_good, poly_order)
+            p_imag_iter = np.polyfit(freq_good, imag_good, poly_order)
+        except (np.linalg.LinAlgError, ValueError):
+            break
+
+        p_real = p_real_iter
+        p_imag = p_imag_iter
+
+        res_real = real_good - np.polyval(p_real, freq_good)
+        res_imag = imag_good - np.polyval(p_imag, freq_good)
+
+        mad_real = np.median(np.abs(res_real - np.median(res_real)))
+        mad_imag = np.median(np.abs(res_imag - np.median(res_imag)))
+
+        if mad_real == 0 and mad_imag == 0:
+            break
+
+        sig_real = 1.4826 * mad_real
+        sig_imag = 1.4826 * mad_imag
+
+        outlier_real = (np.abs(res_real - np.median(res_real)) > sigma * sig_real
+                        if sig_real > 0 else np.zeros(n_good, dtype=bool))
+        outlier_imag = (np.abs(res_imag - np.median(res_imag)) > sigma * sig_imag
+                        if sig_imag > 0 else np.zeros(n_good, dtype=bool))
+        outlier = outlier_real | outlier_imag
+
+        if int(np.sum(outlier)) == 0:
+            break
+
+        good_indices = np.where(good)[0]
+        flags[good_indices[outlier]] = True
+
+    return flags, p_real, p_imag
+
+
+def rolling_circular_clip(gains, flags, freq_ghz, window=7, sigma=5.0):
+    """
+    Local rolling-window circular median clip on complex XF gains.
+
+    For each unflagged channel:
+      1. Gather its N nearest unflagged neighbours
+      2. Compute the local circular median (unit-vector mean of neighbours)
+      3. Compute local MAD = median(|nbr_dists - median(nbr_dists)|)
+         where nbr_dists = angular distances of neighbours from the median
+      4. Measure the channel's own distance: dist = |angle(g_ch x conj(g_med))|
+      5. Flag if dist > sigma x local_MAD
+
+    Threshold is per-channel and local — adapts to scatter in each neighbourhood.
+    Wrap-safe at +/-pi by construction (angular distance on unit circle).
+
+    Inputs:
+        gains    : complex array (nchan,)
+        flags    : bool array (nchan,)
+        freq_ghz : float array (nchan,)
+        window   : int   — neighbourhood size (default 7)
+        sigma    : float — threshold = sigma x local_MAD (use XF_SIGMA_CLIP)
+
+    Outputs:
+        flags     : bool array — updated
+        n_flagged : int
+    """
+    flags = flags.copy()
+    valid_idx = np.where(~flags & np.isfinite(gains))[0]
+    n_valid = len(valid_idx)
+
+    if n_valid < window + 1:
+        print(f"    Rolling clip: only {n_valid} valid channels, need >{window} — skipping")
+        return flags, 0
+
+    half = window // 2
+    results = []  # (ch, dist_deg, local_mad_deg, threshold_deg)
+
+    for pos, ch in enumerate(valid_idx):
+        lo = max(0, pos - half)
+        hi = min(n_valid, pos + half + 1)
+        neighbour_pos = [p for p in range(lo, hi) if p != pos]
+        if len(neighbour_pos) < 3:
+            continue
+        neighbour_gains = gains[valid_idx[neighbour_pos]]
+
+        g_med = np.mean(neighbour_gains)
+        if np.abs(g_med) < 1e-10:
+            continue
+        g_med /= np.abs(g_med)
+
+        nbr_dists_deg = np.degrees(np.abs(np.angle(neighbour_gains * np.conj(g_med))))
+        local_mad_deg = float(np.median(np.abs(nbr_dists_deg - np.median(nbr_dists_deg))))
+        local_mad_deg = max(local_mad_deg, 0.5)  # floor at 0.5° — avoids over-flagging in very tight regions
+        dist_deg      = float(np.degrees(abs(np.angle(gains[ch] * np.conj(g_med)))))
+        threshold     = sigma * local_mad_deg if local_mad_deg > 0 else np.inf
+
+        results.append((ch, dist_deg, local_mad_deg, threshold))
+
+    if not results:
+        print(f"    Rolling clip: no valid results — skipping")
+        return flags, 0
+
+    print(f"    {'Chan':>5}  {'Freq(GHz)':>10}  {'Dist(deg)':>10}  "
+          f"{'LocalMAD(deg)':>14}  {'Thresh=s*MAD':>13}  {'Dist/MAD(s)':>12}  {'Status':>8}")
+    print(f"    {'-'*80}")
+
+    new_flags = np.zeros(len(gains), dtype=bool)
+    for ch, dist_deg, local_mad_deg, threshold in results:
+        flagged = dist_deg > threshold
+        if flagged:
+            new_flags[ch] = True
+        status   = 'FLAGGED' if flagged else 'ok'
+        dist_mad = dist_deg / local_mad_deg if local_mad_deg > 0 else np.inf
+        print(f"    {ch:>5}  {freq_ghz[ch]:>10.4f}  {dist_deg:>10.3f}  "
+              f"{local_mad_deg:>14.3f}  {threshold:>13.3f}  {dist_mad:>12.2f}  {status:>8}")
+
+    n_flagged = int(np.sum(new_flags))
+    flags = flags | new_flags
+    return flags, n_flagged
+
+
+def plot_xf_phase_diagnostic(freq_ghz, chan_freq_xf_ghz,
+                              pre_pi_gains_per_scan, resolved_gains_per_scan,
+                              flagged_gains_per_scan, poly_coeffs_per_scan,
+                              final_gains_per_scan, scan_numbers, output_dir):
+    """
+    Four-panel diagnostic plot of XF gains through the full processing pipeline.
+
+    Panel 1: Raw CASA polcal output (before ±π resolution) — shows the
+             inherent degeneracy; two clusters of points ±π apart are expected.
+    Panel 2: After ±π resolution — one global sign chosen per scan based on
+             EVPA comparison; points should now form a coherent spectrum.
+    Panel 3: After sigma clipping — surviving channels in scan colour,
+             newly flagged channels as red crosses, converged polynomial
+             overlaid as a solid line.
+    Panel 4: Final averaged solution mapped onto xftab frequency grid.
+
+    Inputs:
+        freq_ghz               : float array (nchan,)
+        chan_freq_xf_ghz       : float array (n_xf,)
+        pre_pi_gains_per_scan  : dict {scan: complex (nchan,)} — raw CASA polcal
+        resolved_gains_per_scan: dict {scan: complex (nchan,)} — after ±π resolution
+        flagged_gains_per_scan : dict {scan: (complex gains, bool flags)} — after clipping
+        poly_coeffs_per_scan   : dict {scan: (p_real, p_imag) or (None, None)}
+        final_gains_per_scan   : dict {scan: complex (n_xf,)} — CASA-convention (conj)
+        scan_numbers           : array
+        output_dir             : str
     """
     n_scans = len(scan_numbers)
-    colors = plt.cm.tab10(np.linspace(0, 1, min(n_scans, 10)))
-    
-    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 12), sharex=True)
-    
-    # Panel 1: Cross-hand flux with flagging
-    for scan_idx in range(n_scans):
+    colors = ['C0'] if n_scans == 1 else plt.cm.tab10(np.linspace(0, 1, min(n_scans, 10)))
+
+    fig, axes = plt.subplots(4, 1, figsize=(14, 16), sharex=True,
+                             constrained_layout=True)
+
+    # Collect panel 4 phases for zoom
+    p3_unflagged_phases = []
+    p4_phases = []
+
+    for scan_idx, scan in enumerate(scan_numbers):
         color = colors[scan_idx % len(colors)]
-        label = f'Scan {scan_numbers[scan_idx]}'
-        
-        crosshand_flux = np.sqrt(U_scans[scan_idx]**2 + V_scans[scan_idx]**2)
-        sol_labels = selected_solution_scans[scan_idx]
-        
-        # Good data
-        good_mask = (sol_labels != 'outlier') & (sol_labels != '') & np.isfinite(crosshand_flux)
-        if np.any(good_mask):
-            ax1.plot(freq_ghz[good_mask], crosshand_flux[good_mask], '.', color=color, alpha=0.6, 
-                    label=label, markersize=4)
-        
-        # Flagged data
-        flagged_mask = (sol_labels == 'outlier') & np.isfinite(crosshand_flux)
-        if np.any(flagged_mask):
-            ax1.plot(freq_ghz[flagged_mask], crosshand_flux[flagged_mask], 'x', color='red', 
-                    alpha=0.6, markersize=4)
-    
-    # Add threshold line
-    ax1.axhline(min_flux, color='gray', linestyle='--', alpha=0.7, linewidth=1.5,
-                label=f'Threshold ({min_flux:.3f} Jy)')
-    
-    ax1.set_ylabel('Cross-hand Flux [Jy]')
-    ax1.set_title('Cross-hand Flux √(U² + V²)')
-    ax1.legend(fontsize=8, ncol=min(3, n_scans))
-    ax1.grid(True, alpha=0.3)
-    
-    # Panel 2: Raw cross-hand phase with flagging
-    for scan_idx in range(n_scans):
-        color = colors[scan_idx % len(colors)]
-        rho_deg = np.degrees(rho_raw_scans[scan_idx])
-        sol_labels = selected_solution_scans[scan_idx]
-        
-        # Good data
-        good_mask = (sol_labels != 'outlier') & (sol_labels != '') & np.isfinite(rho_deg)
-        if np.any(good_mask):
-            ax2.plot(freq_ghz[good_mask], rho_deg[good_mask], '.', color=color, alpha=0.6, markersize=4)
-        
-        # Flagged data
-        flagged_mask = (sol_labels == 'outlier') & np.isfinite(rho_deg)
-        if np.any(flagged_mask):
-            ax2.plot(freq_ghz[flagged_mask], rho_deg[flagged_mask], 'x', color='red', 
-                    alpha=0.6, markersize=4)
-    
-    ax2.set_ylabel('Raw ρ [deg]')
-    ax2.set_title('Raw Cross-hand Phase: ρ = arctan2(-V, U)')
-    ax2.grid(True, alpha=0.3)
-    
-    # Panel 3: Final cross-hand phase with flagging
-    # Check if scan-averaged mode (all freq_averaged_data are same object)
-    is_scan_averaged = False
-    if len(freq_averaged_data_scans) > 1 and freq_averaged_data_scans[0] is not None:
-        is_scan_averaged = all(freq_averaged_data_scans[i] is freq_averaged_data_scans[0] 
-                               for i in range(1, len(freq_averaged_data_scans)))
-    
-    # Plot per-channel data for each scan
-    for scan_idx in range(n_scans):
-        color = colors[scan_idx % len(colors)]
-        rho_final_deg = np.degrees(rho_final_scans[scan_idx])
-        sol_labels = selected_solution_scans[scan_idx]
-        
-        # Unflagged (good) points
-        good_mask = (sol_labels != 'outlier') & (sol_labels != '') & np.isfinite(rho_final_deg)
-        if np.any(good_mask):
-            ax3.scatter(freq_ghz[good_mask], rho_final_deg[good_mask], 
-                       c=[color], s=20, alpha=0.7, marker='o', edgecolors='black', linewidths=0.5)
-        
-        # Flagged (outlier) points
-        outlier_mask = (sol_labels == 'outlier') & np.isfinite(rho_final_deg)
-        if np.any(outlier_mask):
-            ax3.scatter(freq_ghz[outlier_mask], rho_final_deg[outlier_mask], 
-                       c='red', s=30, alpha=0.8, marker='x', linewidths=1.5)
-    
-    # Plot frequency-averaged solution
-    if is_scan_averaged and freq_averaged_data_scans[0] is not None:
-        # SCAN-AVERAGED MODE: Plot once in BLACK
-        avg_data = freq_averaged_data_scans[0]
-        avg_freq = avg_data['freq']
-        avg_rho_deg = avg_data['rho_deg']
-        valid_avg = np.isfinite(avg_rho_deg)
-        
-        # Plot complete line
-        ax3.plot(avg_freq[valid_avg], avg_rho_deg[valid_avg], 
-                linestyle='-', color='black', linewidth=2, alpha=0.9)
-        
-        if 'extrapolated' in avg_data:
-            extrap_bins = avg_data['extrapolated']
-            
-            # Filled diamonds for good bins
-            good_bins = valid_avg & ~extrap_bins
-            if np.any(good_bins):
-                ax3.scatter(avg_freq[good_bins], avg_rho_deg[good_bins], 
-                           marker='D', s=64, color='black', edgecolors='black', 
-                           linewidths=0.5, zorder=5)
-            
-            # Open diamonds for extrapolated bins
-            extrap_bins_plot = valid_avg & extrap_bins
-            if np.any(extrap_bins_plot):
-                ax3.scatter(avg_freq[extrap_bins_plot], avg_rho_deg[extrap_bins_plot],
-                           marker='D', s=64, facecolors='none', edgecolors='black',
-                           linewidths=2, zorder=5)
-        else:
-            # No extrapolation info
-            ax3.scatter(avg_freq[valid_avg], avg_rho_deg[valid_avg],
-                       marker='D', s=64, color='black', edgecolors='black',
-                       linewidths=0.5, zorder=5)
-    else:
-        # PER-SCAN MODE: Plot each scan in its color
-        for scan_idx in range(n_scans):
-            if freq_averaged_data_scans[scan_idx] is not None:
-                color = colors[scan_idx % len(colors)]
-                avg_data = freq_averaged_data_scans[scan_idx]
-                avg_freq = avg_data['freq']
-                avg_rho_deg = avg_data['rho_deg']
-                valid_avg = np.isfinite(avg_rho_deg)
-                
-                # Plot complete line
-                ax3.plot(avg_freq[valid_avg], avg_rho_deg[valid_avg], 
-                        linestyle='-', color=color, linewidth=2, alpha=0.9)
-                
-                if 'extrapolated' in avg_data:
-                    extrap_bins = avg_data['extrapolated']
-                    
-                    # Filled diamonds for good bins
-                    good_bins = valid_avg & ~extrap_bins
-                    if np.any(good_bins):
-                        ax3.scatter(avg_freq[good_bins], avg_rho_deg[good_bins], 
-                                   marker='D', s=64, color=color, edgecolors='black', 
-                                   linewidths=0.5, zorder=5)
-                    
-                    # Open diamonds for extrapolated bins
-                    extrap_bins_plot = valid_avg & extrap_bins
-                    if np.any(extrap_bins_plot):
-                        ax3.scatter(avg_freq[extrap_bins_plot], avg_rho_deg[extrap_bins_plot],
-                                   marker='D', s=64, facecolors='none', edgecolors=color,
-                                   linewidths=2, zorder=5)
-                else:
-                    # No extrapolation info
-                    ax3.scatter(avg_freq[valid_avg], avg_rho_deg[valid_avg],
-                               marker='D', s=64, color=color, edgecolors='black',
-                               linewidths=0.5, zorder=5)
-    
-    # Add legend elements
-    legend_elements = [
-        Line2D([0], [0], marker='o', color='w', markerfacecolor='gray', 
-               markeredgecolor='black', markersize=8, label='Good'),
-        Line2D([0], [0], marker='x', color='w', markerfacecolor='red', 
-               markeredgecolor='red', markersize=8, label='Flagged', linewidth=1.5),
-        Line2D([0], [0], marker='D', color='gray', markerfacecolor='gray',
-               markeredgecolor='black', markersize=8, linestyle='-', linewidth=2, 
-               label='Freq. Averaged'),
-        Line2D([0], [0], marker='D', color='w', markerfacecolor='none',
-               markeredgecolor='gray', markersize=8, markeredgewidth=2, 
-               label='Extrapolated')
+        label = f'Scan {scan}' if n_scans > 1 else None
+
+        # --- Panel 1: raw CASA polcal (before ±π resolution) ---
+        pre_g = pre_pi_gains_per_scan[scan]
+        valid_pre = np.isfinite(pre_g)
+        axes[0].plot(freq_ghz[valid_pre], np.degrees(np.angle(pre_g[valid_pre])),
+                     '.', color=color, alpha=0.85, markersize=6, label=label)
+
+        # --- Panel 2: after ±π resolution, flagged channels highlighted ---
+        res_g = resolved_gains_per_scan[scan]
+        valid_res = np.isfinite(res_g)
+        gains_fl, flags_fl, global_fl, poly_fl, roll_fl = flagged_gains_per_scan[scan]
+        will_be_flagged = (global_fl | poly_fl | roll_fl) & valid_res
+        stays_good = valid_res & ~will_be_flagged
+
+        axes[1].plot(freq_ghz[stays_good], np.degrees(np.angle(res_g[stays_good])),
+                     '.', color=color, alpha=0.85, markersize=6, label=label)
+        if np.any(will_be_flagged & global_fl):
+            axes[1].plot(freq_ghz[will_be_flagged & global_fl],
+                         np.degrees(np.angle(res_g[will_be_flagged & global_fl])),
+                         'D', color='darkorange', alpha=0.8, markersize=6,
+                         label='Will be global-clipped' if scan_idx == 0 else None)
+        if np.any(will_be_flagged & poly_fl):
+            axes[1].plot(freq_ghz[will_be_flagged & poly_fl],
+                         np.degrees(np.angle(res_g[will_be_flagged & poly_fl])),
+                         'x', color='red', alpha=0.8, markersize=6, linewidth=0.8,
+                         label='Will be poly-clipped' if scan_idx == 0 else None)
+        if np.any(will_be_flagged & roll_fl):
+            axes[1].plot(freq_ghz[will_be_flagged & roll_fl],
+                         np.degrees(np.angle(res_g[will_be_flagged & roll_fl])),
+                         '^', color='magenta', alpha=0.8, markersize=6,
+                         label='Will be MAD-clipped' if scan_idx == 0 else None)
+
+        # --- Panel 3: after sigma clipping — surviving channels + flagged markers ---
+        good = ~flags_fl & np.isfinite(gains_fl)
+        good_phases = np.degrees(np.angle(gains_fl[good]))
+        axes[2].plot(freq_ghz[good], good_phases,
+                     '.', color=color, alpha=0.85, markersize=6, label=label)
+        p3_unflagged_phases.extend(good_phases)
+
+        # Global clip: orange diamonds
+        global_bad = global_fl & np.isfinite(gains_fl)
+        if np.any(global_bad):
+            axes[2].plot(freq_ghz[global_bad], np.degrees(np.angle(gains_fl[global_bad])),
+                         'D', color='darkorange', alpha=0.8, markersize=6,
+                         linewidth=0.8,
+                         label=f'Global clip ({int(np.sum(global_bad))} ch)'
+                               if scan_idx == 0 else None)
+
+        # Poly clip: red crosses
+        poly_bad = poly_fl & np.isfinite(gains_fl)
+        if np.any(poly_bad):
+            axes[2].plot(freq_ghz[poly_bad], np.degrees(np.angle(gains_fl[poly_bad])),
+                         'x', color='red', alpha=0.8, markersize=6,
+                         linewidth=0.8,
+                         label=f'Poly clip ({int(np.sum(poly_bad))} ch)'
+                               if scan_idx == 0 else None)
+
+        # Rolling MAD clip: magenta triangles
+        roll_bad = roll_fl & np.isfinite(gains_fl)
+        if np.any(roll_bad):
+            axes[2].plot(freq_ghz[roll_bad], np.degrees(np.angle(gains_fl[roll_bad])),
+                         '^', color='magenta', alpha=0.8, markersize=6,
+                         linewidth=0.8,
+                         label=f'MAD clip ({int(np.sum(roll_bad))} ch)'
+                               if scan_idx == 0 else None)
+
+        # Poly fit overlay: black, highest zorder, spans full freq range
+        p_real, p_imag = poly_coeffs_per_scan[scan]
+        if p_real is not None and p_imag is not None:
+            freq_poly = np.linspace(freq_ghz.min(), freq_ghz.max(), 1000)
+            poly_complex = np.polyval(p_real, freq_poly) + 1j * np.polyval(p_imag, freq_poly)
+            poly_phase_deg = np.degrees(np.angle(poly_complex))
+            axes[2].plot(freq_poly, poly_phase_deg,
+                         '-', color='black', linewidth=2.0, zorder=100,
+                         label='Poly fit' if scan_idx == 0 else None)
+
+        # --- Panel 4: final averaged solution ---
+        final_g = final_gains_per_scan[scan]
+        valid_final = np.isfinite(final_g)
+        final_phases = np.degrees(np.angle(final_g[valid_final]))
+        axes[3].plot(chan_freq_xf_ghz[valid_final], final_phases,
+                     '-o', color=color, alpha=0.8, markersize=6,
+                     linewidth=1, label=label)
+        p4_phases.extend(final_phases)
+
+    titles = [
+        'Raw CASA polcal Xf (before ±π resolution)',
+        'After ±π resolution (◆ = will be global-clipped, × = will be poly-clipped)',
+        'After sigma clipping (◆ = global, × = poly, ▲ = MAD clip, black line = polynomial)',
+        'Final averaged XF solution (xftab)',
     ]
-    ax3.legend(handles=legend_elements, loc='upper right', fontsize=8)
-    
-    ax3.set_xlabel('Frequency [GHz]')
-    ax3.set_ylabel('Final ρ [deg]')
-    ax3.set_title('Final Cross-hand Phase (±π resolved, outliers flagged)')
-    ax3.grid(True, alpha=0.3)
-    
-    # Adjust panel 3 (final rho) to zoom on unflagged data range
-    all_final_rho_deg = []
-    for scan_idx in range(n_scans):
-        rho_final_deg = np.degrees(rho_final_scans[scan_idx])
-        sol_labels = selected_solution_scans[scan_idx]
-        good_mask = (sol_labels != 'outlier') & (sol_labels != '') & np.isfinite(rho_final_deg)
-        if np.any(good_mask):
-            all_final_rho_deg.extend(rho_final_deg[good_mask])
-    
-    if len(all_final_rho_deg) > 0:
-        rho_min = np.min(all_final_rho_deg)
-        rho_max = np.max(all_final_rho_deg)
-        rho_range = rho_max - rho_min
-        margin = rho_range * 0.1 if rho_range > 0 else 10
-        ax3.set_ylim(rho_min - margin, rho_max + margin)
-    
-    plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'final_rho_values.png'), dpi=150)
+    for ax, title in zip(axes, titles):
+        ax.set_ylabel('XF Phase [deg]')
+        ax.set_title(title)
+        ax.grid(True, alpha=0.3)
+        ax.set_ylim(-190, 190)
+
+    # Panel 3: zoom to unflagged data ± 10% padding
+    if len(p3_unflagged_phases) > 0:
+        p3_min = np.nanmin(p3_unflagged_phases)
+        p3_max = np.nanmax(p3_unflagged_phases)
+        p3_pad = (p3_max - p3_min) * 0.10
+        axes[2].set_ylim(p3_min - p3_pad, p3_max + p3_pad)
+
+    # Panel 4: zoom to valid averaged data ± 10% padding
+    if len(p4_phases) > 0:
+        p4_min = np.nanmin(p4_phases)
+        p4_max = np.nanmax(p4_phases)
+        p4_pad = max((p4_max - p4_min) * 0.10, 2.0)  # minimum 2° padding
+        axes[3].set_ylim(p4_min - p4_pad, p4_max + p4_pad)
+
+    axes[3].set_xlabel('Frequency [GHz]')
+    axes[3].set_xlim(freq_ghz.min(), freq_ghz.max())
+
+    # Legends
+    if n_scans > 1:
+        for ax in (axes[0], axes[1], axes[3]):
+            ax.legend(fontsize=8, ncol=min(3, n_scans))
+    # Panel 3 always gets a legend (flagged marker + poly fit lines)
+    axes[2].legend(fontsize=8, ncol=min(3, n_scans + 1))
+
+    plt.savefig(os.path.join(output_dir, 'xf_phase_diagnostic.png'), dpi=150)
+    plt.close(fig)
+
+
+def plot_derotated_angle_residuals(freq_ghz, Q_scans, U_scans, V_scans,
+                                   resolved_gains_per_scan, raw_flags_per_scan,
+                                   chi_deg_scans, best_rm_per_scan,
+                                   target_polang_array, scan_numbers, output_dir,
+                                   filename='derotated_angle_residuals.png',
+                                   flag_override=None, per_ch_rm_per_scan=None):
+    """
+    Three-panel diagnostic plot of de-rotated polarization angle after ±π resolution.
+
+    Panel 1: De-rotated EVPA vs frequency, overlaid with target.
+    Panel 2: Residual deviation (EVPA − target) vs frequency, wrapped to (−90, 90].
+    Panel 3: Histogram of EVPA residuals centred on zero.
+
+    flag_override      : dict {scan: bool array} — post-clipping flags for stage 3.
+    per_ch_rm_per_scan : dict {scan: float array (nchan,)} — per-channel fine grid RM.
+                         If supplied, Faraday de-rotation uses the per-channel value
+                         rather than the single best_rm. Falls back to best_rm_per_scan
+                         for channels where per_ch_rm is NaN.
+    """
+    c = 2.998e8
+    n_scans = len(scan_numbers)
+    colors = ['C0'] if n_scans == 1 else plt.cm.tab10(np.linspace(0, 1, min(n_scans, 10)))
+
+    fig, axes = plt.subplots(3, 1, figsize=(14, 14), constrained_layout=True)
+
+    all_evpa = []
+    all_scan_labels = []
+
+    for scan_idx, scan in enumerate(scan_numbers):
+        color = colors[scan_idx % len(colors)]
+        label = f'Scan {scan}' if n_scans > 1 else None
+
+        g = resolved_gains_per_scan[scan]
+        flags = flag_override[scan] if flag_override is not None else raw_flags_per_scan[scan]
+        valid = (~flags & np.isfinite(g) &
+                 np.isfinite(Q_scans[scan_idx]) & np.isfinite(U_scans[scan_idx]) &
+                 np.isfinite(V_scans[scan_idx]))
+
+        if np.sum(valid) < 5:
+            print(f"  WARNING: Scan {scan} has fewer than 5 valid channels for residuals plot")
+            continue
+
+        freq_hz = freq_ghz[valid] * 1e9
+        lambda_sq = (c / freq_hz) ** 2
+
+        Q_v = Q_scans[scan_idx][valid]
+        U_v = U_scans[scan_idx][valid]
+        V_v = V_scans[scan_idx][valid]
+        g_v = g[valid]
+
+        # Apply XF correction using gain phase directly
+        rho = np.angle(g_v)
+        U_xh, V_xh = correct_crosshand_phase(U_v, V_v, rho)
+
+        # Parallactic angle correction (feed → sky)
+        Q_sky, U_sky = correct_parallactic_angle(Q_v, U_xh, chi_deg_scans[scan_idx])
+
+        # Faraday de-rotation: per-channel RM if available, else global best_rm
+        if per_ch_rm_per_scan is not None:
+            rm_ch = per_ch_rm_per_scan[scan][valid]
+            fallback = ~np.isfinite(rm_ch)
+            rm_ch[fallback] = best_rm_per_scan[scan]
+            # Compute per-channel EVPA using per-channel RM
+            evpa_deg = np.array([
+                calculate_derotated_angle(
+                    Q_sky[i:i+1], U_sky[i:i+1], rm_ch[i], lambda_sq[i:i+1]
+                )[0]
+                for i in range(len(rm_ch))
+            ])
+        else:
+            evpa_deg = calculate_derotated_angle(Q_sky, U_sky, best_rm_per_scan[scan], lambda_sq)
+
+        target_v = target_polang_array[valid]
+        deviation = (evpa_deg - target_v + 90) % 180 - 90
+
+        axes[0].plot(freq_ghz[valid], evpa_deg, '.', color=color,
+                     alpha=0.85, markersize=6, label=label)
+        axes[1].plot(freq_ghz[valid], deviation, '.', color=color,
+                     alpha=0.85, markersize=6, label=label)
+
+        all_evpa.extend(evpa_deg)
+        all_scan_labels.extend([scan] * len(evpa_deg))
+
+    axes[0].plot(freq_ghz, target_polang_array, 'k--', linewidth=1.5,
+                 alpha=0.8, label='Target EVPA')
+    axes[1].axhline(0, color='black', linestyle='--', linewidth=1.5, alpha=0.8)
+
+    axes[0].set_ylabel('De-rotated EVPA [deg]')
+    axes[0].set_title('De-rotated polarization angle after XF + parang + Faraday correction')
+    axes[0].grid(True, alpha=0.3)
+    axes[0].legend(fontsize=8, ncol=min(3, n_scans + 1))
+
+    axes[1].set_ylabel('EVPA − Target [deg]')
+    axes[1].set_xlabel('Frequency [GHz]')
+    axes[1].set_title('Residual deviation from target EVPA (should be ≈ 0)')
+    axes[1].grid(True, alpha=0.3)
+
+    # Panel 3: histogram of residuals (EVPA − target), centred on zero
+    all_evpa = np.array(all_evpa)
+    all_scan_labels = np.array(all_scan_labels)
+
+    # Recompute residuals for the histogram
+    all_residuals = []
+    all_residual_labels = []
+    for scan_idx, scan in enumerate(scan_numbers):
+        g = resolved_gains_per_scan[scan]
+        flags = flag_override[scan] if flag_override is not None else raw_flags_per_scan[scan]
+        valid = (~flags & np.isfinite(g) &
+                 np.isfinite(Q_scans[scan_idx]) & np.isfinite(U_scans[scan_idx]) &
+                 np.isfinite(V_scans[scan_idx]))
+        if np.sum(valid) < 5:
+            continue
+        freq_hz = freq_ghz[valid] * 1e9
+        lambda_sq = (c / freq_hz) ** 2
+        Q_v = Q_scans[scan_idx][valid]
+        U_v = U_scans[scan_idx][valid]
+        V_v = V_scans[scan_idx][valid]
+        g_v = g[valid]
+        rho = np.angle(g_v)
+        U_xh, V_xh = correct_crosshand_phase(U_v, V_v, rho)
+        Q_sky, U_sky = correct_parallactic_angle(Q_v, U_xh, chi_deg_scans[scan_idx])
+        if per_ch_rm_per_scan is not None:
+            rm_ch = per_ch_rm_per_scan[scan][valid].copy()
+            rm_ch[~np.isfinite(rm_ch)] = best_rm_per_scan[scan]
+            evpa = np.array([
+                calculate_derotated_angle(
+                    Q_sky[i:i+1], U_sky[i:i+1], rm_ch[i], lambda_sq[i:i+1]
+                )[0]
+                for i in range(len(rm_ch))
+            ])
+        else:
+            evpa = calculate_derotated_angle(Q_sky, U_sky, best_rm_per_scan[scan], lambda_sq)
+        residual = (evpa - target_polang_array[valid] + 90) % 180 - 90
+        all_residuals.extend(residual)
+        all_residual_labels.extend([scan] * len(residual))
+
+    all_residuals = np.array(all_residuals)
+    all_residual_labels = np.array(all_residual_labels)
+
+    if len(all_residuals) > 0:
+        unique_scans = np.unique(all_residual_labels)
+        for i, scan in enumerate(unique_scans):
+            color = colors[i % len(colors)]
+            mask = all_residual_labels == scan
+            rm = best_rm_per_scan[scan]
+            axes[2].hist(all_residuals[mask], bins=50, alpha=0.6,
+                         label=f'Scan {scan} (RM={rm:.2f} rad/m²)',
+                         color=color, edgecolor='black', linewidth=0.5)
+
+        mean_res  = float(np.mean(all_residuals))
+        median_res = float(np.median(all_residuals))
+        std_res   = float(np.std(all_residuals))
+
+        axes[2].axvline(0, color='black', linestyle='--', linewidth=2,
+                        label='Zero (perfect correction)', zorder=10)
+        axes[2].axvline(mean_res, color='green', linestyle=':', linewidth=2,
+                        label=f'Mean = {mean_res:+.2f}°', alpha=0.8)
+
+        textstr = (f'Mean:   {mean_res:+.2f}°\n'
+                   f'Median: {median_res:+.2f}°\n'
+                   f'Std:    {std_res:.2f}°\n'
+                   f'N: {len(all_residuals)}')
+        props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
+        axes[2].text(0.02, 0.98, textstr, transform=axes[2].transAxes, fontsize=10,
+                     verticalalignment='top', bbox=props)
+
+        print(f"  EVPA residual statistics:")
+        print(f"    Mean={mean_res:+.2f}°, Median={median_res:+.2f}°, Std={std_res:.2f}°")
+
+    axes[2].set_xlabel('EVPA − Target [deg]')
+    axes[2].set_ylabel('Count')
+    axes[2].set_title('Histogram of EVPA residuals (should be centred on 0)')
+    axes[2].legend(fontsize=8)
+    axes[2].grid(True, alpha=0.3)
+
+    plt.savefig(os.path.join(output_dir, filename), dpi=150)
+    plt.close(fig)
+
+
+def plot_raw_xf_phase_panels(freq_ghz, raw_gains_per_scan, raw_flags_per_scan,
+                              pre_pi_gains_per_scan, best_sign_per_scan,
+                              Q_scans, U_scans, V_scans, chi_deg_scans,
+                              best_rm_per_scan, target_polang_array,
+                              scan_numbers, output_dir):
+    """
+    Stage 1 three-panel diagnostic.
+
+    Panel 1: Raw XF phase vs frequency (pre-resolution)
+    Panel 2: Accepted per-channel residuals (EVPA_accepted − target) vs frequency
+    Panel 3: Rejected per-channel residuals vs frequency, y-range locked to panel 2.
+             Inset (top-right) shows full y-range so divergence is visible even
+             when main panel is clipped. Title notes ideal case: blank main panel.
+    """
+    c = 2.998e8
+    n_scans = len(scan_numbers)
+    colors = ['C0'] if n_scans == 1 else plt.cm.tab10(np.linspace(0, 1, min(n_scans, 10)))
+
+    fig, axes = plt.subplots(3, 1, figsize=(14, 14), sharex=True,
+                             constrained_layout=True)
+
+    rej_all_freq = []
+    rej_all_dev  = []
+    rej_all_col  = []
+
+    for scan_idx, scan in enumerate(scan_numbers):
+        color = colors[scan_idx % len(colors)]
+        label = f'Scan {scan}' if n_scans > 1 else None
+
+        g_pre  = pre_pi_gains_per_scan[scan]   # raw, before per-channel sign
+        g_acc  = raw_gains_per_scan[scan]       # after per-channel sign
+        flags  = raw_flags_per_scan[scan]
+        valid  = (~flags & np.isfinite(g_pre) &
+                  np.isfinite(Q_scans[scan_idx]) & np.isfinite(U_scans[scan_idx]) &
+                  np.isfinite(V_scans[scan_idx]))
+
+        if np.sum(valid) < 5:
+            continue
+
+        # Panel 1: raw phase
+        axes[0].plot(freq_ghz[valid], np.degrees(np.angle(g_pre[valid])),
+                     '.', color=color, alpha=0.85, markersize=6, label=label)
+
+        freq_hz   = freq_ghz[valid] * 1e9
+        lambda_sq = (c / freq_hz) ** 2
+        Q_v = Q_scans[scan_idx][valid]
+        U_v = U_scans[scan_idx][valid]
+        V_v = V_scans[scan_idx][valid]
+        target_v = target_polang_array[valid]
+        rm = best_rm_per_scan[scan]
+
+        # Accepted: use per-channel signed gains
+        g_acc_v = g_acc[valid]
+        rho_acc = np.angle(g_acc_v)
+        U_xh, V_xh = correct_crosshand_phase(U_v, V_v, rho_acc)
+        Q_sky, U_sky = correct_parallactic_angle(Q_v, U_xh, chi_deg_scans[scan_idx])
+        evpa_acc = calculate_derotated_angle(Q_sky, U_sky, rm, lambda_sq)
+        dev_acc  = (evpa_acc - target_v + 90) % 180 - 90
+        axes[1].plot(freq_ghz[valid], dev_acc, '.', color=color,
+                     alpha=0.85, markersize=6, label=label)
+
+        # Rejected: negate per-channel signed gains
+        rho_rej = np.angle(-g_acc_v)
+        U_xh, V_xh = correct_crosshand_phase(U_v, V_v, rho_rej)
+        Q_sky, U_sky = correct_parallactic_angle(Q_v, U_xh, chi_deg_scans[scan_idx])
+        evpa_rej = calculate_derotated_angle(Q_sky, U_sky, rm, lambda_sq)
+        dev_rej  = (evpa_rej - target_v + 90) % 180 - 90
+        axes[2].plot(freq_ghz[valid], dev_rej, '.', color=color,
+                     alpha=0.85, markersize=6, label=label)
+
+        rej_all_freq.extend(freq_ghz[valid])
+        rej_all_dev.extend(dev_rej)
+        rej_all_col.extend([color] * int(np.sum(valid)))
+
+    axes[0].set_ylabel('XF Phase [deg]')
+    axes[0].set_title('Stage 1: Raw CASA polcal Xf phase (before ±π resolution)')
+    axes[0].grid(True, alpha=0.3)
+    if n_scans > 1:
+        axes[0].legend(fontsize=8, ncol=min(3, n_scans))
+
+    axes[1].axhline(0, color='black', linestyle='--', linewidth=1.5, alpha=0.7)
+    axes[1].set_ylabel('EVPA − Target [deg]')
+    axes[1].set_title('Stage 1: Accepted per-channel residuals (should cluster near 0)')
+    axes[1].grid(True, alpha=0.3)
+
+    # Lock rejected y-range to accepted; add inset showing full range
+    acc_ylim = axes[1].get_ylim()
+    axes[2].axhline(0, color='black', linestyle='--', linewidth=1.5, alpha=0.7)
+    axes[2].set_ylim(acc_ylim)
+    axes[2].set_ylabel('EVPA − Target [deg]')
+    axes[2].set_xlabel('Frequency [GHz]')
+    axes[2].set_title(
+        'Stage 1: Rejected per-channel residuals (same y-scale; ideally blank — '
+        'divergence clipped to accepted range, see inset for full range)')
+    axes[2].grid(True, alpha=0.3)
+
+    # Inset: full y-range of rejected residuals (top-right of panel 3)
+    if len(rej_all_dev) > 0:
+        ax_inset = axes[2].inset_axes([0.62, 0.55, 0.36, 0.42])
+        for i in range(len(rej_all_freq)):
+            ax_inset.plot(rej_all_freq[i], rej_all_dev[i], '.',
+                          color=rej_all_col[i], alpha=0.3, markersize=6)
+        ax_inset.axhline(0, color='black', linestyle='--', linewidth=1, alpha=0.6)
+        ax_inset.set_title('Full range', fontsize=7)
+        ax_inset.tick_params(labelsize=6)
+        ax_inset.grid(True, alpha=0.2)
+
+    plt.savefig(os.path.join(output_dir, 'xf_phase_stage1_raw.png'), dpi=150)
+    plt.close(fig)
+
+
+def print_per_channel_resolution(freq_ghz, signed_gains, pre_pi_gains, flags,
+                                  Q_scan, U_scan, V_scan, chi_deg,
+                                  best_rm, target_polang_array):
+    """
+    Print per-channel resolution table after per-channel ±π decision is made.
+
+    For every valid channel prints: frequency, expected EVPA, measured EVPA
+    for the accepted (signed) and rejected (negated) solutions, and the delta.
+    """
+    c = 2.998e8
+    valid = (~flags & np.isfinite(signed_gains) &
+             np.isfinite(Q_scan) & np.isfinite(U_scan) & np.isfinite(V_scan))
+
+    if np.sum(valid) < 1:
+        print("    (no valid channels)")
+        return
+
+    freq_hz   = freq_ghz[valid] * 1e9
+    lambda_sq = (c / freq_hz) ** 2
+    Q_v  = Q_scan[valid]
+    U_v  = U_scan[valid]
+    V_v  = V_scan[valid]
+    g_acc = signed_gains[valid]
+    target_v = target_polang_array[valid]
+    freq_v   = freq_ghz[valid]
+
+    results = {}
+    for label, g_use in [('acc', g_acc), ('rej', -g_acc)]:
+        rho = np.angle(g_use)
+        U_xh, V_xh = correct_crosshand_phase(U_v, V_v, rho)
+        Q_sky, U_sky = correct_parallactic_angle(Q_v, U_xh, chi_deg)
+        evpa = calculate_derotated_angle(Q_sky, U_sky, best_rm, lambda_sq)
+        delta = (evpa - target_v + 90) % 180 - 90
+        results[label] = (evpa, delta)
+
+    evpa_acc, delta_acc = results['acc']
+    evpa_rej, delta_rej = results['rej']
+
+    # Per-channel XF phase (from signed gains) and sign (+1 or -1)
+    g_pre_v = pre_pi_gains[valid]
+    xf_phase_deg = np.degrees(np.angle(g_acc))
+    # Sign = +1 if accepted gain matches pre-pi gain, -1 if negated
+    sign_per_ch = np.where(np.real(g_acc * np.conj(g_pre_v)) >= 0, '+1', '-1')
+
+    print(f"\n    {'Chan_freq(GHz)':<16} {'XF_Phase(°)':<13} {'Sign':<6} {'Target(°)':<12} "
+          f"{'Acc_EVPA(°)':<14} {'Acc_Δ(°)':<12} "
+          f"{'Rej_EVPA(°)':<14} {'Rej_Δ(°)':<10}")
+    print(f"    {'-'*97}")
+    for i in range(len(freq_v)):
+        print(f"    {freq_v[i]:<16.4f} {xf_phase_deg[i]:<13.3f} {sign_per_ch[i]:<6} "
+              f"{target_v[i]:<12.3f} "
+              f"{evpa_acc[i]:<14.3f} {delta_acc[i]:<12.3f} "
+              f"{evpa_rej[i]:<14.3f} {delta_rej[i]:<10.3f}")
+
+
+def plot_per_channel_rm_histogram(freq_ghz, per_ch_rm_per_scan, coarse_rm_per_scan,
+                                   raw_flags_per_scan, scan_numbers, output_dir):
+    """
+    Histogram of per-channel adopted RMs from the fine grid search.
+
+    Shows the distribution of per-channel best RMs across all valid channels,
+    with a vertical dashed line at the coarse grid RM for reference, and a
+    dotted line at the per-channel median.
+    """
+    n_scans = len(scan_numbers)
+    colors  = ['C0'] if n_scans == 1 else plt.cm.tab10(np.linspace(0, 1, min(n_scans, 10)))
+
+    fig, ax = plt.subplots(1, 1, figsize=(12, 6), constrained_layout=True)
+
+    for scan_idx, scan in enumerate(scan_numbers):
+        color    = colors[scan_idx % len(colors)]
+        flags    = raw_flags_per_scan[scan]
+        per_ch   = per_ch_rm_per_scan[scan]
+        valid    = ~flags & np.isfinite(per_ch)
+        if not np.any(valid):
+            continue
+
+        rm_vals   = per_ch[valid]
+        coarse_rm = coarse_rm_per_scan[scan]
+        med_rm    = float(np.median(rm_vals))
+        std_rm    = float(np.std(rm_vals))
+
+        ax.hist(rm_vals, bins=40, alpha=0.6, color=color,
+                edgecolor='black', linewidth=0.4,
+                label=f'Scan {scan} (N={int(np.sum(valid))})'
+                      if n_scans > 1 else f'Per-channel RM (N={int(np.sum(valid))})')
+        ax.axvline(coarse_rm, color=color, linestyle='--', linewidth=2,
+                   alpha=0.9,
+                   label=f'Scan {scan} coarse RM = {coarse_rm:.4f} rad/m²'
+                         if n_scans > 1 else f'Coarse RM = {coarse_rm:.4f} rad/m²')
+        ax.axvline(med_rm, color=color, linestyle=':', linewidth=1.5, alpha=0.8,
+                   label=f'Scan {scan} median = {med_rm:.4f} ± {std_rm:.4f} rad/m²'
+                         if n_scans > 1 else f'Median = {med_rm:.4f} ± {std_rm:.4f} rad/m²')
+
+    ax.set_xlabel('Per-channel adopted RM [rad/m²]')
+    ax.set_ylabel('Number of channels')
+    ax.set_title('Per-channel adopted RM distribution (fine grid)\n'
+                 'Dashed = coarse grid RM, Dotted = per-channel median')
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+
+    plt.savefig(os.path.join(output_dir, 'xf_per_channel_rm_histogram.png'), dpi=150)
     plt.close(fig)
 
 
 # ============================
-# MAIN SCRIPT
+# Main Script
 # ============================
-
-# ============================
-# Configuration and Setup
-# ============================
-temp_ms = 'pol_ang_temp.ms'
 xfdir = GAINPLOTS + '/manualXF'
 os.makedirs(xfdir, exist_ok=True)
 
-# ====================================
-# ====================================
-# We apply all calibration solutions up to and including the D-term (leakage)
-# corrections, but NOT the cross-hand phase (XF), since that's what we're solving for.
-# This gives us calibrated I,Q,U,V visibilities with only the XF correction missing.
-
 # Define calibration tables (matching 1GC_05_casa_refcal.py)
-ktab0 = GAINTABLES+'/cal_1GC_'+myms+'.K0'
-bptab0 = GAINTABLES+'/cal_1GC_'+myms+'.B0'
-gtab0 = GAINTABLES+'/cal_1GC_'+myms+'.G0'
-dftab0  = GAINTABLES+'/cal_1GC_'+myms+'.Df0'
+ktab = GAINTABLES + '/cal_1GC_' + myms + '.K'
+bptab = GAINTABLES + '/cal_1GC_' + myms + '.B'
+gptab = GAINTABLES + '/cal_1GC_' + myms + '.Gp'
+gtab = GAINTABLES + '/cal_1GC_' + myms + '.G'
+dftab = GAINTABLES + '/cal_1GC_' + myms + '.Df'
 
-ktab = GAINTABLES+'/cal_1GC_'+myms+'.K'
-bptab = GAINTABLES+'/cal_1GC_'+myms+'.B'
-gtab = GAINTABLES+'/cal_1GC_'+myms+'.G'
-ftab = GAINTABLES+'/cal_1GC_'+myms+'.F'
-dftab  = GAINTABLES+'/cal_1GC_'+myms+'.Df'
+xftab = GAINTABLES + '/cal_1GC_' + myms + '.Xf'
 
-kcross  = GAINTABLES+'/cal_1GC_'+myms+'.KCROSS'
-xftab  = GAINTABLES+'/cal_1GC_'+myms+'.Xf'
+# Apply all calibration except XF (which we are solving for) to write
+# CORRECTED_DATA into myms. IQUV will be read from CORRECTED_DATA directly.
+applycal(vis=myms,
+         field=pacal_name,
+         parang=False,
+         gaintable=[ktab, bptab, gptab, gtab, dftab],
+         gainfield=[pacal_name, bpcal_name, pacal_name, pacal_name, bpcal_name],
+         interp=['linear', 'linear', 'linear', 'linear', 'linear'],
+         flagbackup=False)
 
-# Apply all calibration except cross-hand phase (XF), which is what we're solving for
-applycal(vis = myms,
-        field = pacal_name,
-        parang = True,
-        gaintable = [ktab, bptab, ftab, dftab],
-        gainfield = [pacal_name, bpcal_name, pacal_name, bpcal_name],
-        interp = ['nearest','linear','linear','linear'],
-        flagbackup = False)
-
-# Split out polarization calibrator to temporary MS for analysis
-mstransform(vis = myms,
-        outputvis = temp_ms,
-        field = pacal_name,
-        usewtspectrum = False,
-        datacolumn='corrected')
-
-# ===============================
+# ============================
 # Display Analysis Parameters
-# ===============================
+# ============================
 print("\n=== Cross-Hand Phase (XF) Calibration Parameters ===")
 print(f"Polarization calibrator: {pacal_name}")
 print(f"Known source polarization angle: {XF_TARGET_POLANG}°")
 print(f"Known source rotation measure: {XF_TARGET_RM} rad/m²")
-print(f"RM trial search range: {XF_DELTARM_TRIALS} rad/m² (delta from target)")
-print(f"Channel averaging interval: {XF_CHANINT} channels")
-print(f"Minimum cross-hand flux for valid measurement: {XF_MIN_CROSS_FLUX} Jy")
-print(f"Outlier detection sigma threshold: {XF_SIGMA_CLIP}")
-print(f"Outlier detection window size: {XF_CLIP_WINDOW} channels")
+print(f"RM coarse grid: XF_TARGET_RM + iono_RM ± 2.0 rad/m², step = iono_err/3")
+print(f"RM fine grid: coarse_best ± 0.25 rad/m², step = 0.04 rad/m² (per channel)")
+print(f"Channel averaging interval (polcal solint): {XF_CHANINT} channels")
 print(f"Apply smoothing during table creation: {XF_USE_SMOOTHING}")
 if XF_USE_SMOOTHING:
-    print(f"  Savitzky-Golay filter window: {XF_SAVGOL_WINDOW} (None = auto-calculate)")
+    print(f"  Savitzky-Golay window: {XF_SAVGOL_WINDOW} (None = auto)")
     print(f"  Savitzky-Golay polynomial order: {XF_SAVGOL_POLYORDER}")
-print(f"Gap filling / extrapolation enabled: {XF_EX}")
-if XF_EX:
-    print(f"  Extrapolation bandwidth fraction: {XF_EX_FRAC} ({XF_EX_FRAC*100:.0f}% of good bandwidth)")
-print(f"Generate scan-averaged solution: {XF_AVG_SCAN}")
-print("="*60)
+print(f"Polynomial clip order: {XF_POLY_ORDER} {'(disabled)' if not XF_POLY_ORDER or int(XF_POLY_ORDER) == 0 else ''}")
+print(f"Scan-averaged solution: {XF_AVG_SCAN}")
+print("=" * 60)
 
 # ============================
+# Extract Channel Frequencies
 # ============================
 print("\nExtracting channel frequencies from MS...")
-tb.open(temp_ms + '/SPECTRAL_WINDOW')
+tb.open(myms + '/SPECTRAL_WINDOW')
 chan_freq = tb.getcol('CHAN_FREQ')
 tb.close()
 freq_ghz = (chan_freq / 1.0e9).flatten()
-print(f"Spectral window: {freq_ghz.shape[0]} channels")
-print(f"Frequency range: {freq_ghz.min():.3f} - {freq_ghz.max():.3f} GHz")
-
-# If not specified, calculate from channel interval and total channels
-if XF_MAX_AVG_CHANNELS is None:
-    XF_MAX_AVG_CHANNELS = int(len(chan_freq) / XF_CHANINT)
-    print(f"Frequency averaging: {XF_MAX_AVG_CHANNELS} channels (auto-calculated from N_CHAN/XF_CHANINT)")
-elif not isinstance(XF_MAX_AVG_CHANNELS, int):
-    XF_MAX_AVG_CHANNELS = int(len(chan_freq) / XF_CHANINT)
-    print(f"Frequency averaging: {XF_MAX_AVG_CHANNELS} channels (defaulted to N_CHAN/XF_CHANINT)")
-else:
-    print(f"Frequency averaging: {XF_MAX_AVG_CHANNELS} channels (user-specified)")
+nchan = len(freq_ghz)
+freq_min = freq_ghz.min()
+freq_max = freq_ghz.max()
+print(f"Spectral window: {nchan} channels")
+print(f"Frequency range: {freq_min:.3f} - {freq_max:.3f} GHz")
 
 # ============================
-# Load and Average Visibility Data Per Scan
+# Retrieve Scan Information
 # ============================
-# We load data one scan at a time for memory efficiency, averaging over
-# baselines and time within each scan to produce per-channel Stokes I,Q,U,V.
-# This preserves the scan structure needed for parallactic angle corrections.
-
 print("\nRetrieving scan information from MS...")
-
-msmd.open(temp_ms)
+msmd.open(myms)
 try:
     scan_numbers = msmd.scansforfield(msmd.fieldsforname(pacal_name)[0])
-except:
+except Exception:
     msmd.close()
     sys.exit(f"ERROR: Could not retrieve scans for field {pacal_name}")
 
 print(f"Found {len(scan_numbers)} scan(s) for {pacal_name}: {scan_numbers}")
-
-nchan = len(freq_ghz) 
-print(f"Processing {nchan} frequency channels")
-
+n_scans = len(scan_numbers)
 msmd.close()
 
 # ============================
-# Check for 3C286/J1331 and apply frequency-dependent EVPA model
+# Frequency-Dependent EVPA Model
 # ============================
-use_freq_dependent_evpa = False
-target_polang_array = None
-
-# Check if calibrator is 3C286 or J1331 (case insensitive)
 if '3c286' in pacal_name.lower() or 'j1331' in pacal_name.lower():
-    print("\n" + "="*70)
-    print("DETECTED 3C286 (J1331+3030) - APPLYING FREQUENCY-DEPENDENT EVPA MODEL")
-    print("="*70)
-    print("Using Hugo & Perley (2024) model:")
-    print("  EVPA(ν) = 32.64 - 85.37λ²                              for ν ∈ [1.7, 12] GHz")
-    print("  EVPA(ν) = 29.53 + λ²(4005.88(log₁₀(ν))³ - 39.38)      for ν < 1.7 GHz")
-    print("")
-    
-    use_freq_dependent_evpa = True
+    print("\n" + "=" * 70)
+    print("DETECTED 3C286 (J1331+3030) — APPLYING FREQUENCY-DEPENDENT EVPA MODEL")
+    print("=" * 70)
     target_polang_array = compute_3c286_evpa(freq_ghz)
-    
-    print(f"Computed frequency-dependent EVPA:")
-    print(f"  Frequency range: {freq_ghz.min():.3f} - {freq_ghz.max():.3f} GHz")
-    print(f"  EVPA range: {target_polang_array.min():.2f}° - {target_polang_array.max():.2f}°")
-    print(f"  EVPA at band center ({np.median(freq_ghz):.2f} GHz): {np.median(target_polang_array):.2f}°")
-    
-    # Plot the EVPA model
+    print(f"EVPA range: {target_polang_array.min():.2f}° — {target_polang_array.max():.2f}°")
+    print(f"EVPA at band centre ({np.median(freq_ghz):.2f} GHz): "
+          f"{np.median(target_polang_array):.2f}°")
+
     fig, ax = plt.subplots(1, 1, figsize=(10, 6))
     ax.plot(freq_ghz, target_polang_array, 'b-', linewidth=2, label='3C286 EVPA model')
-    ax.axhline(XF_TARGET_POLANG, color='red', linestyle='--', linewidth=1.5, 
-               alpha=0.7, label=f'Config file value: {XF_TARGET_POLANG}°')
-    ax.set_xlabel('Frequency [GHz]', fontsize=12)
-    ax.set_ylabel('EVPA [deg]', fontsize=12)
-    ax.set_title('3C286 Frequency-Dependent EVPA Model (Perley & Butler 2013)', fontsize=13)
-    ax.legend(fontsize=10)
+    ax.axhline(XF_TARGET_POLANG, color='red', linestyle='--', linewidth=1.5, alpha=0.7,
+               label=f'Config value: {XF_TARGET_POLANG}°')
+    ax.set_xlabel('Frequency [GHz]')
+    ax.set_ylabel('EVPA [deg]')
+    ax.set_title('3C286 Frequency-Dependent EVPA Model (Perley & Butler 2013)')
+    ax.legend()
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
-    
-    model_plot_path = os.path.join(xfdir, '3c286_evpa_model.png')
-    plt.savefig(model_plot_path, dpi=150)
+    plt.savefig(os.path.join(xfdir, '3c286_evpa_model.png'), dpi=150)
     plt.close(fig)
-    print(f"\nSaved EVPA model plot: {model_plot_path}")
-    print("="*70 + "\n")
+    print(f"Saved: {xfdir}/3c286_evpa_model.png\n" + "=" * 70)
 else:
-    print(f"\nUsing constant EVPA from config: {XF_TARGET_POLANG}° (not 3C286/J1331)\n")
+    print(f"\nUsing constant EVPA from config: {XF_TARGET_POLANG}° (not 3C286/J1331)")
     target_polang_array = np.full_like(freq_ghz, XF_TARGET_POLANG)
 
-# Initialize arrays to store scan-averaged visibilities and weights
-# Shape: (N_stokes=4, N_scans, N_channels)
-n_scans = len(scan_numbers)
-vis_avg = np.zeros((4, n_scans, nchan), dtype=complex)
-sigma_proxy = np.zeros((4, n_scans, nchan), dtype=float)
-scan_times = np.zeros(n_scans, dtype=float)
+# ============================
+# Load and Average Visibility Data Per Scan
+# ============================
+# If stokes_perscan.npz already exists from a previous run and is consistent
+# with the current MS (same channel count and scan numbers), load from it
+# directly and skip the expensive per-baseline weighted averaging step.
 
-# Process each scan: average over baselines and time to get per-channel Stokes
-print(f"\nAveraging visibilities per scan (collapse baseline/time axes)...")
-total_rows = 0
-total_unflagged = 0
+stokes_cache_path = os.path.join(xfdir, 'stokes_perscan.npz')
+stokes_cached = False
 
-for scan_idx, scan in enumerate(scan_numbers):
-    # Select this scan from the MS
-    ms.open(temp_ms)
-    ms.selectinit(reset=True)
-    ok = ms.msselect({'field': pacal_name, 'scan': str(scan)})
-    if not ok:
+if os.path.isfile(stokes_cache_path):
+    print(f"\nFound cached Stokes data: {stokes_cache_path}")
+    try:
+        cache = np.load(stokes_cache_path)
+        cached_nchan = int(cache['freq_ghz'].shape[0])
+        cached_scans = cache['scan_numbers']
+        if cached_nchan == nchan and np.array_equal(cached_scans, scan_numbers):
+            scan_times    = cache['scan_times']
+            vis_avg       = cache['vis_avg']          # (4, n_scans, nchan) complex
+            stokes_cached = True
+            print(f"  Cache consistent ({n_scans} scan(s) × {nchan} channels) — "
+                  f"skipping MS visibility loading")
+        else:
+            print(f"  WARNING: Cache mismatch — cached {cached_nchan} ch / "
+                  f"{len(cached_scans)} scan(s) vs current {nchan} ch / "
+                  f"{n_scans} scan(s). Reloading from MS.")
+    except Exception as e:
+        print(f"  WARNING: Failed to load cache ({e}) — reloading from MS")
+
+if not stokes_cached:
+    print(f"\nAveraging visibilities per scan (collapse baseline/time axes)...")
+
+    vis_avg = np.zeros((4, n_scans, nchan), dtype=complex)
+    scan_times = np.zeros(n_scans, dtype=float)
+
+    total_rows = 0
+    total_unflagged = 0
+
+    for scan_idx, scan in enumerate(scan_numbers):
+        ms.open(myms)
+        ms.selectinit(reset=True)
+        ok = ms.msselect({'field': pacal_name, 'scan': str(scan)})
+        if not ok:
+            ms.close()
+            print(f"WARNING: Could not select scan {scan}, skipping")
+            vis_avg[:, scan_idx, :] = np.nan
+            continue
+
+        ms.selectpolarization(['I', 'Q', 'U', 'V'])
+        d = ms.getdata(['corrected_data', 'flag', 'weight_spectrum', 'weight', 'time'])
         ms.close()
-        print(f"WARNING: Could not select scan {scan}, skipping")
-        vis_avg[:, scan_idx, :] = np.nan
-        sigma_proxy[:, scan_idx, :] = np.nan
-        continue
-    
-    # Request Stokes I,Q,U,V data
-    ms.selectpolarization(['I','Q','U','V'])
-    
-    d = ms.getdata(['data', 'flag', 'weight_spectrum', 'weight', 'time'])
-    ms.close()
-    
-    # Verify required data is present
-    # Note: avoid list comprehension here because exec() scoping in Python 3
-    # prevents comprehension sub-scopes from seeing exec'd local variables.
-    missing = []
-    for _k in ('data', 'flag'):
-        if _k not in d:
-            missing.append(_k)
-    if missing:
-        print(f"WARNING: Scan {scan} missing {missing}, skipping")
-        vis_avg[:, scan_idx, :] = np.nan
-        sigma_proxy[:, scan_idx, :] = np.nan
+
+        # corrected_data column carries the pre-XF calibrated visibilities
+        if 'corrected_data' in d:
+            d['data'] = d.pop('corrected_data')
+
+        missing = [k for k in ('data', 'flag') if k not in d]
+        if missing:
+            print(f"WARNING: Scan {scan} missing {missing}, skipping")
+            vis_avg[:, scan_idx, :] = np.nan
+            del d
+            continue
+
+        data_scan = d['data']
+        raw_flag_scan = np.asarray(d['flag'])
+        time_scan = d['time']
+        ncorr, nchan_scan, nrow_scan = data_scan.shape
+
+        if ncorr != 4:
+            print(f"WARNING: Scan {scan} has {ncorr} correlations (expected 4), skipping")
+            vis_avg[:, scan_idx, :] = np.nan
+            del d, data_scan, raw_flag_scan, time_scan
+            continue
+
+        have_wspec = 'weight_spectrum' in d
+        flag_iquv_scan = build_iquv_flag(raw_flag_scan, nchan_scan, nrow_scan)
+        W_scan = build_iquv_weights(d, have_wspec, nchan_scan, nrow_scan)
         del d
-        continue
-    
-    data_scan = d['data']
-    raw_flag_scan = np.asarray(d['flag'])
-    time_scan = d['time']
-    ncorr, nchan_scan, nrow_scan = data_scan.shape
-    
-    # Verify we have 4 Stokes parameters
-    if ncorr != 4:
-        print(f"WARNING: Scan {scan} has {ncorr} correlations (expected 4), skipping")
-        vis_avg[:, scan_idx, :] = np.nan
-        sigma_proxy[:, scan_idx, :] = np.nan
-        del d, data_scan, raw_flag_scan, time_scan
-        continue
-    
-    have_wspec = 'weight_spectrum' in d
-    flag_iquv_scan = build_iquv_flag(raw_flag_scan, nchan_scan, nrow_scan)
-    W_scan = build_iquv_weights(d, have_wspec, nchan_scan, nrow_scan)
-    
-    del d  # Free memory
-    
-    # Compute weighted average across baselines and time
-    # This collapses (4, nchan, nrow) → (4, nchan)
-    vis_avg_scan, sigma_scan = compute_weighted_averages(data_scan, W_scan, flag_iquv_scan)
-    
-    vis_avg[:, scan_idx, :] = vis_avg_scan
-    sigma_proxy[:, scan_idx, :] = sigma_scan
-    scan_times[scan_idx] = np.median(time_scan)  # Use mid-time of scan
-    
-    # Track flagging statistics
-    W_eff_scan = np.where(flag_iquv_scan, 0.0, W_scan)
-    unflagged_scan = int(np.sum(W_eff_scan > 0))
-    total_scan = int(W_eff_scan.size)
-    total_rows += nrow_scan
-    total_unflagged += unflagged_scan
-    
-    print(f"  Scan {scan:3d}: {nrow_scan:5d} rows, {unflagged_scan:8d}/{total_scan:8d} unflagged ({100.0*unflagged_scan/total_scan:5.1f}%), time={scan_times[scan_idx]:.1f} MJD")
-    
-    del data_scan, raw_flag_scan, time_scan, flag_iquv_scan, W_scan, W_eff_scan, vis_avg_scan, sigma_scan
 
-print(f"\nScan averaging complete:")
-print(f"  Total rows processed: {total_rows:,d}")
-print(f"  Total unflagged data points: {total_unflagged:,d}")
-print(f"  Output array shape: {vis_avg.shape} (Stokes, scans, channels)")
+        vis_avg_scan, _ = compute_weighted_averages(data_scan, W_scan, flag_iquv_scan)
+        vis_avg[:, scan_idx, :] = vis_avg_scan
+        scan_times[scan_idx] = np.median(time_scan)
 
-# For a properly calibrated point source, Stokes should be real-valued
-I_scans = np.real(vis_avg[0])  # (n_scans, nchan)
+        W_eff_scan = np.where(flag_iquv_scan, 0.0, W_scan)
+        unflagged_scan = int(np.sum(W_eff_scan > 0))
+        total_scan = int(W_eff_scan.size)
+        total_rows += nrow_scan
+        total_unflagged += unflagged_scan
+
+        print(f"  Scan {scan:3d}: {nrow_scan:5d} rows, "
+              f"{unflagged_scan:8d}/{total_scan:8d} unflagged "
+              f"({100.0 * unflagged_scan / total_scan:5.1f}%), "
+              f"time={scan_times[scan_idx]:.1f} MJD")
+
+        del data_scan, raw_flag_scan, time_scan, flag_iquv_scan, W_scan, W_eff_scan
+
+    print(f"\nScan averaging complete. Total rows: {total_rows:,d}, "
+          f"unflagged data: {total_unflagged:,d}")
+
+    np.savez(stokes_cache_path,
+             freq_ghz=freq_ghz, scan_numbers=scan_numbers, scan_times=scan_times,
+             vis_avg=vis_avg)
+    print(f"Saved: {stokes_cache_path}")
+
+# ============================
+# Extract Stokes and Run Quality Checks (always, even on cached runs)
+# ============================
+# For a calibrated point source at the phase centre, Stokes flux is a real
+# physical quantity. The real part of the averaged visibility carries the
+# signal; the imaginary part reflects calibration residuals and should be
+# small (<10%). We use np.real() throughout for computations (EVPA comparison,
+# V→0 check) because EVPA and Stokes V are defined in terms of real flux
+# densities. The complex vis_avg is retained in the cache solely so the
+# imaginary fraction diagnostic can be re-run at any time.
+I_scans = np.real(vis_avg[0])   # (n_scans, nchan)
 Q_scans = np.real(vis_avg[1])
 U_scans = np.real(vis_avg[2])
 V_scans = np.real(vis_avg[3])
 
-I_sigma_scans = sigma_proxy[0]
-Q_sigma_scans = sigma_proxy[1]
-U_sigma_scans = sigma_proxy[2]
-V_sigma_scans = sigma_proxy[3]
-
-print(f"\nExtracted per-scan Stokes parameters: {I_scans.shape} (scans, channels)")
-
-# ============================
-# Data Quality Checks
-# ============================
-# Verify that visibilities are well-calibrated by checking:
-# 1. Real vs imaginary components (point source should be predominantly real)
-# 2. Statistical properties (median, scatter)
-
 print("\n=== Data Quality Assessment ===")
-
 for scan_idx, scan in enumerate(scan_numbers):
     print(f"\n--- Scan {scan} ---")
-    
-    I_avg_scan = vis_avg[0, scan_idx, :]
-    Q_avg_scan = vis_avg[1, scan_idx, :]
-    U_avg_scan = vis_avg[2, scan_idx, :]
-    V_avg_scan = vis_avg[3, scan_idx, :]
-    
-    # Display statistics for real and imaginary components
-    quick_stats(f'Scan {scan} Re(I_avg)', np.real(I_avg_scan))
-    quick_stats(f'Scan {scan} Im(I_avg)', np.imag(I_avg_scan))
-    quick_stats(f'Scan {scan} Re(Q_avg)', np.real(Q_avg_scan))
-    quick_stats(f'Scan {scan} Im(Q_avg)', np.imag(Q_avg_scan))
-    quick_stats(f'Scan {scan} Re(U_avg)', np.real(U_avg_scan))
-    quick_stats(f'Scan {scan} Im(U_avg)', np.imag(U_avg_scan))
-    quick_stats(f'Scan {scan} Re(V_avg)', np.real(V_avg_scan))
-    quick_stats(f'Scan {scan} Im(V_avg)', np.imag(V_avg_scan))
-    
-    # Calculate fraction of flux in imaginary component
-    # For a well-calibrated point source, this should be << 10%
-    im_fracs = {
-        'I': calc_im_fraction(I_avg_scan),
-        'Q': calc_im_fraction(Q_avg_scan),
-        'U': calc_im_fraction(U_avg_scan),
-        'V': calc_im_fraction(V_avg_scan)
-    }
-    
-    print(f'Scan {scan} imaginary flux fractions (expect <<10% for point source):')
-    for stokes, frac in im_fracs.items():
+    for stokes_label, avg in zip('IQUV', vis_avg[:, scan_idx, :]):
+        quick_stats(f'Scan {scan} Re({stokes_label})', np.real(avg))
+    im_fracs = {s: calc_im_fraction(vis_avg[i, scan_idx, :])
+                for i, s in enumerate('IQUV')}
+    print(f"  Imaginary flux fractions (expect <<10% for point source):")
+    for s, frac in im_fracs.items():
         status = "WARNING: HIGH" if frac > 10.0 else "OK"
-        print(f'  {stokes}: {frac:.1f}% {status}')
-    
-    # Warn if any Stokes parameter has high imaginary component
-    high_im_stokes = [f'{s}({f:.1f}%)' for s, f in im_fracs.items() if f > 10.0]
-    if high_im_stokes:
-        print(f'WARNING: Scan {scan} has high imaginary flux in {", ".join(high_im_stokes)}')
+        print(f"    {s}: {frac:.1f}% {status}")
+
+# Pre-correction Stokes spectra (regenerate if not present, otherwise skip)
+preXF_plot = os.path.join(xfdir, 'stokes_spectra_preXF.png')
+if not os.path.isfile(preXF_plot):
+    print("\nGenerating pre-correction Stokes spectra plot...")
+    plot_stokes_spectra(freq_ghz, I_scans, Q_scans, U_scans, V_scans,
+                        scan_numbers, xfdir,
+                        filename='stokes_spectra_preXF.png',
+                        title='Pre-XF Stokes Parameters')
+    print(f"Saved: {preXF_plot}")
+else:
+    print(f"\nPre-XF Stokes plot already exists: {preXF_plot}")
 
 # ============================
-# Generate Pre-Correction Diagnostic Plots
+# Compute Parallactic Angles Per Scan
 # ============================
-print("\nGenerating pre-correction Stokes spectra plots...")
-
-plot_stokes_spectra(freq_ghz, I_scans, Q_scans, U_scans, V_scans, 
-                               scan_numbers, xfdir, 
-                               filename='stokes_spectra_preXF.png',
-                               title='Pre-XF Stokes Parameters')
-
-print(f"Saved: {xfdir}/stokes_spectra_preXF.png")
-
-# Save per-scan data arrays for later analysis
-np.savez(os.path.join(xfdir, 'stokes_perscan.npz'),
-         freq_ghz=freq_ghz,
-         scan_numbers=scan_numbers,
-         scan_times=scan_times,
-         I_scans=I_scans,
-         Q_scans=Q_scans,
-         U_scans=U_scans,
-         V_scans=V_scans,
-         I_sigma_scans=I_sigma_scans,
-         Q_sigma_scans=Q_sigma_scans,
-         U_sigma_scans=U_sigma_scans,
-         V_sigma_scans=V_sigma_scans)
-
-print(f"Saved: {xfdir}/stokes_perscan.npz")
-
-# ============================
-# Measure Raw Cross-Hand Phase
-# ============================
-# The cross-hand phase ρ is the phase offset between XY and YX correlations.
-# For a linearly polarized source, it can be measured from Stokes U and V:
-#     ρ = arctan2(-V_obs, U_obs)
-# This measurement has a ±π ambiguity that must be resolved using RM analysis.
-
-print("\n=== Measuring Raw Cross-Hand Phase: ρ = arctan2(-V, U) ===")
-
-# Calculate cross-hand phase per scan
-rho_rad_scans = np.full((n_scans, nchan), np.nan, dtype=float)  # (n_scans, nchan)
-rho_deg_scans = np.full((n_scans, nchan), np.nan, dtype=float)
-
-for scan_idx, scan in enumerate(scan_numbers):
-    U_scan = U_scans[scan_idx]
-    V_scan = V_scans[scan_idx]
-    
-    valid = np.isfinite(U_scan) & np.isfinite(V_scan)
-    num_valid = int(np.sum(valid))
-    
-    rho_rad = np.full_like(U_scan, np.nan, dtype=float)
-    rho_rad[valid] = np.arctan2(-V_scan[valid], U_scan[valid])
-    rho_deg = np.degrees(rho_rad)
-    rho_deg_wrapped = ((rho_deg + 180.0) % 360.0) - 180.0
-    
-    rho_rad_scans[scan_idx] = rho_rad
-    rho_deg_scans[scan_idx] = rho_deg_wrapped
-    
-    if num_valid > 0:
-        med_rho = np.nanmedian(rho_deg_wrapped)
-        std_rho = np.nanstd(rho_deg_wrapped)
-        print(f"  Scan {scan}: {num_valid}/{nchan} valid, median={med_rho:.3f} deg, std={std_rho:.3f} deg")
-
-# Plot multi-scan cross-hand phase
-plot_crosshand_phase(freq_ghz, U_scans, V_scans, rho_deg_scans, 
-                                scan_numbers, XF_MIN_CROSS_FLUX, xfdir)
-
-print(f"Saved: {xfdir}/crosshand_phase.png")
-
-# Save cross-hand phase measurements
-np.savez(os.path.join(xfdir, 'crosshand_phase_perscan.npz'),
-         freq_ghz=freq_ghz,
-         scan_numbers=scan_numbers,
-         rho_rad_scans=rho_rad_scans,
-         rho_deg_scans=rho_deg_scans)
-
-print(f"Saved: {xfdir}/crosshand_phase_perscan.npz")
-
-# ============================
-# Compute Parallactic Angles
-# ============================
-# The parallactic angle χ describes the rotation of the antenna feed frame
-# relative to the sky frame. It varies with time as the source moves across
-# the sky. We compute χ at each scan's mid-time for use in ±π disambiguation.
-#
-# Parallactic angle is given by: χ = atan2(-sin(A), tan(φ)cos(e) - cos(A)sin(e))
-# where A = azimuth, e = elevation, φ = observatory latitude
-
 print("\n=== Computing Parallactic Angles Per Scan ===")
-
 chi_deg_scans = np.zeros(n_scans)
-parang_diagnostics_scans = []
 
 for scan_idx, scan in enumerate(scan_numbers):
-    chi_deg, diagnostics = compute_parallactic_angle(temp_ms, pacal_name, scan_times[scan_idx])
+    chi_deg, diagnostics = compute_parallactic_angle(myms, pacal_name,
+                                                     scan_times[scan_idx])
     chi_deg_scans[scan_idx] = chi_deg
-    parang_diagnostics_scans.append(diagnostics)
-    
-    print(f"  Scan {scan}: χ = {chi_deg:+7.3f}° (AZ={diagnostics['az_deg']:6.1f}°, EL={diagnostics['el_deg']:5.1f}°, time={scan_times[scan_idx]:.1f} MJD)")
+    print(f"  Scan {scan}: χ = {chi_deg:+7.3f}° "
+          f"(AZ={diagnostics['az_deg']:6.1f}°, EL={diagnostics['el_deg']:5.1f}°)")
 
-print(f"\nParallactic angle range: {chi_deg_scans.min():+.3f}° to {chi_deg_scans.max():+.3f}°")
-print(f"Parallactic angle span: {chi_deg_scans.max() - chi_deg_scans.min():.3f}°")
-print(f"Observatory: {parang_diagnostics_scans[0]['observatory']}")
-print(f"Latitude: {parang_diagnostics_scans[0]['lat_deg']:.3f}°")
+print(f"\nParallactic angle range: "
+      f"{chi_deg_scans.min():+.3f}° to {chi_deg_scans.max():+.3f}°")
 
-# Print time differences between consecutive scans
-if n_scans > 1:
-    print(f"\nTime differences between consecutive scans:")
-    for scan_idx in range(1, n_scans):
-        time_diff_seconds = scan_times[scan_idx] - scan_times[scan_idx-1]
-        time_diff_minutes = time_diff_seconds / 60.0
-        print(f"  Scan {scan_numbers[scan_idx-1]} → Scan {scan_numbers[scan_idx]}: {time_diff_minutes:.2f} minutes")
-    
-    total_time_minutes = (scan_times[-1] - scan_times[0]) / 60.0
-    print(f"  Total time span: {total_time_minutes:.2f} minutes")
+# ============================
+# Spinifex Ionospheric RM
+# ============================
+print("\n=== Estimating Ionospheric RM via Spinifex ===")
+iono_rm_per_scan, iono_rm_err_per_scan = get_spinifex_rm_per_scan(
+    pacal_name, scan_numbers)
+
+print(f"\nIonospheric RM summary:")
+for scan_idx, scan in enumerate(scan_numbers):
+    rm_centre = XF_TARGET_RM + iono_rm_per_scan[scan_idx]
+    print(f"  Scan {scan}: iono_RM={iono_rm_per_scan[scan_idx]:+.3f} ± "
+          f"{iono_rm_err_per_scan[scan_idx]:.3f} rad/m²  "
+          f"→ RM grid centre = {rm_centre:.3f} rad/m²  "
+          f"(range [{rm_centre - 2.0:.2f}, {rm_centre + 2.0:.2f}])")
+
+# Weighted mean across scans (weight by 1/err² where err > 0)
+with np.errstate(divide='ignore', invalid='ignore'):
+    weights = np.where(iono_rm_err_per_scan > 0, 1.0 / iono_rm_err_per_scan**2, 0.0)
+if np.sum(weights) > 0:
+    mean_iono_rm = np.sum(weights * iono_rm_per_scan) / np.sum(weights)
+    mean_iono_rm_err = 1.0 / np.sqrt(np.sum(weights))
 else:
-    print("\nSingle scan observation")
+    mean_iono_rm = float(np.mean(iono_rm_per_scan))
+    mean_iono_rm_err = float(np.std(iono_rm_per_scan))
+print(f"\n  Weighted mean ionospheric RM: {mean_iono_rm:+.3f} ± {mean_iono_rm_err:.3f} rad/m²"
+      f"  (XF_TARGET_RM + iono = {XF_TARGET_RM + mean_iono_rm:.3f} rad/m²)")
 
 # ============================
-# Rotation Measure Trial Analysis (±π Degeneracy Resolution)
+# CASA polcal: Working-Channelisation XF Table
 # ============================
-# The cross-hand phase measurement ρ = arctan2(-V, U) has a ±π ambiguity.
-# We resolve this by comparing de-rotated polarization angles to the known
-# source angle across a range of rotation measures.
-#
-# PHYSICS:
-# Faraday rotation causes polarization angle to rotate with wavelength:
-#     Δχ = RM × λ²
-# where RM is the rotation measure in rad/m².
-#
-# THREE-STAGE APPROACH:
-# Stage 1: For each scan/channel, trial both ±π options across a range of RM
-#          values, tracking which delta_RM gives the best match to target angle
-# Stage 2: Pool all results, filter outliers, find global median delta_RM
-# Stage 3: Use global RM to select the correct ±π option per scan/channel
-#
-# This approach is robust to:
-# - Time-variable parallactic angles (per-scan chi values)
-# - Uncertain source RM (searches around target RM)
-# - Channel-to-channel variations
-
-print("\n=== ±π Degeneracy Resolution via RM Trial Analysis ===")
-print("Stage 1: Trial delta_RM for each scan/channel/option")
-print("Stage 2: Pool results across scans, find global median delta_RM")
-print("Stage 3: Use global RM to select ±π solution per scan/channel")
-
-# Initialize per-scan solution arrays
-selected_rho_per_channel_scans = np.full((n_scans, nchan), np.nan)  # (n_scans, nchan)
-selected_solution_per_channel_scans = np.full((n_scans, nchan), '', dtype='U8')
-
-delta_rm_trials = np.linspace(XF_DELTARM_TRIALS[0], XF_DELTARM_TRIALS[-1], 30)
-rm_trials = delta_rm_trials + XF_TARGET_RM
-c = 2.998e8  # Speed of light (m/s)
-
-print(f"\nTrialing {len(rm_trials)} RM values from {rm_trials[0]:.1f} to {rm_trials[-1]:.1f} rad/m²")
-print(f"Delta RM search range: {delta_rm_trials[0]:.2f} to {delta_rm_trials[-1]:.2f} rad/m²")
-
-# Initialize global collection arrays for Stage 2 pooling
-all_delta_rms = []
-all_min_deviations = []
-all_best_angles = []  # Actual de-rotated angles at best delta_RM
-all_scan_labels = []  # Track which scan each result came from
-
-# ============================
-# STAGE 1: Collect best delta_RM for each scan/channel/option
-# ============================
-print("\n--- Stage 1: Collecting best delta_RM per scan/channel/option ---")
-
-for scan_idx, scan in enumerate(scan_numbers):
-    print(f"\nProcessing Scan {scan} (χ = {chi_deg_scans[scan_idx]:.3f}°)")
-    
-    Q_scan = Q_scans[scan_idx]
-    U_scan = U_scans[scan_idx]
-    V_scan = V_scans[scan_idx]
-    rho_rad_scan = rho_rad_scans[scan_idx]
-    
-    # Find unflagged channels for this scan
-    unflagged_mask = np.isfinite(Q_scan) & np.isfinite(U_scan) & np.isfinite(V_scan) & np.isfinite(rho_rad_scan)
-    unflagged_idx = np.where(unflagged_mask)[0]
-    
-    if len(unflagged_idx) == 0:
-        print(f"  WARNING: No unflagged channels for scan {scan}")
-        continue
-    
-    print(f"  Found {len(unflagged_idx)} unflagged channels")
-    
-    freq_hz = freq_ghz[unflagged_idx] * 1e9
-    lambda_sq = (c / freq_hz)**2
-    
-    Q_channels = Q_scan[unflagged_idx]
-    U_channels = U_scan[unflagged_idx]
-    V_channels = V_scan[unflagged_idx]
-    
-    rho_raw = rho_rad_scan[unflagged_idx]
-    rho_option1 = ((rho_raw + np.pi) % (2*np.pi)) - np.pi
-    rho_option2 = ((rho_raw + np.pi + np.pi) % (2*np.pi)) - np.pi
-    
-    # Label by sign: determine which option is positive and which is negative
-    rho_positive = np.where(rho_option1 >= 0, rho_option1, rho_option2)
-    rho_negative = np.where(rho_option1 < 0, rho_option1, rho_option2)
-    
-    U_xh_positive, V_xh_positive = correct_crosshand_phase(U_channels, V_channels, rho_positive)
-    U_xh_negative, V_xh_negative = correct_crosshand_phase(U_channels, V_channels, rho_negative)
-    
-    Q_final_positive, U_final_positive = correct_parallactic_angle(Q_channels, U_xh_positive, chi_deg_scans[scan_idx])
-    Q_final_negative, U_final_negative = correct_parallactic_angle(Q_channels, U_xh_negative, chi_deg_scans[scan_idx])
-    
-    # Trial RMs for this scan
-    n_valid = len(unflagged_idx)
-    best_delta_rm_positive = np.zeros(n_valid)
-    best_delta_rm_negative = np.zeros(n_valid)
-    min_dev_positive = np.full(n_valid, np.inf)
-    min_dev_negative = np.full(n_valid, np.inf)
-    best_angle_positive = np.zeros(n_valid)
-    best_angle_negative = np.zeros(n_valid)
-    
-    for rm, delta_rm in zip(rm_trials, delta_rm_trials):
-        angles_positive = calculate_derotated_angle(Q_final_positive, U_final_positive, rm, lambda_sq)
-        angles_negative = calculate_derotated_angle(Q_final_negative, U_final_negative, rm, lambda_sq)
-        
-        target_angles_channels = target_polang_array[unflagged_idx]
-        
-        dev_positive = np.abs(angles_positive - target_angles_channels)
-        dev_positive = np.where(dev_positive > 90, 180 - dev_positive, dev_positive)
-        
-        dev_negative = np.abs(angles_negative - target_angles_channels)
-        dev_negative = np.where(dev_negative > 90, 180 - dev_negative, dev_negative)
-        
-        better_mask_positive = dev_positive < min_dev_positive
-        min_dev_positive[better_mask_positive] = dev_positive[better_mask_positive]
-        best_delta_rm_positive[better_mask_positive] = delta_rm
-        best_angle_positive[better_mask_positive] = angles_positive[better_mask_positive]
-        
-        better_mask_negative = dev_negative < min_dev_negative
-        min_dev_negative[better_mask_negative] = dev_negative[better_mask_negative]
-        best_delta_rm_negative[better_mask_negative] = delta_rm
-        best_angle_negative[better_mask_negative] = angles_negative[better_mask_negative]
-    
-    # Add to global collection with scan labels
-    all_delta_rms.extend(best_delta_rm_positive)
-    all_delta_rms.extend(best_delta_rm_negative)
-    all_min_deviations.extend(min_dev_positive)
-    all_min_deviations.extend(min_dev_negative)
-    all_best_angles.extend(best_angle_positive)
-    all_best_angles.extend(best_angle_negative)
-    all_scan_labels.extend([scan] * (2 * n_valid))
-    
-    print(f"  Collected {2*n_valid} delta_RM values (2 options × {n_valid} channels)")
-
-# Convert to arrays
-all_delta_rms = np.array(all_delta_rms)
-all_min_deviations = np.array(all_min_deviations)
-all_best_angles = np.array(all_best_angles)
-all_scan_labels = np.array(all_scan_labels)
-
-print(f"\n--- Stage 1 Complete ---")
-print(f"Total collected: {len(all_delta_rms)} delta_RM values from {n_scans} scans")
-print(f"Delta_RM range: {all_delta_rms.min():.2f} to {all_delta_rms.max():.2f} rad/m²")
-print(f"Min deviation range: {all_min_deviations.min():.2f}° to {all_min_deviations.max():.2f}°")
-
-# ============================
-# STAGE 2: Quality Filtering and Global Mode Selection
-# ============================
-# We now have delta_RM estimates from all scans/channels/options.
-# common value) which represents the global RM offset from our target.
-#
-# FILTERING APPROACH:
-# - Remove solutions with deviation > median + 3×MAD (outlier rejection)
-# - Cap at 75th percentile of deviations (remove worst quartile)
-# - Cap at absolute threshold (20°)
-
-print("\n--- Stage 2: Quality filtering and global mode selection ---")
-
-median_dev = np.median(all_min_deviations)
-mad_dev = np.median(np.abs(all_min_deviations - median_dev))
-threshold_dev = median_dev + 3.0 * 1.4826 * mad_dev
-
-percentile_threshold = np.percentile(all_min_deviations, 75)
-absolute_threshold = 20.0
-
-quality_threshold = min(threshold_dev, percentile_threshold, absolute_threshold)
-
-print(f"Deviation statistics:")
-print(f"  Median deviation: {median_dev:.2f}°")
-print(f"  MAD-based threshold: {threshold_dev:.2f}°")
-print(f"  75th percentile: {percentile_threshold:.2f}°")
-print(f"  Absolute threshold: {absolute_threshold:.2f}°")
-print(f"  Using quality threshold: {quality_threshold:.2f}° (most conservative)")
-
-good_solutions = all_min_deviations < quality_threshold
-filtered_delta_rms = all_delta_rms[good_solutions]
-filtered_deviations = all_min_deviations[good_solutions]
-
-n_rejected = np.sum(~good_solutions)
-n_accepted = np.sum(good_solutions)
-
-print(f"\nQuality filtering results:")
-print(f"  Accepted: {n_accepted}/{len(all_delta_rms)} solutions ({n_accepted/len(all_delta_rms)*100:.1f}%)")
-print(f"  Rejected: {n_rejected}/{len(all_delta_rms)} solutions ({n_rejected/len(all_delta_rms)*100:.1f}%)")
-
-if n_accepted < 10:
-    print(f"WARNING: Very few good solutions ({n_accepted}). Using all solutions instead.")
-    filtered_delta_rms = all_delta_rms
-    filtered_deviations = all_min_deviations
-    quality_threshold = np.inf
-
-global_delta_rm = np.median(filtered_delta_rms)
-global_rm = XF_TARGET_RM + global_delta_rm
-
-print(f"\nGlobal median selection:")
-print(f"  Median delta_RM: {global_delta_rm:+.2f} rad/m²")
-print(f"  Global RM: {global_rm:.2f} rad/m²")
-
-# Additional delta_RM statistics
-print(f"\nDetailed delta_RM statistics:")
-print(f"  All solutions: mean={np.mean(all_delta_rms):+.3f}, std={np.std(all_delta_rms):.3f}, median={np.median(all_delta_rms):+.3f} rad/m²")
-print(f"  Filtered (good) solutions: mean={np.mean(filtered_delta_rms):+.3f}, std={np.std(filtered_delta_rms):.3f}, median={np.median(filtered_delta_rms):+.3f} rad/m²")
-print(f"  Delta_RM range (all): [{all_delta_rms.min():+.3f}, {all_delta_rms.max():+.3f}] rad/m²")
-print(f"  Delta_RM range (filtered): [{filtered_delta_rms.min():+.3f}, {filtered_delta_rms.max():+.3f}] rad/m²")
-
-# Generate delta_RM diagnostic plot
-print("\nGenerating delta_RM diagnostic plot...")
-
-good_solutions = all_min_deviations < quality_threshold
-filtered_angles = all_best_angles[good_solutions]
-
-# Match scan labels to filtered data
-filtered_scan_labels = all_scan_labels[good_solutions]
-
-plot_delta_rm_diagnostics(all_delta_rms, all_min_deviations, all_best_angles, 
-                          filtered_delta_rms, filtered_deviations, filtered_angles,
-                          global_delta_rm, all_scan_labels, filtered_scan_labels,
-                          np.median(target_polang_array), xfdir)
-print(f"Saved: {xfdir}/delta_rm_diagnostics.png")
-
-# ============================
-# Generate Polarization Angle Histogram at Median Delta_RM
-# ============================
-# Calculate the de-rotated polarization angles for each scan using the global_rm
-# and create a histogram showing the distribution colored by scan
-print("\nGenerating polarization angle histogram at median delta_RM...")
-
-polang_at_median_rm = []
-polang_scan_labels = []
-
-for scan_idx, scan in enumerate(scan_numbers):
-    Q_scan = Q_scans[scan_idx]
-    U_scan = U_scans[scan_idx]
-    V_scan = V_scans[scan_idx]
-    rho_rad_scan = rho_rad_scans[scan_idx]
-    
-    unflagged_mask = np.isfinite(Q_scan) & np.isfinite(U_scan) & np.isfinite(V_scan) & np.isfinite(rho_rad_scan)
-    unflagged_idx = np.where(unflagged_mask)[0]
-    
-    if len(unflagged_idx) == 0:
-        continue
-    
-    freq_hz = freq_ghz[unflagged_idx] * 1e9
-    lambda_sq = (c / freq_hz)**2
-    
-    Q_channels = Q_scan[unflagged_idx]
-    U_channels = U_scan[unflagged_idx]
-    V_channels = V_scan[unflagged_idx]
-    
-    rho_raw = rho_rad_scan[unflagged_idx]
-    rho_option1 = ((rho_raw + np.pi) % (2*np.pi)) - np.pi
-    rho_option2 = ((rho_raw + np.pi + np.pi) % (2*np.pi)) - np.pi
-    
-    # Label by sign: determine which option is positive and which is negative
-    rho_positive = np.where(rho_option1 >= 0, rho_option1, rho_option2)
-    rho_negative = np.where(rho_option1 < 0, rho_option1, rho_option2)
-    
-    U_xh_positive, V_xh_positive = correct_crosshand_phase(U_channels, V_channels, rho_positive)
-    U_xh_negative, V_xh_negative = correct_crosshand_phase(U_channels, V_channels, rho_negative)
-    
-    Q_final_positive, U_final_positive = correct_parallactic_angle(Q_channels, U_xh_positive, chi_deg_scans[scan_idx])
-    Q_final_negative, U_final_negative = correct_parallactic_angle(Q_channels, U_xh_negative, chi_deg_scans[scan_idx])
-    
-    # Calculate angles at global RM for both sign options
-    angles_positive = calculate_derotated_angle(Q_final_positive, U_final_positive, global_rm, lambda_sq)
-    angles_negative = calculate_derotated_angle(Q_final_negative, U_final_negative, global_rm, lambda_sq)
-    
-    target_angles_channels = target_polang_array[unflagged_idx]
-    
-    # Select the option closer to target
-    dev_positive = np.abs(angles_positive - target_angles_channels)
-    dev_positive = np.where(dev_positive > 90, 180 - dev_positive, dev_positive)
-    
-    dev_negative = np.abs(angles_negative - target_angles_channels)
-    dev_negative = np.where(dev_negative > 90, 180 - dev_negative, dev_negative)
-    
-    select_positive = dev_positive <= dev_negative
-    selected_angles = np.where(select_positive, angles_positive, angles_negative)
-    
-    polang_at_median_rm.extend(selected_angles)
-    polang_scan_labels.extend([scan] * len(selected_angles))
-
-polang_at_median_rm = np.array(polang_at_median_rm)
-polang_scan_labels = np.array(polang_scan_labels)
-
-fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-
-unique_scans = np.unique(polang_scan_labels)
-colors = plt.cm.tab10(np.linspace(0, 1, len(unique_scans)))
-
-# Plot histogram for each scan
-for i, scan in enumerate(unique_scans):
-    mask = polang_scan_labels == scan
-    ax.hist(polang_at_median_rm[mask], bins=50, alpha=0.6, label=f'Scan {scan}', 
-            color=colors[i], edgecolor='black', linewidth=0.5)
-
-# Add vertical line for target angle (use median if frequency-dependent)
-target_angle_for_plot = np.median(target_polang_array) if use_freq_dependent_evpa else XF_TARGET_POLANG
-ax.axvline(target_angle_for_plot, color='red', linestyle='--', linewidth=2, 
-          label=f'Target = {target_angle_for_plot:.2f}°', zorder=10)
-
-# Calculate and display statistics
-mean_angle = np.mean(polang_at_median_rm)
-median_angle = np.median(polang_at_median_rm)
-std_angle = np.std(polang_at_median_rm)
-
-ax.axvline(mean_angle, color='green', linestyle=':', linewidth=2, 
-          label=f'Mean = {mean_angle:.2f}°', alpha=0.7)
-
-ax.set_xlabel('Polarization Angle [deg]')
-ax.set_ylabel('Count')
-title_suffix = ' (freq-dependent for 3C286)' if use_freq_dependent_evpa else ''
-ax.set_title(f'Polarization Angle Distribution at Median RM = {global_rm:.2f} rad/m²\n' + 
-            f'(δRM = {global_delta_rm:+.2f} rad/m²){title_suffix}')
-ax.legend(fontsize=8)
-ax.grid(True, alpha=0.3)
-
-# Add text box with statistics
-textstr = f'Mean: {mean_angle:.2f}°\nMedian: {median_angle:.2f}°\nStd: {std_angle:.2f}°\nN: {len(polang_at_median_rm)}'
-props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
-ax.text(0.02, 0.98, textstr, transform=ax.transAxes, fontsize=10,
-        verticalalignment='top', bbox=props)
-
-plt.tight_layout()
-plt.savefig(os.path.join(xfdir, 'polang_histogram_at_median_rm.png'), dpi=150)
-plt.close(fig)
-
-print(f"Saved: {xfdir}/polang_histogram_at_median_rm.png")
-print(f"  Polarization angle statistics at median RM:")
-print(f"    Mean: {mean_angle:.2f}°, Median: {median_angle:.2f}°, Std: {std_angle:.2f}°")
-print(f"    Deviation from target: {mean_angle - target_angle_for_plot:+.2f}°")
-
-# ============================
-# STAGE 3: Use global RM to select ±π solution per scan/channel
-# ============================
-print("\n--- Stage 3: Selecting ±π solutions using global RM ---")
-
-for scan_idx, scan in enumerate(scan_numbers):
-    print(f"\nScan {scan} (χ = {chi_deg_scans[scan_idx]:.3f}°)")
-    
-    Q_scan = Q_scans[scan_idx]
-    U_scan = U_scans[scan_idx]
-    V_scan = V_scans[scan_idx]
-    rho_rad_scan = rho_rad_scans[scan_idx]
-    
-    unflagged_mask = np.isfinite(Q_scan) & np.isfinite(U_scan) & np.isfinite(V_scan) & np.isfinite(rho_rad_scan)
-    unflagged_idx = np.where(unflagged_mask)[0]
-    
-    if len(unflagged_idx) == 0:
-        continue
-    
-    freq_hz = freq_ghz[unflagged_idx] * 1e9
-    lambda_sq = (c / freq_hz)**2
-    
-    Q_channels = Q_scan[unflagged_idx]
-    U_channels = U_scan[unflagged_idx]
-    V_channels = V_scan[unflagged_idx]
-    
-    rho_raw = rho_rad_scan[unflagged_idx]
-    rho_option1 = ((rho_raw + np.pi) % (2*np.pi)) - np.pi
-    rho_option2 = ((rho_raw + np.pi + np.pi) % (2*np.pi)) - np.pi
-    
-    # Label by sign: determine which option is positive and which is negative
-    rho_positive = np.where(rho_option1 >= 0, rho_option1, rho_option2)
-    rho_negative = np.where(rho_option1 < 0, rho_option1, rho_option2)
-    
-    U_xh_positive, V_xh_positive = correct_crosshand_phase(U_channels, V_channels, rho_positive)
-    U_xh_negative, V_xh_negative = correct_crosshand_phase(U_channels, V_channels, rho_negative)
-    
-    Q_final_positive, U_final_positive = correct_parallactic_angle(Q_channels, U_xh_positive, chi_deg_scans[scan_idx])
-    Q_final_negative, U_final_negative = correct_parallactic_angle(Q_channels, U_xh_negative, chi_deg_scans[scan_idx])
-    
-    # Calculate angles at global RM for both sign options
-    angles_positive_fixed = calculate_derotated_angle(Q_final_positive, U_final_positive, global_rm, lambda_sq)
-    angles_negative_fixed = calculate_derotated_angle(Q_final_negative, U_final_negative, global_rm, lambda_sq)
-    
-    target_angles_channels = target_polang_array[unflagged_idx]
-    
-    dev_positive_fixed = np.abs(angles_positive_fixed - target_angles_channels)
-    dev_positive_fixed = np.where(dev_positive_fixed > 90, 180 - dev_positive_fixed, dev_positive_fixed)
-    
-    dev_negative_fixed = np.abs(angles_negative_fixed - target_angles_channels)
-    dev_negative_fixed = np.where(dev_negative_fixed > 90, 180 - dev_negative_fixed, dev_negative_fixed)
-    
-    # Select best option per channel based on deviation from target
-    select_positive = dev_positive_fixed <= dev_negative_fixed
-    
-    selected_rho = np.where(select_positive, rho_positive, rho_negative)
-    solution_names = np.where(select_positive, 'positive', 'negative')
-    
-    for i, ch in enumerate(unflagged_idx):
-        selected_rho_per_channel_scans[scan_idx, ch] = selected_rho[i]
-        selected_solution_per_channel_scans[scan_idx, ch] = solution_names[i]
-    
-    n_positive = np.sum(selected_rho >= 0)
-    n_negative = np.sum(selected_rho < 0)
-    
-    print(f"  Selected solutions: {n_positive} positive, {n_negative} negative")
-
-print("\n=== Per-Channel RM Trial Analysis Complete ===")
-
-# ============================
-# Plot Polarization Angle Deviation
-# ============================
-print("\nGenerating polarization angle deviation diagnostic plots (per scan)...")
-plot_polang_deviation(freq_ghz, Q_scans, U_scans, V_scans, rho_rad_scans, chi_deg_scans,
-                     selected_solution_per_channel_scans, scan_numbers, global_rm, target_polang_array, xfdir)
-print(f"Saved: {xfdir}/polang_deviation_scan*.png")
-
-# ============================
-# Two-Stage Outlier Detection
-# ============================
-# Flag channels with unreliable cross-hand phase measurements using:
-# 
-# STAGE 1: Flux-based flagging
-#   - Flag channels where cross-hand flux √(U² + V²) < threshold
-#   - These have insufficient SNR for reliable phase measurement
-#
-# STAGE 2: Local scatter analysis
-#   - For each channel, compute local phase scatter in frequency
-#   - Flag channels with anomalously high local scatter
-#   - Uses sliding window to detect localized RFI or calibration issues
-
-print("\n=== Two-Stage Outlier Detection ===")
-
-for scan_idx, scan in enumerate(scan_numbers):
-    print(f"\n--- Scan {scan} Outlier Detection ---")
-    
-    U_scan = U_scans[scan_idx]
-    V_scan = V_scans[scan_idx]
-    rho_per_ch = selected_rho_per_channel_scans[scan_idx]
-    sol_per_ch = selected_solution_per_channel_scans[scan_idx]
-    
-    has_solution = ~np.isnan(rho_per_ch) & (sol_per_ch != '')
-    n_with_solution = np.sum(has_solution)
-    
-    if n_with_solution == 0:
-        print(f"  No solutions found for scan {scan}")
-        continue
-    
-    # STAGE 1: Low flux flagging
-    print(f"  Stage 1: Low flux flagging (< {XF_MIN_CROSS_FLUX} Jy)")
-    low_flux_mask = np.sqrt(U_scan**2 + V_scan**2) < XF_MIN_CROSS_FLUX
-    low_flux_channels = np.where(low_flux_mask)[0]
-    n_low_flux = len(low_flux_channels)
-    print(f"    Flagged {n_low_flux} channels")
-    
-    for ch in low_flux_channels:
-        selected_solution_per_channel_scans[scan_idx, ch] = 'outlier'
-    
-    # STAGE 2: Local scatter flagging
-    print(f"  Stage 2: Local scatter flagging")
-    
-    # Recalculate has_solution after low flux flagging
-    has_solution = ~np.isnan(rho_per_ch) & (sol_per_ch != 'outlier') & (sol_per_ch != '')
-    n_with_solution = np.sum(has_solution)
-    
-    if n_with_solution > 10:
-        freq_for_outliers = freq_ghz[has_solution]
-        rho_deg_for_outliers = np.degrees(rho_per_ch[has_solution])
-        channels_for_outliers = np.where(has_solution)[0]
-        
-        freq_sort_idx = np.argsort(freq_for_outliers)
-        sorted_rho_deg = rho_deg_for_outliers[freq_sort_idx]
-        
-        local_scatter_outliers = np.zeros(len(rho_deg_for_outliers), dtype=bool)
-        local_stdevs = np.full(len(sorted_rho_deg), np.nan)
-        
-        for i in range(len(sorted_rho_deg)):
-            start_idx = max(0, i - XF_CLIP_WINDOW // 2)
-            end_idx = min(len(sorted_rho_deg), i + XF_CLIP_WINDOW // 2 + 1)
-            
-            if end_idx - start_idx >= 5:
-                window_data = sorted_rho_deg[start_idx:end_idx]
-                window_complex = np.exp(1j * np.radians(window_data))
-                window_centroid = np.mean(window_complex)
-                window_centroid = window_centroid / np.abs(window_centroid)
-                angular_deviations = np.abs(window_complex - window_centroid)
-                local_stdevs[i] = np.std(angular_deviations)
-        
-        valid_stdevs = local_stdevs[~np.isnan(local_stdevs)]
-        
-        if len(valid_stdevs) > 5:
-            stdev_mean = np.mean(valid_stdevs)
-            stdev_std = np.std(valid_stdevs)
-            stdev_median = np.median(valid_stdevs)
-            stdev_mad = np.median(np.abs(valid_stdevs - stdev_median))
-            
-            sigma_threshold = stdev_mean + XF_SIGMA_CLIP * stdev_std
-            mad_threshold = stdev_median + XF_SIGMA_CLIP * 1.4826 * stdev_mad
-            threshold = max(sigma_threshold, mad_threshold)
-            
-            print(f"    Local stdev threshold: {threshold:.4f}")
-            
-            n_flagged = 0
-            for i in range(len(sorted_rho_deg)):
-                if not np.isnan(local_stdevs[i]) and local_stdevs[i] > threshold:
-                    original_idx = freq_sort_idx[i]
-                    local_scatter_outliers[original_idx] = True
-                    n_flagged += 1
-            
-            print(f"    Flagged {n_flagged} channels ({n_flagged/len(valid_stdevs)*100:.1f}%)")
-            
-            outlier_channels = channels_for_outliers[local_scatter_outliers]
-            for ch in outlier_channels:
-                if selected_solution_per_channel_scans[scan_idx, ch] != 'outlier':
-                    selected_solution_per_channel_scans[scan_idx, ch] = 'outlier'
-        else:
-            print(f"    Insufficient data for threshold calculation")
-    else:
-        print(f"    Insufficient channels ({n_with_solution}) for local scatter analysis")
-
-print("\n=== Two-Stage Outlier Detection Complete ===")
-
-# ============================
-# STAGE 3: Polynomial Sigma Clipping (Optional)
-# ============================
-# Fit a polynomial to the phase vs frequency and flag massive outliers
-# This catches channels with catastrophic errors that survived earlier flagging
-
-if int(XF_POLY_CLIP) > 0:
-    poly_order = int(XF_POLY_CLIP)
-    print(f"\n=== Stage 3: Polynomial Sigma Clipping (order={poly_order}) ===")
-    
-    for scan_idx, scan in enumerate(scan_numbers):
-        print(f"\n--- Scan {scan} Polynomial Clipping ---")
-        
-        rho_per_ch = selected_rho_per_channel_scans[scan_idx]
-        sol_per_ch = selected_solution_per_channel_scans[scan_idx]
-        
-        has_solution = ~np.isnan(rho_per_ch) & (sol_per_ch != 'outlier') & (sol_per_ch != '')
-        n_with_solution = np.sum(has_solution)
-        
-        if n_with_solution < poly_order + 5:
-            print(f"  Insufficient channels ({n_with_solution}) for order-{poly_order} polynomial fit")
-            continue
-        
-        # Get good channels for fitting
-        freq_good = freq_ghz[has_solution]
-        rho_good_rad = rho_per_ch[has_solution]
-        channels_good = np.where(has_solution)[0]
-        
-        # Convert to complex for circular mean
-        complex_good = np.exp(1j * rho_good_rad)
-        
-        # Fit polynomial to real and imaginary parts separately
-        try:
-            poly_real = np.polyfit(freq_good, np.real(complex_good), poly_order)
-            poly_imag = np.polyfit(freq_good, np.imag(complex_good), poly_order)
-            
-            # Evaluate polynomial
-            fit_real = np.polyval(poly_real, freq_good)
-            fit_imag = np.polyval(poly_imag, freq_good)
-            complex_fit = fit_real + 1j * fit_imag
-            complex_fit = complex_fit / np.abs(complex_fit)  # Normalize to unit circle
-            
-            # Calculate residuals as angular distance
-            residuals = np.abs(complex_good - complex_fit)
-            
-            # Compute robust sigma using MAD
-            median_residual = np.median(residuals)
-            mad_residual = np.median(np.abs(residuals - median_residual))
-            sigma_residual = 1.4826 * mad_residual
-            
-            # Flag outliers at 10-sigma level (massive outliers only)
-            threshold = median_residual + 10.0 * sigma_residual
-            
-            outlier_mask = residuals > threshold
-            n_outliers = np.sum(outlier_mask)
-            
-            if n_outliers > 0:
-                print(f"  Fitted order-{poly_order} polynomial")
-                print(f"  Median residual: {median_residual:.4f}, MAD: {mad_residual:.4f}")
-                print(f"  10-sigma threshold: {threshold:.4f}")
-                print(f"  Flagged {n_outliers} massive outliers ({n_outliers/n_with_solution*100:.1f}%)")
-                
-                # Flag the outlier channels
-                outlier_channels = channels_good[outlier_mask]
-                for ch in outlier_channels:
-                    selected_solution_per_channel_scans[scan_idx, ch] = 'outlier'
-            else:
-                print(f"  Fitted order-{poly_order} polynomial: no outliers detected at 10-sigma level")
-                
-        except np.linalg.LinAlgError:
-            print(f"  WARNING: Polynomial fit failed (singular matrix), skipping")
-            continue
-    
-    print("\n=== Polynomial Sigma Clipping Complete ===")
-
-# ============================
-# Frequency Averaging with Linear Extrapolation
-# ============================
-
-print("\n=== Frequency Averaging ===")
-
-freq_averaged_data_scans = []
-
-# Define bins across full frequency range
-total_channels = len(freq_ghz)
-freq_min = freq_ghz.min()
-freq_max = freq_ghz.max()
-
-if XF_AVG_SCAN:
-    # ============================
-    # SCAN-AVERAGED MODE: Pool all scans into single binned solution
-    # ============================
-    print("Scan-averaged mode: Pooling data from all scans")
-    
-    # Collect all good solutions from all scans
-    all_good_freqs = []
-    all_good_rhos = []
-    
-    for scan_idx, scan in enumerate(scan_numbers):
-        rho_per_ch = selected_rho_per_channel_scans[scan_idx]
-        sol_per_ch = selected_solution_per_channel_scans[scan_idx]
-        
-        has_solution = ~np.isnan(rho_per_ch) & (sol_per_ch != 'outlier') & (sol_per_ch != '')
-        
-        if np.sum(has_solution) > 0:
-            all_good_freqs.append(freq_ghz[has_solution])
-            all_good_rhos.append(rho_per_ch[has_solution])
-    
-    if len(all_good_freqs) == 0:
-        print("ERROR: No good solutions found across any scan!")
-        sys.exit(1)
-    
-    # Concatenate all scans
-    all_good_freqs = np.concatenate(all_good_freqs)
-    all_good_rhos = np.concatenate(all_good_rhos)
-    
-    n_scans = len(scan_numbers)
-    max_data_points = total_channels * n_scans
-    print(f"  Total good data points: {len(all_good_freqs)} / {max_data_points}")
-    
-    # Create evenly-spaced bins
-    n_freq_bins = XF_MAX_AVG_CHANNELS
-    freq_bin_edges = np.linspace(freq_min, freq_max, n_freq_bins + 1)
-    freq_bin_centers = 0.5 * (freq_bin_edges[:-1] + freq_bin_edges[1:])
-    
-    averaged_rho_rad = np.full(n_freq_bins, np.nan)
-    bin_channel_counts = np.zeros(n_freq_bins, dtype=int)
-    
-    # Fill bins with pooled data
-    for i in range(n_freq_bins):
-        in_bin = (all_good_freqs >= freq_bin_edges[i]) & (all_good_freqs < freq_bin_edges[i+1])
-        if i == n_freq_bins - 1:
-            in_bin = (all_good_freqs >= freq_bin_edges[i]) & (all_good_freqs <= freq_bin_edges[i+1])
-        
-        if np.sum(in_bin) > 0:
-            bin_rhos = all_good_rhos[in_bin]
-            complex_vectors = np.exp(1j * bin_rhos)
-            mean_complex = np.mean(complex_vectors)
-            averaged_rho_rad[i] = np.angle(mean_complex)
-            bin_channel_counts[i] = np.sum(in_bin)
-    
-    # Sparsity check: expected = (nchan × nscan) / nbin × 0.25
-    n_scans = len(scan_numbers)
-    expected_per_bin = (total_channels * n_scans) / n_freq_bins
-    min_data_points = max(1, int(0.25 * expected_per_bin))
-    
-    # Report minimum sparsity
-    filled_bins_mask = bin_channel_counts > 0
-    if np.any(filled_bins_mask):
-        min_bin_count = np.min(bin_channel_counts[filled_bins_mask])
-        print(f"  Min bin occupancy: {min_bin_count} data points (expected: {expected_per_bin:.1f}, threshold: {min_data_points})")
-    
-    sparse_bins = (bin_channel_counts > 0) & (bin_channel_counts < min_data_points)
-    if np.any(sparse_bins):
-        averaged_rho_rad[sparse_bins] = np.nan
-        n_sparse = np.sum(sparse_bins)
-        print(f"  Flagged {n_sparse} sparse bins (<25% filled)")
-    
-    good_bins = np.isfinite(averaged_rho_rad)
-    n_filled_bins = np.sum(good_bins)
-    
-    print(f"  Filled {n_filled_bins} / {n_freq_bins} bins")
-    
-    # Extrapolation
-    extrap_bin_mask = np.zeros(n_freq_bins, dtype=bool)
-    
-    if XF_EX and n_filled_bins >= 2:
-        good_bin_indices = np.where(good_bins)[0]
-        first_good = good_bin_indices[0]
-        last_good = good_bin_indices[-1]
-        
-        n_fit_bins = max(2, int(np.ceil(XF_EX_FRAC * n_filled_bins)))
-        
-        if first_good > 0:
-            fit_indices = good_bin_indices[:n_fit_bins]
-            freq_fit = freq_bin_centers[fit_indices]
-            complex_fit = np.exp(1j * averaged_rho_rad[fit_indices])
-            
-            p_real = np.polyfit(freq_fit, np.real(complex_fit), 1)
-            p_imag = np.polyfit(freq_fit, np.imag(complex_fit), 1)
-            
-            for i in range(first_good):
-                freq_extrap = freq_bin_centers[i]
-                real_extrap = np.polyval(p_real, freq_extrap)
-                imag_extrap = np.polyval(p_imag, freq_extrap)
-                complex_extrap = (real_extrap + 1j * imag_extrap) / np.abs(real_extrap + 1j * imag_extrap)
-                averaged_rho_rad[i] = np.angle(complex_extrap)
-                extrap_bin_mask[i] = True
-            
-            print(f"  Extrapolated {first_good} bins at lower edge")
-        
-        if last_good < n_freq_bins - 1:
-            fit_indices = good_bin_indices[-n_fit_bins:]
-            freq_fit = freq_bin_centers[fit_indices]
-            complex_fit = np.exp(1j * averaged_rho_rad[fit_indices])
-            
-            p_real = np.polyfit(freq_fit, np.real(complex_fit), 1)
-            p_imag = np.polyfit(freq_fit, np.imag(complex_fit), 1)
-            
-            for i in range(last_good + 1, n_freq_bins):
-                freq_extrap = freq_bin_centers[i]
-                real_extrap = np.polyval(p_real, freq_extrap)
-                imag_extrap = np.polyval(p_imag, freq_extrap)
-                complex_extrap = (real_extrap + 1j * imag_extrap) / np.abs(real_extrap + 1j * imag_extrap)
-                averaged_rho_rad[i] = np.angle(complex_extrap)
-                extrap_bin_mask[i] = True
-            
-            n_extrap_upper = n_freq_bins - 1 - last_good
-            print(f"  Extrapolated {n_extrap_upper} bins at upper edge")
-    
-    valid_avg = np.isfinite(averaged_rho_rad)
-    freq_for_interp = freq_bin_centers[valid_avg]
-    rho_for_interp = averaged_rho_rad[valid_avg]
-    extrap_for_plot = extrap_bin_mask[valid_avg]
-    
-    # Store as single solution replicated for all scans
-    freq_averaged_pooled = {
-        'freq': freq_for_interp,
-        'rho_rad': rho_for_interp,
-        'rho_deg': np.degrees(rho_for_interp),
-        'n_bins': len(freq_for_interp),
-        'n_good': len(freq_for_interp),
-        'extrapolated': extrap_for_plot
-    }
-    
-    for _ in range(n_scans):
-        freq_averaged_data_scans.append(freq_averaged_pooled)
-
-else:
-    # ============================
-    # PER-SCAN MODE: Do frequency averaging with extrapolation per scan
-    # ============================
-    for scan_idx, scan in enumerate(scan_numbers):
-        rho_per_ch = selected_rho_per_channel_scans[scan_idx]
-        sol_per_ch = selected_solution_per_channel_scans[scan_idx]
-    
-        has_solution = ~np.isnan(rho_per_ch) & (sol_per_ch != 'outlier') & (sol_per_ch != '')
-        n_with_solution = np.sum(has_solution)
-    
-        if n_with_solution == 0:
-            print(f"  Scan {scan}: No valid solutions, skipping")
-            freq_averaged_data_scans.append(None)
-            continue
-    
-        if n_with_solution > XF_MAX_AVG_CHANNELS:
-            print(f"  Scan {scan}: Averaging {total_channels} total channels → {XF_MAX_AVG_CHANNELS} bins ({n_with_solution} / {total_channels} good)")
-        
-            freq_for_avg = freq_ghz[has_solution]
-            rho_for_avg = rho_per_ch[has_solution]
-        
-            # Create evenly-spaced bins across full frequency range
-            freq_bin_edges = np.linspace(freq_min, freq_max, XF_MAX_AVG_CHANNELS + 1)
-            freq_bin_centers = 0.5 * (freq_bin_edges[:-1] + freq_bin_edges[1:])
-        
-            freq_averaged_rho_rad = np.full(XF_MAX_AVG_CHANNELS, np.nan)
-            bin_channel_counts = np.zeros(XF_MAX_AVG_CHANNELS, dtype=int)
-        
-            for i in range(XF_MAX_AVG_CHANNELS):
-                bin_low = freq_bin_edges[i]
-                bin_high = freq_bin_edges[i + 1]
-            
-                in_bin = (freq_for_avg >= bin_low) & (freq_for_avg < bin_high)
-                if i == XF_MAX_AVG_CHANNELS - 1:
-                    in_bin = (freq_for_avg >= bin_low) & (freq_for_avg <= bin_high)
-            
-                if np.any(in_bin):
-                    bin_rho_rad = rho_for_avg[in_bin]
-                    complex_vectors = np.exp(1j * bin_rho_rad)
-                    mean_complex = np.mean(complex_vectors)
-                    averaged_rho_rad = np.angle(mean_complex)
-                
-                    freq_averaged_rho_rad[i] = averaged_rho_rad
-                    bin_channel_counts[i] = np.sum(in_bin)
-        
-            # Sparsity check: expected = (nchan × 1) / nbin × 0.25
-            expected_per_bin = total_channels / XF_MAX_AVG_CHANNELS
-            min_channels = max(1, int(0.25 * expected_per_bin))
-            
-            # Report minimum sparsity
-            filled_bins_mask = bin_channel_counts > 0
-            if np.any(filled_bins_mask):
-                min_bin_count = np.min(bin_channel_counts[filled_bins_mask])
-                print(f"    Min bin occupancy: {min_bin_count} channels (expected: {expected_per_bin:.1f}, threshold: {min_channels})")
-            
-            sparse_bins = (bin_channel_counts > 0) & (bin_channel_counts < min_channels)
-            if np.any(sparse_bins):
-                freq_averaged_rho_rad[sparse_bins] = np.nan
-                n_sparse = np.sum(sparse_bins)
-                print(f"    Flagged {n_sparse} sparse bins (<25% filled)")
-        
-            good_bins = np.isfinite(freq_averaged_rho_rad)
-            n_filled_bins = np.sum(good_bins)
-        
-            print(f"    Filled bins: {n_filled_bins} / {XF_MAX_AVG_CHANNELS}")
-        
-            extrap_bin_mask = np.zeros(XF_MAX_AVG_CHANNELS, dtype=bool)
-        
-            if XF_EX and n_filled_bins >= 2:
-                good_bin_indices = np.where(good_bins)[0]
-                first_good = good_bin_indices[0]
-                last_good = good_bin_indices[-1]
-            
-                n_fit_bins = max(2, int(np.ceil(XF_EX_FRAC * n_filled_bins)))
-            
-                if first_good > 0:
-                    fit_indices = good_bin_indices[:n_fit_bins]
-                    freq_fit = freq_bin_centers[fit_indices]
-                    complex_fit = np.exp(1j * freq_averaged_rho_rad[fit_indices])
-                
-                    p_real = np.polyfit(freq_fit, np.real(complex_fit), 1)
-                    p_imag = np.polyfit(freq_fit, np.imag(complex_fit), 1)
-                
-                    for i in range(first_good):
-                        freq_extrap = freq_bin_centers[i]
-                        real_extrap = np.polyval(p_real, freq_extrap)
-                        imag_extrap = np.polyval(p_imag, freq_extrap)
-                        complex_extrap = (real_extrap + 1j * imag_extrap) / np.abs(real_extrap + 1j * imag_extrap)
-                        freq_averaged_rho_rad[i] = np.angle(complex_extrap)
-                        extrap_bin_mask[i] = True
-                
-                    if first_good > 0:
-                        print(f"    Extrapolated {first_good} bins at lower edge")
-            
-                if last_good < XF_MAX_AVG_CHANNELS - 1:
-                    fit_indices = good_bin_indices[-n_fit_bins:]
-                    freq_fit = freq_bin_centers[fit_indices]
-                    complex_fit = np.exp(1j * freq_averaged_rho_rad[fit_indices])
-                
-                    p_real = np.polyfit(freq_fit, np.real(complex_fit), 1)
-                    p_imag = np.polyfit(freq_fit, np.imag(complex_fit), 1)
-                
-                    for i in range(last_good + 1, XF_MAX_AVG_CHANNELS):
-                        freq_extrap = freq_bin_centers[i]
-                        real_extrap = np.polyval(p_real, freq_extrap)
-                        imag_extrap = np.polyval(p_imag, freq_extrap)
-                        complex_extrap = (real_extrap + 1j * imag_extrap) / np.abs(real_extrap + 1j * imag_extrap)
-                        freq_averaged_rho_rad[i] = np.angle(complex_extrap)
-                        extrap_bin_mask[i] = True
-                
-                    n_extrap_upper = XF_MAX_AVG_CHANNELS - 1 - last_good
-                    if n_extrap_upper > 0:
-                        print(f"    Extrapolated {n_extrap_upper} bins at upper edge")
-        
-            freq_averaged_rho_deg = np.degrees(freq_averaged_rho_rad)
-        
-            freq_averaged_data_scans.append({
-                'freq': freq_bin_centers,
-                'rho_deg': freq_averaged_rho_deg,
-                'rho_rad': freq_averaged_rho_rad,
-                'n_bins': XF_MAX_AVG_CHANNELS,
-                'n_good': n_filled_bins,
-                'extrapolated': extrap_bin_mask,
-                'bin_edges': freq_bin_edges
-            })
-        else:
-            print(f"  Scan {scan}: No averaging needed ({n_with_solution} ≤ {XF_MAX_AVG_CHANNELS})")
-            freq_averaged_data_scans.append(None)
-
-print("\n=== Frequency Averaging Complete ===")
-
-# ============================
-# Generate CASA XF Calibration Table
-# ============================
-
-print("\n=== Generating CASA XF Calibration Table ===")
-
+print(f"\n=== Solving XF Table ({XF_CHANINT}ch intervals) ===")
 combine_param = 'scan' if XF_AVG_SCAN else ''
-print(f"Creating XF table with combine='{combine_param}'")
+print(f"combine='{combine_param}' (XF_AVG_SCAN={XF_AVG_SCAN})")
 
-polcal(vis=temp_ms,
+if os.path.isdir(xftab):
+    shutil.rmtree(xftab)
+
+polcal(vis=myms,
        field=pacal_name,
        caltable=xftab,
        refant=str(ref_ant),
        solint=f'inf,{XF_CHANINT}ch',
        poltype='Xf',
        combine=combine_param,
+       gaintable=[ktab, bptab, gptab, gtab, dftab],
+       gainfield=[pacal_name, bpcal_name, pacal_name, pacal_name, bpcal_name],
+       interp=['linear', 'linear', 'linear', 'linear', 'linear'],
        append=False)
 
-print(f"Created XF table structure: {xftab}")
+print(f"Created XF table: {xftab}")
 
-# Read XF table frequency grid
+# Read xftab frequency grid
 tb.open(xftab + '/SPECTRAL_WINDOW')
 chan_freq_xf = tb.getcol('CHAN_FREQ').flatten()
 tb.close()
-
 chan_freq_xf_ghz = chan_freq_xf / 1e9
+n_xf_chan = len(chan_freq_xf_ghz)
+print(f"xftab frequency grid: {n_xf_chan} channels "
+      f"({chan_freq_xf_ghz.min():.3f} — {chan_freq_xf_ghz.max():.3f} GHz)")
 
-print(f"XF table frequency grid: {len(chan_freq_xf_ghz)} channels")
-print(f"  Range: {chan_freq_xf_ghz.min():.3f} - {chan_freq_xf_ghz.max():.3f} GHz")
+# ============================
+# Load XF Gains from Working-Channelisation Table
+# ============================
+print("\n=== Loading XF Gains ===")
 
-# Read table structure
-tb.open(xftab, nomodify=False)
-gains = tb.getcol('CPARAM')
-flag_original = tb.getcol('FLAG')
-time_col = tb.getcol('TIME')
+tb.open(xftab)
+gains_raw = tb.getcol('CPARAM')        # (1, n_xf_chan, n_rows)
+flags_raw = tb.getcol('FLAG')          # (1, n_xf_chan, n_rows)
+scans_tab = tb.getcol('SCAN_NUMBER')   # (n_rows,)
+times_tab = tb.getcol('TIME')          # (n_rows,)
 tb.close()
 
-print(f"  Table dimensions: {gains.shape}")
+print(f"Table shape: {gains_raw.shape} (pol, chan, rows)")
+print(f"Unique scans in table: {np.unique(scans_tab)}")
+
+raw_gains_per_scan = {}   # {scan: complex (n_xf_chan,)}
+raw_flags_per_scan = {}   # {scan: bool (n_xf_chan,)}
+
+# IQUV interpolated onto xftab channel grid for ±π resolution
+Q_xf_scans = np.zeros((n_scans, n_xf_chan))
+U_xf_scans = np.zeros((n_scans, n_xf_chan))
+V_xf_scans = np.zeros((n_scans, n_xf_chan))
+
+for scan_idx, scan in enumerate(scan_numbers):
+    scan_mask = scans_tab == scan
+    if not np.any(scan_mask):
+        print(f"WARNING: Scan {scan} not found in xftab")
+        raw_gains_per_scan[scan] = np.full(n_xf_chan, np.nan, dtype=complex)
+        raw_flags_per_scan[scan] = np.ones(n_xf_chan, dtype=bool)
+        Q_xf_scans[scan_idx] = np.nan
+        U_xf_scans[scan_idx] = np.nan
+        V_xf_scans[scan_idx] = np.nan
+        continue
+
+    ant_indices = np.where(scan_mask)[0]
+    g_scan = gains_raw[0, :, :][:, ant_indices]   # (n_xf_chan, n_ant)
+    f_scan = flags_raw[0, :, :][:, ant_indices]   # (n_xf_chan, n_ant)
+
+    g_masked = np.where(f_scan, np.nan + 0j, g_scan)
+    with np.errstate(all='ignore'):
+        med_real = np.nanmedian(np.real(g_masked), axis=-1)
+        med_imag = np.nanmedian(np.imag(g_masked), axis=-1)
+    median_g = med_real + 1j * med_imag
+
+    all_flagged = np.all(f_scan, axis=-1)
+    good = ~all_flagged & np.isfinite(median_g)
+    n_good = int(np.sum(good))
+    n_polcal_flagged = int(np.sum(all_flagged))
+    print(f"  Scan {scan}: {int(np.sum(scan_mask))} antennas, "
+          f"{n_good}/{n_xf_chan} good channels "
+          f"({n_polcal_flagged} flagged by polcal)")
+
+    median_g[~good] = np.nan
+    raw_gains_per_scan[scan] = median_g
+    raw_flags_per_scan[scan] = ~good
+
+    # Interpolate IQUV from MS channels onto xftab channels
+    for arr_ms, arr_xf in [(Q_scans[scan_idx], Q_xf_scans),
+                            (U_scans[scan_idx], U_xf_scans),
+                            (V_scans[scan_idx], V_xf_scans)]:
+        finite = np.isfinite(arr_ms)
+        if np.sum(finite) > 1:
+            arr_xf[scan_idx] = np.interp(chan_freq_xf_ghz, freq_ghz[finite], arr_ms[finite])
+        else:
+            arr_xf[scan_idx] = np.nan
+
+    # Flag xftab channels where IQUV is NaN after interpolation
+    iquv_bad = (~np.isfinite(Q_xf_scans[scan_idx]) |
+                ~np.isfinite(U_xf_scans[scan_idx]) |
+                ~np.isfinite(V_xf_scans[scan_idx]))
+    if np.any(iquv_bad):
+        n_iquv = int(np.sum(iquv_bad & ~raw_flags_per_scan[scan]))
+        if n_iquv > 0:
+            print(f"  Scan {scan}: flagging {n_iquv} xftab channels with no valid IQUV")
+        raw_flags_per_scan[scan] = raw_flags_per_scan[scan] | iquv_bad
+        raw_gains_per_scan[scan][iquv_bad] = np.nan
+
+# Also build a target_polang array on the xftab frequency grid
+if '3c286' in pacal_name.lower() or 'j1331' in pacal_name.lower():
+    target_polang_xf = compute_3c286_evpa(chan_freq_xf_ghz)
+else:
+    target_polang_xf = np.full(n_xf_chan, XF_TARGET_POLANG)
+
+# ============================
+# ±π Degeneracy Resolution Per Scan
+# ============================
+print("\n=== Resolving ±π Degeneracy Per Scan ===")
+
+# Snapshot the raw CASA polcal output before any sign flip is applied.
+# This is used in panel 1 of the diagnostic plot to show the ±π ambiguity.
+pre_pi_gains_per_scan = {scan: raw_gains_per_scan[scan].copy() for scan in scan_numbers}
+best_rm_per_scan    = {}
+best_sign_per_scan  = {}
+coarse_rm_per_scan  = {}
+per_ch_rm_per_scan  = {}
 
 if XF_AVG_SCAN:
-    # ============================
-    # Scan-Averaged XF Table
-    # ============================
-    
-    print("\n=== Scan-Averaged XF Table ===")
-    
-    # Use pre-computed frequency-averaged solution
-    scan_sol_data = freq_averaged_data_scans[0]  # All scans point to same solution
-    freq_for_interp = scan_sol_data['freq']
-    rho_for_interp = scan_sol_data['rho_rad']
-    
-    print(f"  Using {len(freq_for_interp)} frequency bins for interpolation")
-    
-    # Smooth if requested
-    if XF_USE_SMOOTHING and len(freq_for_interp) >= 5:
-        complex_for_smooth = np.exp(1j * rho_for_interp)
-        
-        window_length = XF_SAVGOL_WINDOW if XF_SAVGOL_WINDOW is not None else min(5, len(freq_for_interp))
+    med_iono_rm = float(np.median(iono_rm_per_scan))
+    med_chi = float(np.median(chi_deg_scans))
+
+    print(f"Scan-averaged mode: using median iono RM = {med_iono_rm:+.3f} rad/m², "
+          f"median χ = {med_chi:+.2f}°")
+
+    Q_avg = np.nanmean(Q_xf_scans, axis=0)
+    U_avg = np.nanmean(U_xf_scans, axis=0)
+    V_avg = np.nanmean(V_xf_scans, axis=0)
+
+    ref_scan = scan_numbers[0]
+    median_g = raw_gains_per_scan[ref_scan]
+
+    signed_gains, best_rm, grid_centre_rm, delta_rm, med_dev, coarse_rm, per_ch_rm = \
+        resolve_pi_degeneracy_scan(
+            median_g, Q_avg, U_avg, V_avg,
+            med_chi, chan_freq_xf_ghz, target_polang_xf,
+            med_iono_rm, iono_rm_err=float(np.median(iono_rm_err_per_scan)))
+
+    print(f"  Best RM={best_rm:.4f} rad/m² (Δ={delta_rm:+.4f}), MAD deviation={med_dev:.3f}°")
+
+    print_per_channel_resolution(
+        chan_freq_xf_ghz, signed_gains, pre_pi_gains_per_scan[ref_scan],
+        raw_flags_per_scan[ref_scan],
+        Q_avg, U_avg, V_avg, med_chi, best_rm, target_polang_xf)
+
+    for scan in scan_numbers:
+        raw_gains_per_scan[scan] = signed_gains
+        best_rm_per_scan[scan]   = best_rm
+        best_sign_per_scan[scan] = None
+        coarse_rm_per_scan[scan] = coarse_rm
+        per_ch_rm_per_scan[scan] = per_ch_rm
+
+else:
+    for scan_idx, scan in enumerate(scan_numbers):
+        print(f"\n  Scan {scan} (χ={chi_deg_scans[scan_idx]:+.2f}°, "
+              f"iono_RM={iono_rm_per_scan[scan_idx]:+.3f} rad/m²)")
+
+        median_g = raw_gains_per_scan[scan]
+
+        signed_gains, best_rm, grid_centre_rm, delta_rm, med_dev, coarse_rm, per_ch_rm = \
+            resolve_pi_degeneracy_scan(
+                median_g,
+                Q_xf_scans[scan_idx], U_xf_scans[scan_idx], V_xf_scans[scan_idx],
+                chi_deg_scans[scan_idx], chan_freq_xf_ghz, target_polang_xf,
+                iono_rm_per_scan[scan_idx],
+                iono_rm_err=iono_rm_err_per_scan[scan_idx])
+
+        print(f"    Best RM={best_rm:.4f} rad/m² (Δ={delta_rm:+.4f}), MAD deviation={med_dev:.3f}°")
+
+        print_per_channel_resolution(
+            chan_freq_xf_ghz, signed_gains, pre_pi_gains_per_scan[scan],
+            raw_flags_per_scan[scan],
+            Q_xf_scans[scan_idx], U_xf_scans[scan_idx], V_xf_scans[scan_idx],
+            chi_deg_scans[scan_idx], best_rm, target_polang_xf)
+
+        raw_gains_per_scan[scan] = signed_gains
+        best_rm_per_scan[scan] = best_rm
+        best_sign_per_scan[scan] = None
+        coarse_rm_per_scan[scan] = coarse_rm
+        per_ch_rm_per_scan[scan] = per_ch_rm
+
+# Rename for clarity in downstream code and diagnostic plots
+resolved_gains_per_scan = raw_gains_per_scan
+
+# Stage 1: raw phase + accepted/rejected residuals
+print("\nGenerating Stage 1 raw XF phase plot...")
+plot_raw_xf_phase_panels(chan_freq_xf_ghz, raw_gains_per_scan, raw_flags_per_scan,
+                          pre_pi_gains_per_scan, best_sign_per_scan,
+                          Q_xf_scans, U_xf_scans, V_xf_scans, chi_deg_scans,
+                          best_rm_per_scan, target_polang_xf,
+                          scan_numbers, xfdir)
+print(f"Saved: {xfdir}/xf_phase_stage1_raw.png")
+
+# Stage 2: post ±π resolution residuals (pre-flagging)
+print("\nGenerating Stage 2 derotated angle residuals plot (post ±π resolution)...")
+plot_derotated_angle_residuals(chan_freq_xf_ghz, Q_xf_scans, U_xf_scans, V_xf_scans,
+                               resolved_gains_per_scan, raw_flags_per_scan,
+                               chi_deg_scans, best_rm_per_scan,
+                               target_polang_xf, scan_numbers, xfdir,
+                               filename='xf_phase_stage2_post_pi.png',
+                               per_ch_rm_per_scan=per_ch_rm_per_scan)
+print(f"Saved: {xfdir}/xf_phase_stage2_post_pi.png")
+
+# ============================
+# Global Sign Sanity Check (80% rule)
+# ============================
+# For each scan, compute the fraction of valid channels whose de-rotated EVPA
+# lies within 45° of the target. If fewer than 80% pass, the ±π resolution
+# chose the wrong sign — force-flip that scan's gains now, before any
+# clipping or table writing occurs.
+print("\n=== Global Sign Sanity Check (80% rule) ===")
+_c = 2.998e8
+_any_flipped = False
+
+for scan_idx, scan in enumerate(scan_numbers):
+    g = resolved_gains_per_scan[scan]
+    flags = raw_flags_per_scan[scan]
+    valid = (~flags & np.isfinite(g) &
+             np.isfinite(Q_xf_scans[scan_idx]) & np.isfinite(U_xf_scans[scan_idx]) &
+             np.isfinite(V_xf_scans[scan_idx]))
+
+    if np.sum(valid) < 5:
+        print(f"  Scan {scan}: insufficient channels for sanity check — skipping")
+        continue
+
+    freq_hz = chan_freq_xf_ghz[valid] * 1e9
+    lambda_sq = (_c / freq_hz) ** 2
+    Q_v = Q_xf_scans[scan_idx][valid]
+    U_v = U_xf_scans[scan_idx][valid]
+    V_v = V_xf_scans[scan_idx][valid]
+    g_v = g[valid]
+
+    rho = np.angle(g_v)
+    U_xh, V_xh = correct_crosshand_phase(U_v, V_v, rho)
+    Q_sky, U_sky = correct_parallactic_angle(Q_v, U_xh, chi_deg_scans[scan_idx])
+    evpa_deg = calculate_derotated_angle(Q_sky, U_sky, best_rm_per_scan[scan], lambda_sq)
+
+    deviation = (evpa_deg - target_polang_xf[valid] + 90) % 180 - 90
+    frac_good = float(np.sum(np.abs(deviation) < 45)) / float(np.sum(valid))
+
+    if frac_good < 0.80:
+        print(f"  Scan {scan}: only {frac_good*100:.1f}% of channels within 45° of target "
+              f"— FORCE-FLIPPING SIGN")
+        resolved_gains_per_scan[scan] = -resolved_gains_per_scan[scan]
+        _any_flipped = True
+    else:
+        print(f"  Scan {scan}: {frac_good*100:.1f}% of channels within 45° of target — OK")
+
+if _any_flipped:
+    print("\nRe-generating Stage 2 plot after force-flip(s)...")
+    plot_derotated_angle_residuals(chan_freq_xf_ghz, Q_xf_scans, U_xf_scans, V_xf_scans,
+                                   resolved_gains_per_scan, raw_flags_per_scan,
+                                   chi_deg_scans, best_rm_per_scan,
+                                   target_polang_xf, scan_numbers, xfdir,
+                                   filename='xf_phase_stage2_post_pi.png',
+                                   per_ch_rm_per_scan=per_ch_rm_per_scan)
+    print(f"Saved (updated): {xfdir}/xf_phase_stage2_post_pi.png")
+
+# ============================
+# Per-Channel Population Sign Check
+# ============================
+# Post sign-resolution but pre-clipping. For each channel, compute its
+# circular distance from the band-wide median XF phase. If flipping the sign
+# reduces that distance by more than 30° (well below π/2), it's almost
+# certainly a misresolved ±π channel rather than noise — adopt the flip.
+# Channels already flagged (NaN) are skipped.
+print("\n=== Per-Channel Population Sign Check (threshold=30°) ===")
+_flip_threshold = 30.0
+_total_ch_flipped = 0
+
+for scan_idx, scan in enumerate(scan_numbers):
+    g = resolved_gains_per_scan[scan].copy()
+    flags = raw_flags_per_scan[scan]
+    valid = ~flags & np.isfinite(g)
+
+    if np.sum(valid) < 10:
+        print(f"  Scan {scan}: too few valid channels — skipping")
+        continue
+
+    # Circular median phase of the whole band
+    phases = np.degrees(np.angle(g[valid]))
+    circ_mean = np.degrees(np.angle(np.mean(np.exp(1j * np.radians(phases)))))
+
+    n_flipped = 0
+    valid_idx = np.where(valid)[0]
+
+    for ch in valid_idx:
+        phase_ch = np.degrees(np.angle(g[ch]))
+        phase_fl = np.degrees(np.angle(-g[ch]))
+
+        # Circular distance to population median, wrapped to [0, 180]
+        dist_now  = abs(((phase_ch - circ_mean + 180) % 360) - 180)
+        dist_flip = abs(((phase_fl - circ_mean + 180) % 360) - 180)
+
+        if dist_flip < dist_now - _flip_threshold:
+            g[ch] = -g[ch]
+            n_flipped += 1
+
+    if n_flipped > 0:
+        resolved_gains_per_scan[scan] = g
+        print(f"  Scan {scan}: {n_flipped} channels flipped "
+              f"(reduced distance to population by >{_flip_threshold}°)")
+    else:
+        print(f"  Scan {scan}: 0 channels flipped — all consistent with population")
+
+    _total_ch_flipped += n_flipped
+
+print(f"  Total channels flipped by population check: {_total_ch_flipped}")
+
+# ============================
+# Global 10σ Circular Phase Clip
+# ============================
+# Work on copies so we can show resolved vs post-clipping in the diagnostic plot
+working_gains = {scan: resolved_gains_per_scan[scan].copy() for scan in scan_numbers}
+working_flags = {scan: raw_flags_per_scan[scan].copy() for scan in scan_numbers}
+
+print("\n=== Global 10σ Circular Phase Clip ===")
+working_flags, global_flagged_per_scan = global_sigma_clip_gains(
+    working_gains, working_flags, scan_numbers, sigma=10.0)
+
+# Snapshot flags after global clip so poly flags can be identified separately
+post_global_flags = {scan: working_flags[scan].copy() for scan in scan_numbers}
+
+# ============================
+# Iterative Polynomial σ-Clip Per Scan
+# ============================
+poly_order = int(XF_POLY_ORDER) if XF_POLY_ORDER and int(XF_POLY_ORDER) > 0 else 0
+poly_coeffs_per_scan = {scan: (None, None) for scan in scan_numbers}
+poly_flagged_per_scan = {scan: np.zeros(n_xf_chan, dtype=bool) for scan in scan_numbers}
+
+if poly_order > 0:
+    print(f"\n=== Iterative Polynomial σ-Clip (order={poly_order}, {XF_POLY_SIGMA_CLIP}σ) ===")
+    for scan_idx, scan in enumerate(scan_numbers):
+        n_before = int(np.sum(~working_flags[scan]))
+        working_flags[scan], p_real, p_imag = iterative_poly_clip_scan(
+            working_gains[scan], working_flags[scan],
+            chan_freq_xf_ghz, poly_order, sigma=float(XF_POLY_SIGMA_CLIP))
+        poly_coeffs_per_scan[scan] = (p_real, p_imag)
+        n_after = int(np.sum(~working_flags[scan]))
+        n_clipped = n_before - n_after
+        poly_flagged_per_scan[scan] = working_flags[scan] & ~post_global_flags[scan]
+        if n_clipped > 0:
+            print(f"  Scan {scan}: {n_clipped} channels flagged by poly clip "
+                  f"({n_after}/{n_xf_chan} remaining)")
+        else:
+            print(f"  Scan {scan}: 0 channels flagged by poly clip "
+                  f"({n_after}/{n_xf_chan} remaining)")
+else:
+    print("\nPolynomial sigma clipping disabled (XF_POLY_ORDER=0)")
+
+# ============================
+# Rolling Circular Median Clip
+# ============================
+# Catches isolated spikes that survive global and polynomial clipping.
+# Compares each channel's complex gain to the mean of its 7 nearest unflagged
+# neighbours via |angle(g × conj(g_med))| — intrinsically wrap-safe at ±π.
+_roll_sigma = float(XF_MAD_SIGMA_CLIP) if XF_MAD_SIGMA_CLIP else 5.0
+print(f"\n=== Rolling Circular Median Clip (window=7, {_roll_sigma}σ) ===")
+rolling_flagged_per_scan = {scan: np.zeros(n_xf_chan, dtype=bool) for scan in scan_numbers}
+
+for scan_idx, scan in enumerate(scan_numbers):
+    pre_flags = working_flags[scan].copy()
+    print(f"\n  Scan {scan}:")
+    working_flags[scan], n_roll = rolling_circular_clip(
+        working_gains[scan], working_flags[scan],
+        chan_freq_xf_ghz, window=7, sigma=_roll_sigma)
+    rolling_flagged_per_scan[scan] = working_flags[scan] & ~pre_flags
+    print(f"  Scan {scan}: {n_roll} channels flagged by rolling circular clip")
+
+# Store flagged gains and all three flag sets for diagnostic plot
+flagged_gains_per_scan = {
+    scan: (working_gains[scan].copy(),
+           working_flags[scan].copy(),
+           global_flagged_per_scan[scan].copy(),
+           poly_flagged_per_scan[scan].copy(),
+           rolling_flagged_per_scan[scan].copy())
+    for scan in scan_numbers}
+
+# Stage 3: post flagging residuals (surviving channels only)
+print("\nGenerating Stage 3 derotated angle residuals plot (post flagging)...")
+plot_derotated_angle_residuals(chan_freq_xf_ghz, Q_xf_scans, U_xf_scans, V_xf_scans,
+                               resolved_gains_per_scan, raw_flags_per_scan,
+                               chi_deg_scans, best_rm_per_scan,
+                               target_polang_xf, scan_numbers, xfdir,
+                               filename='xf_phase_stage3_post_flagging.png',
+                               flag_override=working_flags,
+                               per_ch_rm_per_scan=per_ch_rm_per_scan)
+print(f"Saved: {xfdir}/xf_phase_stage3_post_flagging.png")
+
+# Per-channel RM histogram
+print("\nGenerating per-channel RM histogram...")
+plot_per_channel_rm_histogram(chan_freq_xf_ghz, per_ch_rm_per_scan, coarse_rm_per_scan,
+                               raw_flags_per_scan, scan_numbers, xfdir)
+print(f"Saved: {xfdir}/xf_per_channel_rm_histogram.png")
+
+# ============================
+# Optional Savitzky-Golay Smoothing
+# ============================
+if XF_USE_SMOOTHING:
+    print("\n=== Applying Savitzky-Golay Smoothing ===")
+    for scan in scan_numbers:
+        good = ~working_flags[scan] & np.isfinite(working_gains[scan])
+        n_good = int(np.sum(good))
+        if n_good < 5:
+            continue
+        window_length = XF_SAVGOL_WINDOW if XF_SAVGOL_WINDOW is not None else min(5, n_good)
         if window_length % 2 == 0:
             window_length += 1
-        window_length = min(window_length, len(freq_for_interp))
+        window_length = min(window_length, n_good)
         if window_length % 2 == 0:
             window_length -= 1
-        
         polyorder = min(XF_SAVGOL_POLYORDER, window_length - 1)
-        
-        real_smooth = savgol_filter(np.real(complex_for_smooth), window_length, polyorder)
-        imag_smooth = savgol_filter(np.imag(complex_for_smooth), window_length, polyorder)
-        complex_smooth = real_smooth + 1j * imag_smooth
-        complex_smooth = complex_smooth / np.abs(complex_smooth)
-        print(f"  Applied smoothing (window={window_length}, poly={polyorder})")
-    else:
-        complex_smooth = np.exp(1j * rho_for_interp)
-    
-    # Interpolate onto XF table frequencies
-    real_interp = np.interp(chan_freq_xf_ghz, freq_for_interp, np.real(complex_smooth))
-    imag_interp = np.interp(chan_freq_xf_ghz, freq_for_interp, np.imag(complex_smooth))
-    
+        g_good = working_gains[scan][good]
+        re_smooth = savgol_filter(np.real(g_good), window_length, polyorder)
+        im_smooth = savgol_filter(np.imag(g_good), window_length, polyorder)
+        smoothed = re_smooth + 1j * im_smooth
+        smoothed = smoothed / np.abs(smoothed)
+        working_gains[scan][good] = smoothed
+        print(f"  Scan {scan}: smoothed {n_good} channels "
+              f"(window={window_length}, poly={polyorder})")
+
+# ============================
+# Write Solutions to xftab
+# ============================
+print("\n=== Writing Solutions to xftab ===")
+
+tb.open(xftab, nomodify=False)
+gains_out = tb.getcol('CPARAM')     # (1, n_xf_chan, n_rows)
+flags_out = tb.getcol('FLAG')       # (1, n_xf_chan, n_rows)
+time_out  = tb.getcol('TIME')       # (n_rows,)
+scans_out = tb.getcol('SCAN_NUMBER')
+tb.close()
+
+print(f"xftab dimensions: {gains_out.shape}")
+
+final_gains_per_scan = {}
+
+for scan_idx, scan in enumerate(scan_numbers):
+    scan_mask_out = scans_out == scan
+    if not np.any(scan_mask_out):
+        print(f"WARNING: Scan {scan} not found in xftab rows — skipping")
+        continue
+
+    ant_idx_out = np.where(scan_mask_out)[0]
+    g_final = working_gains[scan].copy()
+    f_final = working_flags[scan].copy()
+
+    # Enforce unit amplitude on all unflagged channels
+    valid_g = ~f_final & np.isfinite(g_final)
+    if np.any(valid_g):
+        g_final[valid_g] = g_final[valid_g] / np.abs(g_final[valid_g])
+
+    # NaN flagged channels for diagnostic plot
+    g_diag = g_final.copy()
+    g_diag[f_final] = np.nan
+
+    # Also NaN channels flagged in polcal table itself
+    polcal_flagged = flags_out[0, :, :][:, ant_idx_out[0]].astype(bool)
+    g_diag[polcal_flagged] = np.nan
+
+    final_gains_per_scan[scan] = g_diag
+
+    gains_out[0, :, :][:, ant_idx_out] = np.where(
+        f_final[:, np.newaxis], 1.0 + 0.0j, g_final[:, np.newaxis])
+    flags_out[0, :, :][:, ant_idx_out] = np.where(
+        f_final[:, np.newaxis], True, flags_out[0, :, :][:, ant_idx_out])
+
+    time_out[scan_mask_out] = scan_times[scan_idx]
+
+    n_good = int(np.sum(~f_final))
+    n_flagged = int(np.sum(f_final))
+    print(f"  Scan {scan}: wrote {n_good}/{n_xf_chan} valid channels "
+          f"({n_flagged} flagged)")
+
+tb.open(xftab, nomodify=False)
+tb.putcol('CPARAM', gains_out)
+tb.putcol('FLAG', flags_out)
+tb.putcol('TIME', time_out)
+tb.flush()
+tb.close()
+
+print(f"\nSUCCESS: XF table populated: {xftab}")
+
+# ============================
+# Diagnostic Plots
+# ============================
+print("\n=== Generating Diagnostic Plots ===")
+
+# XF phase diagnostic (raw → flagged → final)
+print("Generating XF phase diagnostic plot...")
+plot_xf_phase_diagnostic(chan_freq_xf_ghz, chan_freq_xf_ghz,
+                          pre_pi_gains_per_scan,
+                          resolved_gains_per_scan,
+                          flagged_gains_per_scan,
+                          poly_coeffs_per_scan,
+                          final_gains_per_scan,
+                          scan_numbers, xfdir)
+print(f"Saved: {xfdir}/xf_phase_diagnostic.png")
+
+# Post-correction Stokes spectra and V-zeroing check
+print("\nApplying solutions to IQUV for post-correction diagnostic...")
+
+I_corrected_scans = np.zeros((n_scans, nchan))
+Q_corrected_scans = np.zeros((n_scans, nchan))
+U_corrected_scans = np.zeros((n_scans, nchan))
+V_corrected_scans = np.zeros((n_scans, nchan))
+
+for scan_idx, scan in enumerate(scan_numbers):
+    g_xf = working_gains[scan].copy()
+    f_xf = working_flags[scan].copy()
+    valid_xf = ~f_xf & np.isfinite(g_xf)
+
+    if np.sum(valid_xf) < 2:
+        I_corrected_scans[scan_idx] = np.nan
+        Q_corrected_scans[scan_idx] = np.nan
+        U_corrected_scans[scan_idx] = np.nan
+        V_corrected_scans[scan_idx] = np.nan
+        continue
+
+    # Interpolate xftab gains onto MS full-resolution frequency grid
+    freq_src  = chan_freq_xf_ghz[valid_xf]
+    gains_src = g_xf[valid_xf]
+    gains_src = gains_src / np.abs(gains_src)  # ensure unit amplitude
+
+    real_interp = np.interp(freq_ghz, freq_src, np.real(gains_src))
+    imag_interp = np.interp(freq_ghz, freq_src, np.imag(gains_src))
     complex_interp = real_interp + 1j * imag_interp
     complex_interp = complex_interp / np.abs(complex_interp)
-    
-    valid_range = (chan_freq_xf_ghz >= freq_for_interp.min()) & (chan_freq_xf_ghz <= freq_for_interp.max())
-    
-    final_rho_for_corrections = complex_interp
-    complex_interp_casa = np.conj(complex_interp)
-    
-    # Write to table (single time stamp = mean of all scans)
-    tb.open(xftab, nomodify=False)
-    gains = tb.getcol('CPARAM')
-    flags = tb.getcol('FLAG')
-    
-    n_pol, n_freq, n_antennas = gains.shape
-    
-    print(f"  XF table structure: {gains.shape} (pol, freq, ant)")
-    
-    if n_freq != len(chan_freq_xf_ghz):
-        print(f"WARNING: Expected {len(chan_freq_xf_ghz)} frequency channels, got {n_freq}")
-    
-    # Broadcast solution across all antennas: (freq,) -> (1, freq, ant)
-    gains[0, :, :] = complex_interp_casa[:, np.newaxis]
-    
-    # Flag out-of-range channels for all antennas
-    flags[0, ~valid_range, :] = True
-    
-    # Set flagged gains to unity
-    gains[0, ~valid_range, :] = 1.0 + 0.0j
-    
-    # Update time stamp to mean of all scans
-    mean_time = np.mean(scan_times)
-    time_col[:] = mean_time
-    
-    tb.putcol('CPARAM', gains)
-    tb.putcol('FLAG', flags)
-    tb.putcol('TIME', time_col)
-    tb.flush()
-    tb.close()
-    
-    print(f"  Wrote scan-averaged XF solutions (time={mean_time:.1f} MJD)")
-    print(f"  Flagged {np.sum(~valid_range)} / {len(chan_freq_xf_ghz)} out-of-range channels")
-    
-    print("\nGenerating final rho values diagnostic plot...")
-    
-    # freq_averaged_data_scans already contains the pre-computed solution
-    plot_final_rho_values(freq_ghz, U_scans, V_scans, rho_rad_scans, selected_rho_per_channel_scans,
-                         freq_averaged_data_scans, selected_solution_per_channel_scans, scan_numbers, xfdir, XF_MIN_CROSS_FLUX)
-    print(f"Saved: {xfdir}/final_rho_values.png")
 
-else:
-    # ============================
-    # Per-Scan XF Table
-    # ============================
-    
-    print("\n=== Per-Scan XF Table ===")
-    
-    tb.open(xftab, nomodify=False)
-    gains = tb.getcol('CPARAM')
-    flags = tb.getcol('FLAG')
-    time_col = tb.getcol('TIME')
-    
-    n_pol, n_freq, n_ant_total = gains.shape
-    
-    print(f"  Table dimensions: {gains.shape} (pol, freq, ant×scans)")
-    
-    n_antennas_per_scan = n_ant_total // n_scans
-    
-    if n_antennas_per_scan * n_scans != n_ant_total:
-        print(f"WARNING: Antenna dimension {n_ant_total} not evenly divisible by {n_scans} scans")
-        n_antennas_per_scan = n_ant_total // n_scans
-    
-    print(f"  Detected {n_antennas_per_scan} antennas per scan, {n_scans} scans")
-    print(f"  Scan solutions will be written to antenna indices: ", end='')
-    for i in range(n_scans):
-        print(f"scan{i}=[{i*n_antennas_per_scan}:{(i+1)*n_antennas_per_scan}]", end=' ')
-    print()
-    
-    per_scan_rho_for_corrections = []
-    
-    for scan_idx in range(n_scans):
-        scan = scan_numbers[scan_idx]
-        
-        print(f"  Processing scan {scan} (index {scan_idx})...")
-        
-        scan_sol_data = freq_averaged_data_scans[scan_idx]
-        
-        if scan_sol_data is not None:
-            model_freq_ghz = scan_sol_data['freq']
-            model_rho_rad = scan_sol_data['rho_rad']
-        else:
-            model_freq_ghz = freq_ghz
-            model_rho_rad = selected_rho_per_channel_scans[scan_idx]
-        
-        good_mask = np.isfinite(model_rho_rad)
-        
-        if np.sum(good_mask) < 2:
-            print(f"    Scan {scan}: Insufficient good data, flagging all")
-            ant_start = scan_idx * n_antennas_per_scan
-            ant_end = (scan_idx + 1) * n_antennas_per_scan
-            flags[:, :, ant_start:ant_end] = True
-            gains[:, :, ant_start:ant_end] = 1.0 + 0.0j
-            per_scan_rho_for_corrections.append(None)
-            continue
-        
-        freq_good = model_freq_ghz[good_mask]
-        rho_good = model_rho_rad[good_mask]
-        
-        # Convert to complex unit vectors
-        complex_good = np.exp(1j * rho_good)
-        
-        # Smooth if requested
-        if XF_USE_SMOOTHING and len(freq_good) >= 5:
-            window_length = XF_SAVGOL_WINDOW if XF_SAVGOL_WINDOW is not None else min(5, len(freq_good))
-            if window_length % 2 == 0:
-                window_length += 1
-            window_length = min(window_length, len(freq_good))
-            if window_length % 2 == 0:
-                window_length -= 1
-            
-            polyorder = min(XF_SAVGOL_POLYORDER, window_length - 1)
-            
-            real_smooth = savgol_filter(np.real(complex_good), window_length, polyorder)
-            imag_smooth = savgol_filter(np.imag(complex_good), window_length, polyorder)
-            complex_smooth = real_smooth + 1j * imag_smooth
-            complex_smooth = complex_smooth / np.abs(complex_smooth)
-        else:
-            complex_smooth = complex_good
-        
-        # Interpolate onto XF table frequencies
-        real_interp = np.interp(chan_freq_xf_ghz, freq_good, np.real(complex_smooth))
-        imag_interp = np.interp(chan_freq_xf_ghz, freq_good, np.imag(complex_smooth))
-        
-        complex_interp = real_interp + 1j * imag_interp
-        complex_interp = complex_interp / np.abs(complex_interp)
-        
-        valid_range = (chan_freq_xf_ghz >= freq_good.min()) & (chan_freq_xf_ghz <= freq_good.max())
-        
-        per_scan_rho_for_corrections.append(complex_interp)
-        
-        complex_interp_casa = np.conj(complex_interp)
-        
-        # Write to gains for this scan's antennas
-        ant_start = scan_idx * n_antennas_per_scan
-        ant_end = (scan_idx + 1) * n_antennas_per_scan
-        
-        # Broadcast across all antennas for this scan: (1, n_freq, n_ant_per_scan)
-        gains_scan = np.tile(complex_interp_casa.reshape(1, -1, 1), (1, 1, n_antennas_per_scan))
-        gains[:, :, ant_start:ant_end] = gains_scan
-        
-        # Flag out-of-range channels for this scan
-        flags[0, ~valid_range, ant_start:ant_end] = True
-        
-        # Set flagged gains to unity
-        gains[:, :, ant_start:ant_end][flags[:, :, ant_start:ant_end]] = 1.0 + 0.0j
-        
-        print(f"    Scan {scan}: Wrote solutions to antenna indices {ant_start}-{ant_end-1}")
-        print(f"    Flagged {np.sum(~valid_range)} / {len(chan_freq_xf_ghz)} out-of-range channels")
-    
-    tb.putcol('CPARAM', gains)
-    tb.putcol('FLAG', flags)
-    
-    for scan_idx in range(n_scans):
-        ant_start = scan_idx * n_antennas_per_scan
-        ant_end = (scan_idx + 1) * n_antennas_per_scan
-        time_col[ant_start:ant_end] = scan_times[scan_idx]
-    
-    tb.putcol('TIME', time_col)
-    tb.flush()
-    tb.close()
-    
-    print(f"  Wrote per-scan XF solutions for {n_scans} scans")
-    
-    print("\nGenerating final rho values diagnostic plot...")
-    
-    plot_final_rho_values(freq_ghz, U_scans, V_scans, rho_rad_scans, selected_rho_per_channel_scans,
-                         freq_averaged_data_scans, selected_solution_per_channel_scans, scan_numbers, xfdir, XF_MIN_CROSS_FLUX)
-    print(f"Saved: {xfdir}/final_rho_values.png")
+    # CASA applies conj(gain) to data
+    rho_interp = np.angle(np.conj(complex_interp))
 
-print(f"SUCCESS: XF table populated: {xftab}")
+    U_corr, V_corr = correct_crosshand_phase(
+        U_scans[scan_idx], V_scans[scan_idx], rho_interp)
 
-# ============================
-# ============================
-# for diagnostic plots.
+    I_corrected_scans[scan_idx] = I_scans[scan_idx]
+    Q_corrected_scans[scan_idx] = Q_scans[scan_idx]
+    U_corrected_scans[scan_idx] = U_corr
+    V_corrected_scans[scan_idx] = V_corr
 
-print("\n=== Applying Cross-Hand Phase Corrections for Diagnostic Plots ===")
+    P_corr = np.sqrt(Q_scans[scan_idx] ** 2 + U_corr ** 2)
+    P_frac = np.nanmedian(P_corr / I_scans[scan_idx]) * 100
+    V_frac = np.nanmedian(np.abs(V_corr) / I_scans[scan_idx]) * 100
+    print(f"  Scan {scan}: P/I = {P_frac:.3f}%, |V|/I = {V_frac:.3f}%")
 
-if XF_AVG_SCAN:
-    print("Scan-averaged solution: applying same rho to each scan independently")
-    
-    # Interpolate scan-averaged rho solution onto original frequency grid
-    rho_interp_rad = np.angle(final_rho_for_corrections)
-    rho_interp = np.interp(freq_ghz, chan_freq_xf_ghz, rho_interp_rad)
-    
-    I_corrected_scans = np.zeros((n_scans, nchan))
-    Q_corrected_scans = np.zeros((n_scans, nchan))
-    U_corrected_scans = np.zeros((n_scans, nchan))
-    V_corrected_scans = np.zeros((n_scans, nchan))
-    
-    for scan_idx in range(n_scans):
-        U_corrected, V_corrected = correct_crosshand_phase(U_scans[scan_idx], V_scans[scan_idx], rho_interp)
-        
-        I_corrected_scans[scan_idx] = I_scans[scan_idx]
-        Q_corrected_scans[scan_idx] = Q_scans[scan_idx]
-        U_corrected_scans[scan_idx] = U_corrected
-        V_corrected_scans[scan_idx] = V_corrected
-    
-    print(f"  Applied scan-averaged correction to {n_scans} scan(s)")
-    
-    # Calculate polarization statistics per scan
+# Post-correction check: optionally apply xftab to myms and extract full IQUV
+I_ms_scans = None
+Q_ms_scans = None
+U_ms_scans = None
+V_ms_scans = None
+
+if XF_APPLY_TO_MS:
+    print("\n=== Applying XF table to myms and extracting MS IQUV ===")
+
+    applycal(vis=myms,
+             field=pacal_name,
+             parang=False,
+             gaintable=[ktab, bptab, gptab, gtab, dftab, xftab],
+             gainfield=[pacal_name, bpcal_name, pacal_name, pacal_name,
+                        bpcal_name, pacal_name],
+             interp=['linear', 'linear', 'linear', 'linear', 'linear', 'linear'],
+             flagbackup=False)
+
+    print("  Extracting IQUV from CORRECTED_DATA in myms...")
+    I_ms_scans = np.full((n_scans, nchan), np.nan)
+    Q_ms_scans = np.full((n_scans, nchan), np.nan)
+    U_ms_scans = np.full((n_scans, nchan), np.nan)
+    V_ms_scans = np.full((n_scans, nchan), np.nan)
+
     for scan_idx, scan in enumerate(scan_numbers):
-        P_corr = np.sqrt(Q_corrected_scans[scan_idx]**2 + U_corrected_scans[scan_idx]**2)
-        P_frac = np.nanmedian(P_corr / I_corrected_scans[scan_idx]) * 100
-        V_frac = np.nanmedian(np.abs(V_corrected_scans[scan_idx]) / I_corrected_scans[scan_idx]) * 100
-        print(f"  Scan {scan}: P/I = {P_frac:.2f}%, |V|/I = {V_frac:.2f}%")
-    
-    # Generate corrected Stokes spectra plot (zoomed on Stokes V only)
-    plot_stokes_spectra(freq_ghz, I_corrected_scans, Q_corrected_scans, 
-                                   U_corrected_scans, V_corrected_scans, 
-                                   scan_numbers, xfdir, 
-                                   filename='stokes_spectra_postXF.png',
-                                   title='Post-XF Stokes Parameters (Scan-Averaged Rho)',
-                                   zoom_percentile=90,
-                                   zoom_stokes=['V'])
-    
-    # Save corrected data
-    np.savez(os.path.join(xfdir, 'final_corrected_stokes_spectra.npz'),
-             freq_ghz=freq_ghz,
-             scan_numbers=scan_numbers,
-             I_corrected_scans=I_corrected_scans,
-             Q_corrected_scans=Q_corrected_scans,
-             U_corrected_scans=U_corrected_scans,
-             V_corrected_scans=V_corrected_scans,
-             rho_applied=rho_interp)
-    
-    print(f"  Saved: {xfdir}/final_corrected_stokes_spectra.npz")
-
-else:
-    # Per-scan mode: apply each scan's individual rho solution
-    print("Per-scan solutions: applying individual rho per scan")
-    
-    I_corrected_scans = np.zeros((n_scans, nchan))
-    Q_corrected_scans = np.zeros((n_scans, nchan))
-    U_corrected_scans = np.zeros((n_scans, nchan))
-    V_corrected_scans = np.zeros((n_scans, nchan))
-    
-    for scan_idx in range(n_scans):
-        if per_scan_rho_for_corrections[scan_idx] is None:
-            I_corrected_scans[scan_idx] = np.nan
-            Q_corrected_scans[scan_idx] = np.nan
-            U_corrected_scans[scan_idx] = np.nan
-            V_corrected_scans[scan_idx] = np.nan
+        ms.open(myms)
+        ms.selectinit(reset=True)
+        ok = ms.msselect({'field': pacal_name, 'scan': str(scan)})
+        if not ok:
+            ms.close()
+            print(f"  WARNING: Could not select field={pacal_name}, scan={scan}")
             continue
-        
-        # Interpolate this scan's solution onto original frequency grid
-        rho_interp_rad = np.angle(per_scan_rho_for_corrections[scan_idx])
-        rho_interp = np.interp(freq_ghz, chan_freq_xf_ghz, rho_interp_rad)
-        
-        U_corr, V_corr = correct_crosshand_phase(U_scans[scan_idx], V_scans[scan_idx], rho_interp)
-        
-        I_corrected_scans[scan_idx] = I_scans[scan_idx]
-        Q_corrected_scans[scan_idx] = Q_scans[scan_idx]
-        U_corrected_scans[scan_idx] = U_corr
-        V_corrected_scans[scan_idx] = V_corr
-    
-    print(f"  Applied per-scan corrections to {n_scans} scans")
-    
-    # Calculate per-scan corrected polarization statistics
-    for scan_idx, scan in enumerate(scan_numbers):
-        if np.all(np.isnan(U_corrected_scans[scan_idx])):
+
+        ms.selectpolarization(['I', 'Q', 'U', 'V'])
+        d = ms.getdata(['corrected_data', 'flag', 'weight_spectrum', 'weight'])
+        ms.close()
+
+        if 'corrected_data' not in d or 'flag' not in d:
+            print(f"  WARNING: Scan {scan} missing corrected_data")
             continue
-        P_corr = np.sqrt(Q_corrected_scans[scan_idx]**2 + U_corrected_scans[scan_idx]**2)
-        P_frac = np.nanmedian(P_corr / I_corrected_scans[scan_idx]) * 100
-        V_frac = np.nanmedian(np.abs(V_corrected_scans[scan_idx]) / I_corrected_scans[scan_idx]) * 100
-        print(f"  Scan {scan}: P = {P_frac:.3f}%, |V| = {V_frac:.3f}%")
-    
-    # Plot final corrected spectra (zoomed on Stokes V only)
-    plot_stokes_spectra(freq_ghz, I_corrected_scans, Q_corrected_scans, 
-                                   U_corrected_scans, V_corrected_scans, 
-                                   scan_numbers, xfdir, 
-                                   filename='stokes_spectra_postXF.png',
-                                   title='Post-XF Stokes Parameters (Per-Scan)',
-                                   zoom_percentile=90,
-                                   zoom_stokes=['V'])
-    
-    # Save corrected spectra
-    np.savez(os.path.join(xfdir, 'final_corrected_stokes_spectra.npz'),
-             freq_ghz=freq_ghz,
-             scan_numbers=scan_numbers,
-             I_corrected_scans=I_corrected_scans,
-             Q_corrected_scans=Q_corrected_scans,
-             U_corrected_scans=U_corrected_scans,
-             V_corrected_scans=V_corrected_scans)
-    
-    print(f"  Saved: {xfdir}/final_corrected_stokes_spectra.npz")
 
-print(f"Saved: {xfdir}/stokes_spectra_postXF.png")
+        d['data'] = d.pop('corrected_data')
+        data_scan = d['data']
+        raw_flag_scan = np.asarray(d['flag'])
+        ncorr, nchan_scan, nrow_scan = data_scan.shape
 
-# Cleanup
-shutil.rmtree(temp_ms)
+        if ncorr != 4:
+            print(f"  WARNING: Scan {scan} has {ncorr} correlations, skipping")
+            continue
+
+        have_wspec = 'weight_spectrum' in d
+        flag_iquv_scan = build_iquv_flag(raw_flag_scan, nchan_scan, nrow_scan)
+        W_scan = build_iquv_weights(d, have_wspec, nchan_scan, nrow_scan)
+        del d
+
+        vis_avg_scan, _ = compute_weighted_averages(data_scan, W_scan, flag_iquv_scan)
+        I_ms_scans[scan_idx] = np.real(vis_avg_scan[0])
+        Q_ms_scans[scan_idx] = np.real(vis_avg_scan[1])
+        U_ms_scans[scan_idx] = np.real(vis_avg_scan[2])
+        V_ms_scans[scan_idx] = np.real(vis_avg_scan[3])
+
+        with np.errstate(all='ignore'):
+            V_med = np.nanmedian(np.abs(V_ms_scans[scan_idx]))
+        print(f"  Scan {scan}: median |V_MS| = {V_med:.4f} Jy")
+
+        del data_scan, raw_flag_scan, flag_iquv_scan, W_scan
+
+# Post-XF Stokes spectra — analytic correction
+plot_stokes_spectra(freq_ghz, I_corrected_scans, Q_corrected_scans,
+                    U_corrected_scans, V_corrected_scans,
+                    scan_numbers, xfdir,
+                    filename='stokes_spectra_postXF_analytic.png',
+                    title='Post-XF Stokes Parameters (Analytic correction)')
+print(f"Saved: {xfdir}/stokes_spectra_postXF_analytic.png")
+
+# Post-XF Stokes spectra — CASA MS CORRECTED_DATA (if available)
+if I_ms_scans is not None:
+    plot_stokes_spectra(freq_ghz, I_ms_scans, Q_ms_scans,
+                        U_ms_scans, V_ms_scans,
+                        scan_numbers, xfdir,
+                        filename='stokes_spectra_postXF_casa.png',
+                        title='Post-XF Stokes Parameters (CASA CORRECTED_DATA)')
+    print(f"Saved: {xfdir}/stokes_spectra_postXF_casa.png")
+
+# Save corrected spectra
+np.savez(os.path.join(xfdir, 'final_corrected_stokes_spectra.npz'),
+         freq_ghz=freq_ghz,
+         scan_numbers=scan_numbers,
+         I_corrected_scans=I_corrected_scans,
+         Q_corrected_scans=Q_corrected_scans,
+         U_corrected_scans=U_corrected_scans,
+         V_corrected_scans=V_corrected_scans)
+print(f"Saved: {xfdir}/final_corrected_stokes_spectra.npz")
+
 print("\n=== Script Complete ===")

@@ -17,6 +17,7 @@ from oxkat import config as cfg
 
 SET_REFANT       = True
 ADAPTIVE_CHANNELS = True
+DO_DD_SELFCAL    = False
 
 
 def get_adaptive_freq_intervals(yaml_path, n_model_channels):
@@ -137,11 +138,14 @@ def main():
     freq_int_overrides_stage1 = []
     freq_int_overrides_stage2 = []
     if ADAPTIVE_CHANNELS:
+        # Stage 2 YAML depends on whether DD selfcal is active
+        stage2_yaml = CAL_DDECAL_YAML if DO_DD_SELFCAL else cfg.CAL_2GC_YAML_COMPLEX
         ratio1, freq_int_overrides_stage1, zeros1, ok1 = get_adaptive_freq_intervals(cfg.CAL_2GC_YAML, cfg.WSC_DMASK_CHANNELSOUT)
-        ratio2, freq_int_overrides_stage2, zeros2, ok2 = get_adaptive_freq_intervals(cfg.CAL_2GC_YAML_COMPLEX, cfg.WSC_DMASK_CHANNELSOUT)
+        ratio2, freq_int_overrides_stage2, zeros2, ok2 = get_adaptive_freq_intervals(stage2_yaml,       cfg.WSC_DMASK_CHANNELSOUT)
+        s2_label = 'Adaptive Chan (S2-DD)' if DO_DD_SELFCAL else 'Adaptive Chan (S2)'
         for label, yaml_name, ratio, overrides, zeros, ok in [
-                ('Adaptive Chan (S1)', o.basename(cfg.CAL_2GC_YAML),        ratio1, freq_int_overrides_stage1, zeros1, ok1),
-                ('Adaptive Chan (S2)', o.basename(cfg.CAL_2GC_YAML_COMPLEX), ratio2, freq_int_overrides_stage2, zeros2, ok2)]:
+                ('Adaptive Chan (S1)', o.basename(cfg.CAL_2GC_YAML), ratio1, freq_int_overrides_stage1, zeros1, ok1),
+                (s2_label,            o.basename(stage2_yaml),       ratio2, freq_int_overrides_stage2, zeros2, ok2)]:
             parts = []
             parts += [f'{t}: 0 (all channels)'   for t in zeros]
             parts += [f'{t}: {old}→{new}'         for t, old, new in overrides]
@@ -429,61 +433,140 @@ def main():
                 steps.append(step)
                 n += 1
 
-            step = {}
-            step['step'] = n
-            step['comment'] = 'Run wsclean-predict on intermask model for source {}'.format(targetname)
-            step['dependency'] = n - 1 
-            step['id'] = 'PRCMI'+code
-            step['slurm_config'] = cfg.SLURM_PREDICT
-            step['pbs_config'] = cfg.PBS_WSCLEAN
-            absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
-            prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
-            syscall = prefix + 'python3 '+TOOLS+'/fix_nan_models.py ' + inter_img_prefix + '\n\n'
-            if cfg.MOD_MODEL_SELFCAL and cfg.WSC_POL != 'I':
-                spatial_arg = target_mod_region if target_mod_region is not None else mask
-                syscall += prefix + (f'python3 {TOOLS}/mod_model_selfcal.py '
-                                     f'--identifier {inter_img_prefix} --stokes V '
-                                     f'--spatial {spatial_arg}\n\n')
-            syscall += prefix + gen.generate_syscall_predict(msname = stage2_ms,
-                    imgname = inter_img_prefix,
-                    chanout = cfg.WSC_DMASK_CHANNELSOUT,
-                    absmem = absmem)
-            step['syscall'] = syscall
-            steps.append(step)
-            n += 1
+            if DO_DD_SELFCAL:
 
-            step = {}
-            step['step'] = n
-            step['comment'] = 'Run Quartical amplitude self-calibration (stage 2) on the target {}'.format(targetname)
-            step['dependency'] = n - 1
-            step['id'] = 'CL2GC'+code
-            step['slurm_config'] = cfg.SLURM_WSCLEAN
-            step['pbs_config'] = cfg.PBS_WSCLEAN
-            syscall = CONTAINER_RUNNER + QUARTICAL_CONTAINER+' ' if USE_SINGULARITY else ''
-            extra_args = f'output.gain_directory={gain_outdir_stage2} output.log_directory={log_outdir_stage2}'
-            if ref_ant_arg is not None:
-                extra_args += f' solver.reference_antenna={ref_ant_arg}'
-            for term, _, new_fi in freq_int_overrides_stage2:
-                extra_args += f' {term}.freq_interval={new_fi}'
-            if not cfg.CAL_1GC_APPLYPARANG:
-                # Parang not applied in 1GC — apply it here as the final calibration step
-                extra_args += ' output.apply_p_jones_inv=true'
-            if maxuvl != '' or minuvl != '':
-                extra_args += f' input_ms.select_uv_range=[{minuv_val},{maxuv_val}]'
-            syscall += gen.generate_syscall_quartical(yaml = cfg.CAL_2GC_YAML_COMPLEX,
-                    myms = stage2_ms,
-                    extra_args = extra_args)
-            step['syscall'] = syscall
-            steps.append(step)
-            n += 1
+                # Path to the QuartiCal YAML for direction-dependent selfcal (used when DO_DD_SELFCAL=True).
+                # Should define G+dE (or equivalent DD) terms — distinct from CAL_2GC_YAML_COMPLEX.
+                CAL_DDECAL_YAML = DATA + '/quartical/2GC_complex_2dir.yaml'
+
+                # Direction-dependent selfcal block (mirrors 3GC_peel workflow).
+                # DIR.reg in the CWD defines the calibration direction to extract.
+                dir_region     = 'DIR.reg'
+                dir_img_prefix = inter_img_prefix + '-' + dir_region.split('.')[0]
+                dd_recipe      = 'MODEL_DATA~DIR1_DATA:DIR1_DATA'
+                dd_subtract    = '[1]'
+
+                # Single combined step: fix NaN → extract DIR → add column →
+                # predict DIR into MODEL_DATA → copy to DIR1_DATA → re-predict full sky model
+                step = {}
+                step['step'] = n
+                step['comment'] = f'DD prep for {targetname}: fix NaN, extract DIR, add column, predict DIR, copy, re-predict full model'
+                step['dependency'] = n - 1
+                step['id'] = 'DDPRE'+code
+                step['slurm_config'] = cfg.SLURM_PREDICT
+                step['pbs_config'] = cfg.PBS_WSCLEAN
+                absmem = gen.absmem_helper(step, INFRASTRUCTURE, cfg.WSC_ABSMEM)
+                py_pfx  = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
+                wsc_pfx = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' '  if USE_SINGULARITY else ''
+                syscall  = py_pfx + 'python3 ' + TOOLS + '/fix_nan_models.py ' + inter_img_prefix + '\n\n'
+                if cfg.MOD_MODEL_SELFCAL and cfg.WSC_POL != 'I':
+                    spatial_arg = target_mod_region if target_mod_region is not None else mask
+                    syscall += py_pfx + (f'python3 {TOOLS}/mod_model_selfcal.py '
+                                         f'--identifier {inter_img_prefix} --stokes V '
+                                         f'--spatial {spatial_arg}\n\n')
+                syscall += py_pfx + 'python3 ' + OXKAT + '/3GC_split_model_images.py '
+                syscall +=          '--region ' + dir_region + ' --prefix ' + inter_img_prefix + '\n\n'
+                syscall += py_pfx + 'python3 ' + TOOLS + '/add_MS_column.py '
+                syscall +=          '--colname DIR1_DATA ' + stage2_ms + '\n\n'
+                syscall += wsc_pfx + gen.generate_syscall_predict(msname = stage2_ms,
+                        imgname = dir_img_prefix,
+                        chanout = cfg.WSC_DMASK_CHANNELSOUT,
+                        absmem  = absmem) + '\n\n'
+                syscall += py_pfx + 'python3 ' + TOOLS + '/copy_MS_column.py '
+                syscall +=          '--fromcol MODEL_DATA --tocol DIR1_DATA ' + stage2_ms + '\n\n'
+                syscall += wsc_pfx + gen.generate_syscall_predict(msname = stage2_ms,
+                        imgname = inter_img_prefix,
+                        chanout = cfg.WSC_DMASK_CHANNELSOUT,
+                        absmem  = absmem)
+                step['syscall'] = syscall
+                steps.append(step)
+                n += 1
+
+                step = {}
+                step['step'] = n
+                step['comment'] = 'Run QuartiCal DD self-calibration (stage 2) on {}'.format(targetname)
+                step['dependency'] = n - 1
+                step['id'] = 'CL2GC'+code
+                step['slurm_config'] = cfg.SLURM_WSCLEAN
+                step['pbs_config'] = cfg.PBS_WSCLEAN
+                syscall = CONTAINER_RUNNER + QUARTICAL_CONTAINER+' ' if USE_SINGULARITY else ''
+                extra_args = (f'output.gain_directory={gain_outdir_stage2} output.log_directory={log_outdir_stage2}'
+                              f' input_model.recipe={dd_recipe} output.subtract_directions={dd_subtract}')
+                if not cfg.CAL_1GC_APPLYPARANG:
+                    extra_args += ' output.apply_p_jones_inv=true'
+                if ref_ant_arg is not None:
+                    extra_args += f' solver.reference_antenna={ref_ant_arg}'
+                for term, _, new_fi in freq_int_overrides_stage2:
+                    extra_args += f' {term}.freq_interval={new_fi}'
+                if maxuvl != '' or minuvl != '':
+                    extra_args += f' input_ms.select_uv_range=[{minuv_val},{maxuv_val}]'
+                syscall += gen.generate_syscall_quartical(yaml = CAL_DDECAL_YAML,
+                        myms = stage2_ms,
+                        extra_args = extra_args)
+                step['syscall'] = syscall
+                steps.append(step)
+                n += 1
+
+            else:
+
+                step = {}
+                step['step'] = n
+                step['comment'] = 'Run wsclean-predict on intermask model for source {}'.format(targetname)
+                step['dependency'] = n - 1
+                step['id'] = 'PRCMI'+code
+                step['slurm_config'] = cfg.SLURM_PREDICT
+                step['pbs_config'] = cfg.PBS_WSCLEAN
+                absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
+                prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
+                syscall = prefix + 'python3 '+TOOLS+'/fix_nan_models.py ' + inter_img_prefix + '\n\n'
+                if cfg.MOD_MODEL_SELFCAL and cfg.WSC_POL != 'I':
+                    spatial_arg = target_mod_region if target_mod_region is not None else mask
+                    syscall += prefix + (f'python3 {TOOLS}/mod_model_selfcal.py '
+                                         f'--identifier {inter_img_prefix} --stokes V '
+                                         f'--spatial {spatial_arg}\n\n')
+                syscall += prefix + gen.generate_syscall_predict(msname = stage2_ms,
+                        imgname = inter_img_prefix,
+                        chanout = cfg.WSC_DMASK_CHANNELSOUT,
+                        absmem = absmem)
+                step['syscall'] = syscall
+                steps.append(step)
+                n += 1
+
+                step = {}
+                step['step'] = n
+                step['comment'] = 'Run Quartical amplitude self-calibration (stage 2) on the target {}'.format(targetname)
+                step['dependency'] = n - 1
+                step['id'] = 'CL2GC'+code
+                step['slurm_config'] = cfg.SLURM_WSCLEAN
+                step['pbs_config'] = cfg.PBS_WSCLEAN
+                syscall = CONTAINER_RUNNER + QUARTICAL_CONTAINER+' ' if USE_SINGULARITY else ''
+                extra_args = f'output.gain_directory={gain_outdir_stage2} output.log_directory={log_outdir_stage2}'
+                if ref_ant_arg is not None:
+                    extra_args += f' solver.reference_antenna={ref_ant_arg}'
+                for term, _, new_fi in freq_int_overrides_stage2:
+                    extra_args += f' {term}.freq_interval={new_fi}'
+                if not cfg.CAL_1GC_APPLYPARANG:
+                    # Parang not applied in 1GC — apply it here as the final calibration step
+                    extra_args += ' output.apply_p_jones_inv=true'
+                if maxuvl != '' or minuvl != '':
+                    extra_args += f' input_ms.select_uv_range=[{minuv_val},{maxuv_val}]'
+                syscall += gen.generate_syscall_quartical(yaml = cfg.CAL_2GC_YAML_COMPLEX,
+                        myms = stage2_ms,
+                        extra_args = extra_args)
+                step['syscall'] = syscall
+                steps.append(step)
+                n += 1
 
             # Safety check: verify parang solve succeeded; fall back to feed-frame + CASA applycal if not
             if not cfg.CAL_1GC_APPLYPARANG:
+                fallback_yaml = CAL_DDECAL_YAML if DO_DD_SELFCAL else cfg.CAL_2GC_YAML_COMPLEX
                 fallback_extra_args = f'output.gain_directory={gain_outdir_stage2} output.log_directory={log_outdir_stage2}'
+                if DO_DD_SELFCAL:
+                    fallback_extra_args += f' input_model.recipe={dd_recipe} output.subtract_directions={dd_subtract}'
                 if maxuvl != '' or minuvl != '':
                     fallback_extra_args += f' input_ms.select_uv_range=[{minuv_val},{maxuv_val}]'
                 fallback_qc_cmd = (CONTAINER_RUNNER + QUARTICAL_CONTAINER + ' ' if USE_SINGULARITY else '') + \
-                    gen.generate_syscall_quartical(yaml=cfg.CAL_2GC_YAML_COMPLEX, myms=stage2_ms, extra_args=fallback_extra_args)
+                    gen.generate_syscall_quartical(yaml=fallback_yaml, myms=stage2_ms, extra_args=fallback_extra_args)
 
                 step = {}
                 step['step'] = n
