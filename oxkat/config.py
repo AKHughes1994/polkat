@@ -57,7 +57,7 @@ USE_SINGULARITY = True
 BIND = ''
 BINDPATH = '$PWD,'+CWD+','+BIND
 
-IDIA_CONTAINER_PATH = ['/idia/software/containers/',HOME+'/containers/', CWD]
+IDIA_CONTAINER_PATH = ['/idia/software/containers/',HOME+'/containers/', CWD, HOME]
 CHPC_CONTAINER_PATH = [HOME+'/containers/']
 HIPPO_CONTAINER_PATH = None
 NODE_CONTAINER_PATH = [HOME+'/containers/', '/mnt/ephem/containers']
@@ -614,8 +614,8 @@ WSC_MASK          = False    # FITS mask to use; False = no mask (blind deconvol
 WSC_THRESHOLD     = False    # Absolute flux threshold (Jy) at which to stop cleaning; False = use auto
 WSC_SHALLOWMASK   = 10.0     # Initial auto-mask threshold (sigma) for the first deconvolution pass;
                               # in the two-stage self-calibration workflow, calibrators use 2x this value
-WSC_AUTOMASK      = 3.0      # Auto-mask threshold (sigma) for main deconvolution
-WSC_AUTOTHRESHOLD = 1.0      # Auto-threshold (sigma) at which CLEAN stops
+WSC_AUTOMASK      = 2.0      # Auto-mask threshold (sigma) for main deconvolution
+WSC_AUTOTHRESHOLD = 0.5      # Auto-threshold (sigma) at which CLEAN stops
 WSC_LOCALRMS      = False    # Use a local RMS map for adaptive masking during main deconvolution
 
 # --- Masking: intermediate image (two-stage self-calibration only) ---
@@ -623,7 +623,7 @@ WSC_LOCALRMS      = False    # Use a local RMS map for adaptive masking during m
 # after stage 1 phase self-calibration. This model is then used for amplitude
 # self-calibration in stage 2. These masking parameters apply to that image only.
 WSC_INTER_LOCALRMS      = True   # Use local RMS map for intermediate image masking
-WSC_INTER_AUTOMASK      = 4.0    # Auto-mask threshold (sigma) for intermediate image
+WSC_INTER_AUTOMASK      = 3.0    # Auto-mask threshold (sigma) for intermediate image
 WSC_INTER_AUTOTHRESHOLD = 1.0    # Auto-threshold (sigma) for intermediate image
 
 # --- Post-processing: beam homogenisation ---

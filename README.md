@@ -46,6 +46,12 @@ This routine is designed primarily for use on the ILIFU clusters operated by The
 # The main container 
 singularity pull polkat-0.2.4.sif docker://hughesakh/polkat:0.2.4
 
+# If you need to point to particular storage areas for build (i.e., can't use default home/tmp)
+mkdir -p .singularity_tmp .singularity_cache
+SINGULARITY_TMPDIR="$PWD/.singularity_tmp" \
+SINGULARITY_CACHEDIR="$PWD/.singularity_cache" \
+singularity pull "$PWD/polkat-0.2.4.sif" docker://hughesakh/polkat:0.2.4
+
 # ALBUS container for ionospheric corrections (no longer needed as the main has SPINIFEX)
 singularity pull polkat-albus.sif docker://hughesakh/polkat_albus:latest
 ```
