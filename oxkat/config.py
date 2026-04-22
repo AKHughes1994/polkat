@@ -282,31 +282,35 @@ XF_SKIP_KCROSS = True # weather to skip the cross-hand delay and only solve for 
                       # my experimentation has found that some times this exclusion can give better solutions.
 
 # XF table solution interval
-XF_CHANINT = 16  # Channels per QuartiCal solution interval; e.g. 1024 ch / 16 = 64 XF phase solutions across the band
+XF_CHANINT = 16             # Channels per polcal solution interval; e.g. 1024 ch / 16 = 64 XF phase solutions across the band
 
 # Calibration and outlier thresholds
-XF_POLY_SIGMA_CLIP = 3.0  # N-sigma threshold for iterative polynomial outlier clipping of XF solutions
-XF_MAD_SIGMA_CLIP  = 6.0  # N-sigma (MAD) threshold for rolling circular median outlier clipping of XF solutions
-XF_AVG_SCAN = False        # If multi-scan, average XF solutions over all scans before writing the table (increases SNR, loses scan-to-scan variation)
-XF_POLY_ORDER = 0          # Polynomial order for iterative sigma-clipping fit across frequency; set to 0 to disable polynomial clipping entirely
+XF_GLOBAL_SIGMA_CLIP = 10.0 # N-sigma threshold for global circular phase clip (gross outlier removal, wrap-safe)
+XF_POLY_ORDER        = 4    # Polynomial order for cos/sin(phase) baseline fit; set to 0 to disable
+XF_MAD_WINDOW        = None # Sliding circular MAD window size in channels; None = auto (ceil_odd(N_chan/5))
+XF_MAD_SIGMA_CLIP    = 5.0  # N-sigma threshold for sliding circular MAD clip (local, wrap-safe)
+XF_AVG_SCAN          = False # If True, flux-weighted circular average across scans after per-scan solve (increases SNR, loses scan-to-scan variation)
+XF_MAD_ITERATIVE = True  # Iterative poly-baseline + sliding circular MAD clip until convergence (refits baseline each pass); False = single pass only
+XF_MIN_SN = 5.0  # Minimum cross-hand S/N per channel; channels below this are flagged (0 = disabled)
 
-# Smoothing control for XF table creation and interpolation
-XF_USE_SMOOTHING = False   # Apply Savitzky-Golay smoothing to XF solutions before table interpolation
-XF_SAVGOL_WINDOW = None    # Smoothing window length in channels (must be an odd integer); None = auto-calculate from data (recommended)
-XF_SAVGOL_POLYORDER = 3    # Polynomial order for Savitzky-Golay filter (must be less than XF_SAVGOL_WINDOW)
+# Smoothing control
+XF_USE_SMOOTHING     = False # Apply Savitzky-Golay smoothing to XF solutions before writing the table
+XF_SAVGOL_WINDOW     = None  # Smoothing window length in channels (odd integer); None = auto
+XF_SAVGOL_POLYORDER  = 3     # Polynomial order for Savitzky-Golay filter (must be < XF_SAVGOL_WINDOW)
 
 # -----------------------------------------------------------------------
 # DEPRECATED — parameters below are no longer used in the current
 # manual XF solver (tools/manual_XF_solver.py). Retained for
 # compatibility with older workflows or the CASA-based XF path.
 # -----------------------------------------------------------------------
-XF_MAX_AVG_CHANNELS = None  # Was: upper limit on channel averaging for XF solutions
-XF_MIN_CROSS_FLUX = 0.07    # Was: minimum total cross-hand flux (Jy) threshold for reliable solutions
-XF_CLIP_WINDOW = 16         # Was: window size (channels) for local scatter analysis
-XF_EX = True                # Was: enable gap-filling by extrapolation into flagged regions
-XF_EX_FRAC = 0.2            # Was: fraction of good bandwidth to use for extrapolation
-XF_RM_ANG_MAX = 20.0        # Was: max angular separation [deg] from XF_TARGET_POLANG for a valid RM trial solution
-XF_DELTARM_TRIALS = [-7,7]  # Was: [min, max] RM offsets (rad/m²) defining the atmospheric RM trial grid
+XF_POLY_SIGMA_CLIP   = 3.0   # Was: sigma threshold for iterative polynomial outlier clipping
+XF_MAX_AVG_CHANNELS  = None  # Was: upper limit on channel averaging for XF solutions
+XF_MIN_CROSS_FLUX    = 0.07  # Was: minimum total cross-hand flux (Jy) threshold for reliable solutions
+XF_CLIP_WINDOW       = 16    # Was: window size (channels) for local scatter analysis
+XF_EX                = True  # Was: enable gap-filling by extrapolation into flagged regions
+XF_EX_FRAC           = 0.2   # Was: fraction of good bandwidth to use for extrapolation
+XF_RM_ANG_MAX        = 20.0  # Was: max angular separation [deg] from XF_TARGET_POLANG for a valid RM trial solution
+XF_DELTARM_TRIALS    = [-7,7] # Was: [min, max] RM offsets (rad/m²) defining the atmospheric RM trial grid
 
 # Reference antennas
 CAL_1GC_REF_ANT = 'auto'             # Comma-separated list to manually specify refant(s)
