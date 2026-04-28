@@ -12,20 +12,10 @@ def main():
     fnames = glob.glob(cfg.RESULTS + '/*_rmsynth.txt')
 
     for fname in fnames:
-        syscall = f'rmsynth1d {fname} -S -v -o 4 -l 2500'
+        syscall = f'rmsynth1d {fname} -S -v -o 4 -l 2500 --super-resolution'
         subprocess.run([syscall], shell=True)
 
-        syscall = f'rmclean1d {fname} -S -v'
-        subprocess.run([syscall], shell=True)
-
-    # Iterate through all rmsynth.txt files in the RESULTS directory
-    fnames = glob.glob(cfg.RESULTS + '/*_rmsynth_sys.txt')
-
-    for fname in fnames:
-        syscall = f'rmsynth1d {fname} -S -v -o 4 -l 2500'
-        subprocess.run([syscall], shell=True)
-
-        syscall = f'rmclean1d {fname} -S -v'
+        syscall = f'rmclean1d {fname} -S -v -c -9 -w -4'
         subprocess.run([syscall], shell=True)
 
 if __name__  == "__main__":

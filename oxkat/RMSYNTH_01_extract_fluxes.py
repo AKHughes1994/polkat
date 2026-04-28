@@ -44,6 +44,16 @@ OVERWRITE = True
 # stored in the JSON, but no PNG is generated.
 SPEC_PLOT_SNR_THRESH = 20
 
+# Maximum allowed pixel drift for a Stokes I fitted position relative to its
+# reference before the fit is re-run with the position held fixed.
+# False  --> no drift check applied (default).
+# float  --> threshold in pixels; if any component drifts further than this
+#            the entire fit is re-done with all positions fixed to the reference.
+# Applied twice:
+#   (1) MFS Stokes I fitted position vs the input sky-coordinate seed.
+#   (2) Per-channel Stokes I fitted position vs the MFS Stokes I position.
+MAX_I_DRIFT_PIX = False
+
 # =============================================================================
 
 
@@ -695,6 +705,32 @@ def extract_polarization_properties(src_name,
         MFS_I_ra_pix  = [MFS_I_imfit['results'][key]['pixelcoords'][0] for key in components]
         MFS_I_dec_pix = [MFS_I_imfit['results'][key]['pixelcoords'][1] for key in components]
 
+        # --- MFS Stokes I drift check vs input sky-coordinate seed -----------
+        # If MAX_I_DRIFT_PIX is set and any component has moved further than
+        # that threshold from the input reference, refix all positions and refit.
+        if MAX_I_DRIFT_PIX is not False:
+            mfs_i_drift_exceeded = False
+            for z, component in enumerate(components):
+                drift = np.sqrt((MFS_I_ra_pix[z]  - src_ra_pix[z])  ** 2 +
+                                (MFS_I_dec_pix[z] - src_dec_pix[z]) ** 2)
+                if drift > MAX_I_DRIFT_PIX:
+                    msg(f'  WARNING: MFS Stokes I component {z} drifted {drift:.1f} pix '
+                        f'from input reference (threshold {MAX_I_DRIFT_PIX} pix). '
+                        f'Will re-fit with all positions fixed to input reference.')
+                    mfs_i_drift_exceeded = True
+                else:
+                    msg(f'  MFS Stokes I component {z} drift OK: {drift:.1f} pix '
+                        f'(threshold {MAX_I_DRIFT_PIX} pix)')
+            if mfs_i_drift_exceeded:
+                fix_all = ['xyabp'] * len(src_ra_pix)
+                make_estimate(f'estimate_I_{src_name}.txt', MFS_images[0],
+                              src_ra_pix, src_dec_pix, fix_all)
+                MFS_I_imfit   = get_imfit_values(f'estimate_I_{src_name}.txt',
+                                                  MFS_images[0], src_ra_pix, src_dec_pix)
+                MFS_I_ra_pix  = [MFS_I_imfit['results'][key]['pixelcoords'][0] for key in components]
+                MFS_I_dec_pix = [MFS_I_imfit['results'][key]['pixelcoords'][1] for key in components]
+                msg(f'  MFS Stokes I re-fit complete: all positions fixed to input reference.')
+
         # Log the Stokes I fitted results -- this position is the astrometric
         # reference for all polarization fits below
         msg('')
@@ -991,6 +1027,9 @@ def extract_polarization_properties(src_name,
                                 manual_rms_region=manual_rms_region, src_name=src_name)
                 CHAN_I_imfit   = get_imfit_values(f'estimate_I_{src_name}.txt',
                                                    CHAN_images[0], MFS_I_ra_pix, MFS_I_dec_pix)
+                CHAN_I_imfit, _ = check_fit_offset_and_refix(
+                    CHAN_I_imfit, CHAN_images[0], MFS_I_ra_pix, MFS_I_dec_pix,
+                    bmaj, src_name, 'I_chan', manual_rms_region=manual_rms_region)
                 CHAN_I_ra_pix  = [CHAN_I_imfit['results'][key]['pixelcoords'][0] for key in components]
                 CHAN_I_dec_pix = [CHAN_I_imfit['results'][key]['pixelcoords'][1] for key in components]
 

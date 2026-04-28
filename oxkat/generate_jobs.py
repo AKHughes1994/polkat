@@ -740,7 +740,7 @@ def generate_syscall_wsclean(mslist,
         syscall += '--deconvolution-channels '+str(chandeconvolution)+' '
     if joinchannels:
         syscall += '-join-channels '
-        if squarechans:
+        if squarechans and pol != 'I':
             syscall += '-squared-channel-joining '
 
     if nonegative:
@@ -768,9 +768,10 @@ def generate_syscall_wsclean(mslist,
         syscall += '-threshold '+str(threshold)+' '
 
 
-    # Andrew additions for more complex imaging strategies 
+    # Andrew additions for more complex imaging strategies
     wsclean_syscall_base = syscall # Copy syscall options to apply more advanced techniques
     syscall_arr = []
+    _syscall_names = []   # tracks the -name value for each entry in syscall_arr
 
     # Add intervals out option to wsclean call
 
@@ -780,7 +781,7 @@ def generate_syscall_wsclean(mslist,
         intchans = int(nchans / chanout * maxchan) # Each image will be composed of this many channels
         nint = int(chanout / maxchan)
 
-        if len(mslist) > 1: 
+        if len(mslist) > 1:
             print(col('WARNING') + f'You are using multiple MS files; make sure they all have {nchans} channels')
 
         # Make sure all the integers are dividable
@@ -788,15 +789,18 @@ def generate_syscall_wsclean(mslist,
             print(col('ERROR') + f'MS file has {nchans} channels, which is not divisble by {maxchan} or {chanout}; please choose better numbers!')
             sys.exit()
 
-        if chanout % maxchan != 0: 
+        if chanout % maxchan != 0:
             print(col('ERROR') + 'Maxchan is not an integer multiple of the total output channels; please choose better numbers!')
             sys.exit()
 
         for k in range(nint):
-            syscall_arr.append(wsclean_syscall_base + f'-channels-out {maxchan} -channel-range {k * intchans} {(k + 1) * intchans} -name {imgname}_part{k:04d} ') 
+            _part_name = f'{imgname}_part{k:04d}'
+            syscall_arr.append(wsclean_syscall_base + f'-channels-out {maxchan} -channel-range {k * intchans} {(k + 1) * intchans} -name {_part_name} ')
+            _syscall_names.append(_part_name)
 
     else:
         syscall_arr.append(wsclean_syscall_base + f'-channels-out {chanout} -name {imgname} ')
+        _syscall_names.append(imgname)
 
     # Add option to split the deconvolution into IQU & IV steps
     # Sources with large rotation measures may not want polynomial fitting to the QU channels
@@ -817,7 +821,8 @@ def generate_syscall_wsclean(mslist,
         joinpol_IV = ''
 
         k = len(syscall_arr)
-        syscall_arr += syscall_arr
+        syscall_arr    += syscall_arr
+        _syscall_names += _syscall_names
 
         # Resolve the QU/IV split deconvolution behaviour from qu_automask_scale:
         #   0       : disabled — no changes to QU or IV, local-rms not added
@@ -882,6 +887,40 @@ def generate_syscall_wsclean(mslist,
         for myms in mslist:
             syscall_arr[k] += myms + ' '
 
+    # In splitpol mode, if a pol group has only one Stokes parameter WSClean drops
+    # the Stokes label from output filenames.  Insert mv commands right after each
+    # affected wsclean call to reinstate it.
+    if splitpol and pol != 'I':
+        _qu_single = len(pol_QU) == 1
+        _iv_single = len(pol_IV) == 1
+
+        if _qu_single or _iv_single:
+            def _rename_cmd(name, stokes):
+                parts = []
+                for suf in ('dirty', 'image', 'model', 'residual'):
+                    parts.append(
+                        f'for f in {name}-*-{suf}.fits; do '
+                        f'[ -f "$f" ] && [[ ! "$f" =~ -[IQUV]-{suf}\\.fits$ ]] && mv "$f" "${{f%-{suf}.fits}}-{stokes}-{suf}.fits"; '
+                        f'done'
+                    )
+                inner = ' && '.join(parts)
+                return f"bash -c '{inner}'"
+
+            _orig_k   = len(syscall_arr) // 2
+            _renames  = {}   # index in syscall_arr -> rename shell command
+            for _j in range(_orig_k):
+                if _qu_single:
+                    _renames[_j] = _rename_cmd(_syscall_names[_j], pol_QU)
+                if _iv_single:
+                    _renames[_j + _orig_k] = _rename_cmd(_syscall_names[_j + _orig_k], pol_IV)
+
+            # Interleave: insert rename command immediately after each wsclean call
+            final_arr = []
+            for _idx, _call in enumerate(syscall_arr):
+                final_arr.append(_call)
+                if _idx in _renames:
+                    final_arr.append(_renames[_idx])
+            syscall_arr = final_arr
 
     return syscall_arr
 

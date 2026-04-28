@@ -134,17 +134,14 @@ def get_refant(master_ms,field_id):
         median_flag_pc = numpy.median(pc_list)
         std_flag_pc = numpy.std(pc_list)
         
-        # Check if m060's flag fraction is within five standard deviations of median
-        deviation = abs(m060_flag_pc - median_flag_pc)
-        if deviation <= 5.0 * std_flag_pc:
+        # Check if m060's flag fraction is within five standard deviation of median
+        if abs(m060_flag_pc - median_flag_pc) <= 5.0 * std_flag_pc:
             # Remove m060 from its current position in ranked list
             if m060_idx in ranked_list:
                 ranked_list.remove(m060_idx)
             # Place m060 at the front of the list
             ranked_list.insert(0, m060_idx)
-            mylogger.info('m060 flag percentage ('+str(round(m060_flag_pc,2))+'%) is within 5-sigma of median ('+str(round(median_flag_pc,2))+'% ± '+str(round(3.0*std_flag_pc,2))+'%), placing at front of list')
-        else:
-            mylogger.info('m060 flag percentage ('+str(round(m060_flag_pc,2))+'%) is outside 5-sigma of median ('+str(round(median_flag_pc,2))+'% ± '+str(round(3.0*std_flag_pc,2))+'%) — not prioritised')
+            mylogger.info('m060 flag percentage ('+str(round(m060_flag_pc,2))+'%) is within 5-sigma of median ('+str(round(median_flag_pc,2))+'%), placing at front of list')
     
     # Convert list to comma-separated string
     ranked_list = ','.join(ranked_list)
@@ -278,6 +275,10 @@ def get_polang(master_ms,
 
     """ Find polarization angle calibrator from master_ms (needs to be manually specified) """
 
+    polang_dir  = None
+    polang_name = None
+    polang_id   = None
+
     for i in range(0,len(field_ids)):
         field_dir = field_dirs[i]
         field_name = field_names[i]
@@ -286,6 +287,7 @@ def get_polang(master_ms,
             polang_dir = field_dir
             polang_name = field_name
             polang_id = field_id
+            break
 
     return polang_dir, polang_name, polang_id
 
@@ -486,6 +488,106 @@ def target_ms_list(working_ms,target_names):
     return target_ms
 
 
+def primary_ms_list(master_ms, working_ms, primary_name, primary_id, include_scans=None):
+
+    """ Return a list of MS names for primary calibrator with scan numbering """
+
+    main_tab = table(master_ms, ack=False)
+    
+    # Query for the primary field to get unique scans
+    sub_tab = main_tab.query(query=f'FIELD_ID=={primary_id}')
+    scans = numpy.unique(sub_tab.getcol('SCAN_NUMBER'))
+    sub_tab.close()
+    
+    # Filter to include only specified scans if PRE_SCANS is set
+    if include_scans is not None and len(include_scans) > 0:
+        scans = numpy.array([s for s in scans if s in include_scans])
+    
+    # Determine zero-padding width based on total number of scans
+    max_scan = numpy.max(scans)
+    num_digits = len(str(max_scan))
+    
+    # Create MS names for each scan
+    primary_ms_list = []
+    for scan in scans:
+        scan_str = str(scan).zfill(num_digits)
+        ms_name = working_ms.replace('.ms', f'_{primary_name.replace(" ", "_")}_scan{scan_str}.ms')
+        primary_ms_list.append(ms_name)
+    
+    main_tab.close()
+    return primary_ms_list
+
+
+def secondary_ms_list(master_ms, working_ms, secondary_names, secondary_ids, include_scans=None):
+
+    """ Return a list of MS names for secondary calibrators with scan numbering """
+
+    main_tab = table(master_ms, ack=False)
+    secondary_ms = []
+
+    for i, sec_id in enumerate(secondary_ids):
+        sec_name = secondary_names[i]
+        
+        # Query for this secondary field to get unique scans
+        sub_tab = main_tab.query(query=f'FIELD_ID=={sec_id}')
+        scans = numpy.unique(sub_tab.getcol('SCAN_NUMBER'))
+        sub_tab.close()
+        
+        # Filter to include only specified scans if PRE_SCANS is set
+        if include_scans is not None and len(include_scans) > 0:
+            scans = numpy.array([s for s in scans if s in include_scans])
+        
+        # Create MS names for each scan (skip if no scans match)
+        if scans.size == 0:
+            secondary_ms.append([])
+            continue
+
+        # Determine zero-padding width based on total number of scans (minimum 2 digits)
+        max_scan = numpy.max(scans)
+        num_digits = max(2, len(str(max_scan)))
+
+        sec_ms_list = []
+        for scan in scans:
+            scan_str = str(scan).zfill(num_digits)
+            ms_name = working_ms.replace('.ms', f'_{sec_name.replace(" ", "_")}_scan{scan_str}.ms')
+            sec_ms_list.append(ms_name)
+
+        secondary_ms.append(sec_ms_list)
+    
+    main_tab.close()
+    return secondary_ms
+
+
+def polang_ms_list(master_ms, working_ms, polang_name, polang_id, include_scans=None):
+
+    """ Return a list of MS names for polarization angle calibrator with scan numbering """
+
+    main_tab = table(master_ms, ack=False)
+    
+    # Query for the polang field to get unique scans
+    sub_tab = main_tab.query(query=f'FIELD_ID=={polang_id}')
+    scans = numpy.unique(sub_tab.getcol('SCAN_NUMBER'))
+    sub_tab.close()
+    
+    # Filter to include only specified scans if PRE_SCANS is set
+    if include_scans is not None and len(include_scans) > 0:
+        scans = numpy.array([s for s in scans if s in include_scans])
+    
+    # Determine zero-padding width based on total number of scans (minimum 2 digits)
+    max_scan = numpy.max(scans)
+    num_digits = max(2, len(str(max_scan)))
+    
+    # Create MS names for each scan
+    polang_ms_list_result = []
+    for scan in scans:
+        scan_str = str(scan).zfill(num_digits)
+        ms_name = working_ms.replace('.ms', f'_{polang_name.replace(" ", "_")}_scan{scan_str}.ms')
+        polang_ms_list_result.append(ms_name)
+    
+    main_tab.close()
+    return polang_ms_list_result
+
+
 def main():
 
     master_ms = sys.argv[1].rstrip('/')
@@ -510,6 +612,7 @@ def main():
 
 
     PRE_NCHANS = cfg.PRE_NCHANS
+    PRE_SCANS = cfg.PRE_SCANS
     POLANG_NAME = cfg.POLANG_NAME
     CAL_1GC_PRIMARY = cfg.CAL_1GC_PRIMARY
     CAL_1GC_SECONDARIES = cfg.CAL_1GC_SECONDARIES
@@ -518,6 +621,12 @@ def main():
     CAL_1GC_PRIMARY_INTENT = cfg.CAL_1GC_PRIMARY_INTENT
     CAL_1GC_SECONDARY_INTENT = cfg.CAL_1GC_SECONDARY_INTENT
     CAL_1GC_TARGET_INTENT = cfg.CAL_1GC_TARGET_INTENT
+    
+    # Parse PRE_SCANS if specified
+    include_scans = []
+    if PRE_SCANS != '':
+        include_scans = [int(s.strip()) for s in PRE_SCANS.split(',')]
+        mylogger.info('Including only these scans in calibrator MS lists: '+str(include_scans))
 
     working_ms = master_ms.replace('.ms','_'+str(PRE_NCHANS)+'ch.ms')
 
@@ -619,13 +728,37 @@ def main():
                                                             field_dirs,
                                                             field_names,
                                                             field_ids)
-        mylogger.info('Polarization Angle Calibrator:    '+str(polang_id)+': '+ polang_name)
+        if polang_name is None:
+            mylogger.warning(f"Polarization Angle Calibrator '{POLANG_NAME}' not found in MS — skipping polang calibration")
+            polang_name = ''
+            polang_id   = ''
+        else:
+            mylogger.info('Polarization Angle Calibrator:    '+str(polang_id)+': '+ polang_name)
         mylogger.info('')
 
     else:
         mylogger.info('No Polarization Angle Calibrator')
         polang_name = ''
         polang_id   = ''
+        
+        # Add fields with UNKNOWN intent to secondary list if POLANG_NAME is not specified
+        main_tab = table(master_ms, ack=False)
+        for i in range(0, len(field_ids)):
+            field_dir = field_dirs[i]
+            field_name = field_names[i]
+            field_id = field_ids[i]
+            sub_tab = main_tab.query(query='FIELD_ID=='+str(field_id))
+            states = numpy.unique(sub_tab.getcol('STATE_ID'))
+            for state in states:
+                if state == unknown_state:
+                    # Check if this field is not already in the secondary list
+                    if str(field_id) not in secondary_ids:
+                        secondary_dirs.append(field_dir[0].tolist())
+                        secondary_names.append(field_name)
+                        secondary_ids.append(str(field_id))
+                        mylogger.info('Adding UNKNOWN intent field to secondaries: '+str(field_id)+': '+field_name)
+            sub_tab.close()
+        main_tab.close()
 
     # ------------------------------------------------------------------------------
     #
@@ -670,6 +803,30 @@ def main():
 
     # ------------------------------------------------------------------------------
     #
+    # GENERATE LIST OF PRIMARY MS NAMES
+
+    primary_ms = primary_ms_list(master_ms, working_ms, primary_name, primary_id, include_scans)
+
+
+    # ------------------------------------------------------------------------------
+    #
+    # GENERATE LIST OF SECONDARY MS NAMES
+
+    secondary_ms = secondary_ms_list(master_ms, working_ms, secondary_names, secondary_ids, include_scans)
+
+
+    # ------------------------------------------------------------------------------
+    #
+    # GENERATE LIST OF POLANG MS NAMES
+
+    if polang_name != '':
+        polang_ms = polang_ms_list(master_ms, working_ms, polang_name, polang_id, include_scans)
+    else:
+        polang_ms = []
+
+
+    # ------------------------------------------------------------------------------
+    #
     # PRINT FIELD SUMMARY
 
 
@@ -702,6 +859,21 @@ def main():
         mylogger.info('%-24s %-50s' % (targ, target_ms[i]))
     
     mylogger.info('')
+    mylogger.info('Secondary                Eventual MS names')
+    for i in range(0,len(secondary_names)):
+        sec = str(secondary_ids[i])+': '+secondary_names[i]
+        mylogger.info('%-24s' % (sec))
+        for ms_name in secondary_ms[i]:
+            mylogger.info('  - %-50s' % (ms_name))
+    
+    if polang_name != '':
+        mylogger.info('')
+        mylogger.info('Polarization Angle Cal   Eventual MS names')
+        mylogger.info('%-24s' % (str(polang_id)+': '+polang_name))
+        for ms_name in polang_ms:
+            mylogger.info('  - %-50s' % (ms_name))
+    
+    mylogger.info('')
     mylogger.info('Writing '+outfile)
 
     project_info['master_ms'] = master_ms
@@ -712,11 +884,14 @@ def main():
     project_info['primary_name'] = primary_name
     project_info['primary_id'] = str(primary_id)
     project_info['primary_tag'] = primary_tag
+    project_info['primary_ms'] = primary_ms
     project_info['polang_name'] = polang_name
     project_info['polang_id'] = str(polang_id)
+    project_info['polang_ms'] = polang_ms
     project_info['secondary_names'] = secondary_names
     project_info['secondary_ids'] = secondary_ids
     project_info['secondary_dirs'] = secondary_dirs
+    project_info['secondary_ms'] = secondary_ms
     project_info['target_names'] = target_names
     project_info['target_dirs'] = target_dirs
     project_info['target_ids'] = target_ids
