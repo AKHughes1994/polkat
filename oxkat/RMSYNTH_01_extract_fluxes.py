@@ -22,39 +22,28 @@ from oxkat import config as cfg
 
 
 # =============================================================================
-# Global fitting options
+# Global fitting options  (defaults pulled from config.py; override here if needed)
 # =============================================================================
 
-# Set True to always fix the Stokes V position to Stokes I, regardless of S/N.
-# Circular polarization is intrinsically weak for most synchrotron sources
-# (typically << 1% for optically thin emission), and residual instrumental
-# polarization leakage from Stokes I can dominate the measured V signal.
-# Allowing the position to fit freely in this regime produces spurious offsets
-# that bias the flux measurement.  Setting this to True is the recommended
-# default for most science cases.
-FORCE_FIX_STOKES_V = True
-
-# Set False to skip fitting if the output JSON already exists and jump
-# straight to plotting.  Useful for re-generating plots without re-running
-# the (slow) imfit loop.
-OVERWRITE = True
-
-# Minimum MFS Stokes I S/N for an epoch to get a per-channel spectrum plot.
-# Epochs below this threshold still have their spectral index computed and
-# stored in the JSON, but no PNG is generated.
-SPEC_PLOT_SNR_THRESH = 20
-
-# Maximum allowed pixel drift for a Stokes I fitted position relative to its
-# reference before the fit is re-run with the position held fixed.
-# False  --> no drift check applied (default).
-# float  --> threshold in pixels; if any component drifts further than this
-#            the entire fit is re-done with all positions fixed to the reference.
-# Applied twice:
-#   (1) MFS Stokes I fitted position vs the input sky-coordinate seed.
-#   (2) Per-channel Stokes I fitted position vs the MFS Stokes I position.
-MAX_I_DRIFT_PIX = False
+FORCE_FIX_STOKES_V    = cfg.RMSYN_FORCE_FIX_STOKES_V
+OVERWRITE             = cfg.RMSYN_OVERWRITE
+SPEC_PLOT_SNR_THRESH  = cfg.RMSYN_SPEC_PLOT_SNR_THRESH
+SPEC_INDEX_SNR_THRESH = cfg.RMSYN_SPEC_INDEX_SNR_THRESH
+SPEC_INDEX_MAD_CLIP   = cfg.RMSYN_SPEC_INDEX_MAD_CLIP
+MAX_I_DRIFT_PIX       = cfg.RMSYN_MAX_I_DRIFT_PIX
 
 # =============================================================================
+
+
+def _iso_to_mjd(date_str):
+    """Convert an ISO-format datetime string (YYYY-MM-DDTHH:MM:SS[.f]) to MJD."""
+    _epoch = datetime.datetime(1858, 11, 17, 0, 0, 0)
+    for fmt in ('%Y-%m-%dT%H:%M:%S.%f', '%Y-%m-%dT%H:%M:%S'):
+        try:
+            return (datetime.datetime.strptime(date_str, fmt) - _epoch).total_seconds() / 86400.0
+        except ValueError:
+            continue
+    raise ValueError(f'Cannot parse date string for MJD conversion: {date_str!r}')
 
 
 def msg(txt):
@@ -481,6 +470,116 @@ def check_fit_offset_and_refix(imfit_result, image, ref_xpix, ref_ypix, bmaj,
     return imfit_result, any_exceeded
 
 
+def _try_get_ms_timing(src_name, n_intervals):
+    """
+    Derive per-interval MJD timing from the measurement set for src_name.
+
+    Tries project_info['target_ms'] first (the per-target split MS).  Falls
+    back to project_info['working_ms'] (filtered by FIELD_ID when possible).
+    Returns None and lets the caller fall back to the DATE-OBS image header
+    if neither MS is found or readable.
+
+    Returns a list of n_intervals dicts:
+        'centre_mjd' : float  -- interval midpoint in MJD
+        'delta_s'    : float  -- relevant time span in seconds
+    """
+    if not os.path.isfile('project_info.json'):
+        msg('  [timing] project_info.json not found -- will use image header fallback')
+        return None
+
+    with open('project_info.json') as _f:
+        _pinfo = json.load(_f)
+
+    # -----------------------------------------------------------------------
+    # Locate the MS: try the per-target split MS, then the full working MS
+    # -----------------------------------------------------------------------
+    _ms_to_use  = None
+    _field_id   = None
+
+    _target_names = _pinfo.get('target_names', [])
+    _target_ms    = _pinfo.get('target_ms',    [])
+
+    if src_name in _target_names:
+        _idx = _target_names.index(src_name)
+        _candidate = _target_ms[_idx] if _idx < len(_target_ms) else None
+        if _candidate and os.path.exists(_candidate):
+            _ms_to_use = _candidate
+            msg(f'  [timing] using split MS: {os.path.basename(_ms_to_use)}')
+
+    if _ms_to_use is None:
+        _working = _pinfo.get('working_ms', '')
+        if _working and os.path.exists(_working):
+            _ms_to_use = _working
+            _target_ids = _pinfo.get('target_ids', [])
+            if src_name in _target_names:
+                _idx = _target_names.index(src_name)
+                if _idx < len(_target_ids):
+                    _field_id = int(_target_ids[_idx])
+            msg(f'  [timing] split MS absent; using working MS: {os.path.basename(_ms_to_use)}'
+                + (f' (FIELD_ID={_field_id})' if _field_id is not None else ''))
+
+    if _ms_to_use is None:
+        msg(f'  [timing] no MS found for "{src_name}" -- will use image header fallback')
+        return None
+
+    # -----------------------------------------------------------------------
+    # Read the TIME column
+    # -----------------------------------------------------------------------
+    try:
+        tb.open(_ms_to_use)
+        _all_times  = tb.getcol('TIME')
+        _all_fields = tb.getcol('FIELD_ID') if _field_id is not None else None
+        tb.close()
+        if _field_id is not None:
+            _times = np.unique(_all_times[_all_fields == _field_id])
+        else:
+            _times = np.unique(_all_times)
+    except Exception as _e:
+        msg(f'  [timing] failed to read MS ({_e}) -- will use image header fallback')
+        return None
+
+    if len(_times) == 0:
+        msg('  [timing] no timestamps found -- will use image header fallback')
+        return None
+
+    _times   = np.sort(_times)
+    _t_start = float(_times[0])
+    _t_end   = float(_times[-1])
+    _t_span  = _t_end - _t_start
+    msg(f'  [timing] {len(_times)} unique timestamps, '
+        f'span = {_t_span:.1f} s ({_t_span / 3600.0:.3f} h)')
+
+    # -----------------------------------------------------------------------
+    # Compute timing per interval
+    # -----------------------------------------------------------------------
+    if n_intervals == 1:
+        _centre_mjd = (_t_start + _t_end) / 2.0 / 86400.0
+        _delta_s    = _t_span
+        msg(f'  [timing] MFS: centre = {_centre_mjd:.8f} MJD, delta = {_delta_s:.0f} s')
+        return [{'centre_mjd': _centre_mjd, 'delta_s': _delta_s}]
+
+    # Time-resolved: split into n_intervals evenly-sized chunks.
+    # Each interval centre = start of chunk + half the median inter-chunk step.
+    _n      = len(_times)
+    _chunk  = max(1, _n // n_intervals)
+    _starts = np.array([float(_times[min(i * _chunk, _n - 1)]) for i in range(n_intervals)])
+    _diffs  = np.diff(_starts)
+    _sep_s  = float(np.median(_diffs)) if len(_diffs) > 0 else _t_span
+    _total  = float(_starts[-1] - _starts[0])
+
+    msg(f'  [timing] {n_intervals} intervals, median step = {_sep_s:.1f} s, '
+        f'total span = {_total:.1f} s')
+
+    _result = []
+    for _i, _t0 in enumerate(_starts):
+        _cmjd = (_t0 + _sep_s / 2.0) / 86400.0
+        _result.append({'centre_mjd': _cmjd, 'delta_s': _total})
+        msg(f'  [timing]   interval {_i:>3}: start = {_t0 / 86400.0:.8f} MJD, '
+            f'centre = {_cmjd:.8f} MJD')
+
+    return _result
+
+
 def extract_polarization_properties(src_name,
     src_im_identifier,
     src_im_suffix, 
@@ -601,6 +700,29 @@ def extract_polarization_properties(src_name,
     is_time_resolved = len(prefix_arr) > 1
     msg(f'Found {len(prefix_arr)} prefix(es) (time interval(s)) to process')
 
+    # Pre-compute timing before the prefix loop.
+    #   Time-resolved: read DATE-OBS from each prefix's MFS image header; the
+    #     centre is the header time shifted forward by half the median inter-
+    #     prefix step, and the span covers first-to-last prefix.
+    #   MFS (single epoch): try the target MS for accurate start/end; fall
+    #     back to DATE-OBS + 15-min default inside the loop if the MS is gone.
+    if is_time_resolved:
+        _ms_timings = None
+        _hdr_mjds   = []
+        for _pfx in prefix_arr:
+            _pfx_imgs = sorted(glob.glob(f'{_pfx}-MFS*{mfs_im_suffix}'))
+            _pfx_dobs = imhead(_pfx_imgs[0], mode='get', hdkey='DATE-OBS').replace('/','-',2).replace('/','T')
+            _hdr_mjds.append(_iso_to_mjd(_pfx_dobs))
+        _hdr_mjds   = np.array(_hdr_mjds)
+        _hdr_diffs  = np.diff(_hdr_mjds) * 86400.0         # seconds between adjacent prefixes
+        _hdr_step_s = float(np.median(_hdr_diffs)) if len(_hdr_diffs) > 0 else 0.0
+        _hdr_span_s = float((_hdr_mjds[-1] - _hdr_mjds[0]) * 86400.0)
+        msg(f'  [timing] time-resolved ({len(prefix_arr)} prefixes): '
+            f'median step = {_hdr_step_s:.1f} s, total span = {_hdr_span_s:.1f} s')
+    else:
+        _ms_timings  = _try_get_ms_timing(src_name, 1)
+        _hdr_mjds = _hdr_step_s = _hdr_span_s = None
+
     # Compute the output JSON filename from the prefix list so we can
     # check for an existing file when OVERWRITE is False.
     if len(prefix_arr) > 0:
@@ -671,6 +793,22 @@ def extract_polarization_properties(src_name,
         bpa      = imhead(MFS_images[0], mode='get', hdkey='bpa')['value']
         msg(f'Observation: date={date_obs}  freq={freq_GHz:.4f} GHz  '
             f'beam={bmaj:.2f}"x{bmin:.2f}" PA={bpa:.1f} deg')
+
+        # Per-prefix MJD timing.
+        if is_time_resolved:
+            # Centre = header DATE-OBS shifted by half the median inter-prefix step.
+            _centre_mjd = float(_hdr_mjds[k]) + _hdr_step_s / 2.0 / 86400.0
+            _delta_s    = _hdr_span_s
+            msg(f'  Timing (image header): centre MJD = {_centre_mjd:.8f}, delta = {_delta_s:.0f} s')
+        elif _ms_timings is not None:
+            _centre_mjd = _ms_timings[0]['centre_mjd']
+            _delta_s    = _ms_timings[0]['delta_s']
+            msg(f'  Timing (MS): centre MJD = {_centre_mjd:.8f}, delta = {_delta_s:.0f} s')
+        else:
+            # MFS fallback: DATE-OBS from image header + 15-min default width.
+            _centre_mjd = _iso_to_mjd(date_obs)
+            _delta_s    = 15.0 * 60.0
+            msg(f'  Timing (header fallback): centre MJD = {_centre_mjd:.8f}, delta = 900 s (15 min default)')
 
         # Convert the input RA/Dec guesses (decimal degrees) to pixel coordinates
         # in this specific image.  imstat finds the nearest pixel to the input position.
@@ -767,11 +905,13 @@ def extract_polarization_properties(src_name,
                 output_dictionary['MFS'][component]['bmaj_asec']   = [bmaj]
                 output_dictionary['MFS'][component]['bmin_asec']   = [bmin]
                 output_dictionary['MFS'][component]['bpa_deg']     = [bpa]
-                output_dictionary['MFS'][component]['I_flux_mJy']  = [flux_I]
-                output_dictionary['MFS'][component]['I_err_mJy']   = [err_I]
-                output_dictionary['MFS'][component]['I_rms_mJy']   = [rms_I]
-                output_dictionary['MFS'][component]['I_RA_deg']    = [RA_I]
-                output_dictionary['MFS'][component]['I_DEC_deg']   = [DEC_I]
+                output_dictionary['MFS'][component]['I_flux_mJy']   = [flux_I]
+                output_dictionary['MFS'][component]['I_err_mJy']    = [err_I]
+                output_dictionary['MFS'][component]['I_rms_mJy']    = [rms_I]
+                output_dictionary['MFS'][component]['I_RA_deg']     = [RA_I]
+                output_dictionary['MFS'][component]['I_DEC_deg']    = [DEC_I]
+                output_dictionary['MFS'][component]['centre_mjd']   = [_centre_mjd]
+                output_dictionary['MFS'][component]['delta_s']      = [_delta_s]
             else:
                 # Subsequent epochs: append to existing lists
                 output_dictionary['MFS'][component]['freq_GHz'].append(freq_GHz)
@@ -784,6 +924,8 @@ def extract_polarization_properties(src_name,
                 output_dictionary['MFS'][component]['I_rms_mJy'].append(rms_I)
                 output_dictionary['MFS'][component]['I_RA_deg'].append(RA_I)
                 output_dictionary['MFS'][component]['I_DEC_deg'].append(DEC_I)
+                output_dictionary['MFS'][component]['centre_mjd'].append(_centre_mjd)
+                output_dictionary['MFS'][component]['delta_s'].append(_delta_s)
             
         
         # -----------------------------------------------------------------
@@ -1403,53 +1545,99 @@ def plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k,
     # ------------------------------------------------------------------
     # Spectral index fit on Stokes I (log-log space)
     # ------------------------------------------------------------------
-    alpha     = None
-    alpha_err = None
-    fit_nu    = None
-    fit_S     = None
+    alpha        = None
+    alpha_err    = None
+    chi2         = None
+    ndof         = None
+    chi2_red     = None
+    fit_nu       = None
+    fit_S        = None
+    flagged_freqs = np.array([])
 
     # Quality mask: positive flux and per-channel S/N >= 3
     valid = (I_flux > 0) & (I_rms > 0) & (I_flux / I_rms >= 3.0)
 
-    if mfs_snr > 30.0 and np.sum(valid) >= 3:
+    if mfs_snr > SPEC_INDEX_SNR_THRESH and np.sum(valid) >= 3:
         nu_v = freq_arr[valid]
         S_v  = I_flux[valid]
-        w_v  = S_v / I_rms[valid]          # S/N weights
+        w_v  = S_v / I_rms[valid]          # S/N weights (= 1/sigma_logS in log space)
 
-        # Fit in log space: log(S) = alpha*log(nu/nu_ref) + log(S_ref)
-        log_nu = np.log(nu_v / mfs_freq)
-        log_S  = np.log(S_v)
-        try:
-            coeffs, cov = np.polyfit(log_nu, log_S, 1, w=w_v, cov=True)
-            alpha     = coeffs[0]
-            alpha_err = np.sqrt(cov[0, 0])
+        # Iterative MAD-based outlier rejection on flux values
+        _iter = 0
+        while len(nu_v) >= 3:
+            _med  = np.median(S_v)
+            _mad  = np.median(np.abs(S_v - _med))
+            _sig  = 1.4826 * _mad
+            if _sig <= 0:
+                break
+            _keep     = np.abs(S_v - _med) <= SPEC_INDEX_MAD_CLIP * _sig
+            n_clipped = int(np.sum(~_keep))
+            msg(f'  MAD clip iter {_iter + 1} ({component}, epoch {k}): '
+                f'median = {_med:.3f} mJy  sigma = {_sig:.3f} mJy  '
+                f'threshold = {SPEC_INDEX_MAD_CLIP * _sig:.3f} mJy  '
+                f'clipped = {n_clipped}  remaining = {int(np.sum(_keep))}')
+            if n_clipped == 0:
+                break
+            flagged_freqs = np.concatenate([flagged_freqs, nu_v[~_keep]])
+            nu_v  = nu_v[_keep]
+            S_v   = S_v[_keep]
+            w_v   = w_v[_keep]
+            _iter += 1
 
-            nu_plot = np.linspace(nu_v.min(), nu_v.max(), 200)
-            fit_S   = np.exp(coeffs[1]) * (nu_plot / mfs_freq) ** alpha
-            fit_nu  = nu_plot
-
-            msg(f'  Spectral index fit ({component}, epoch {k}): '
-                f'alpha = {alpha:.3f} +/- {alpha_err:.3f}  '
-                f'(MFS S/N = {mfs_snr:.1f}, N_chan = {int(np.sum(valid))})')
-        except Exception as e:
-            msg(f'  WARNING: Spectral index fit failed for {component} epoch {k}: {e}')
-    else:
-        if mfs_snr <= 30.0:
+        if len(nu_v) < 3:
             msg(f'  Spectral index fit skipped ({component}, epoch {k}): '
-                f'MFS S/N = {mfs_snr:.1f} (< 30)')
+                f'only {len(nu_v)} channels remain after MAD clipping (need >= 3)')
+        else:
+            # Fit in log space: log(S) = alpha*log(nu/nu_ref) + log(S_ref)
+            log_nu = np.log(nu_v / mfs_freq)
+            log_S  = np.log(S_v)
+            try:
+                coeffs, cov = np.polyfit(log_nu, log_S, 1, w=w_v, cov=True)
+                alpha     = coeffs[0]
+                alpha_err = np.sqrt(cov[0, 0])
+
+                # Chi-squared: residuals in log space weighted by S/N
+                # sigma_logS = 1/SNR, so chi2 = sum((residual * w_v)^2)
+                log_S_model = coeffs[0] * log_nu + coeffs[1]
+                residuals   = log_S - log_S_model
+                chi2        = float(np.sum((residuals * w_v) ** 2))
+                ndof        = len(nu_v) - 2
+                chi2_red    = chi2 / ndof if ndof > 0 else None
+
+                nu_plot = np.linspace(nu_v.min(), nu_v.max(), 200)
+                fit_S   = np.exp(coeffs[1]) * (nu_plot / mfs_freq) ** alpha
+                fit_nu  = nu_plot
+
+                msg(f'  Spectral index fit ({component}, epoch {k}): '
+                    f'alpha = {alpha:.3f} +/- {alpha_err:.3f}  '
+                    f'chi2 = {chi2:.2f}  chi2_red = {chi2_red:.2f}  ndof = {ndof}  '
+                    f'(MFS S/N = {mfs_snr:.1f} >= {SPEC_INDEX_SNR_THRESH}, '
+                    f'N_chan = {len(nu_v)} / {int(np.sum(valid))})')
+            except Exception as e:
+                msg(f'  WARNING: Spectral index fit failed for {component} epoch {k}: {e}')
+    else:
+        if mfs_snr <= SPEC_INDEX_SNR_THRESH:
+            msg(f'  Spectral index fit skipped ({component}, epoch {k}): '
+                f'MFS S/N = {mfs_snr:.1f} (< {SPEC_INDEX_SNR_THRESH})')
         else:
             msg(f'  Spectral index fit skipped ({component}, epoch {k}): '
                 f'only {int(np.sum(valid))} valid channels (need >= 3)')
 
-    # Store alpha in the MFS dict so it appears in the JSON without a second write.
+    # Store alpha and chi2 in the MFS dict so they appear in the JSON.
     # Initialise as a list on the first epoch; append on subsequent epochs.
     # Guard against duplicates when the function is re-called for plotting only.
     if 'alpha' not in mfs:
         mfs['alpha']     = [alpha]
         mfs['alpha_err'] = [alpha_err]
+        mfs['chi2']      = [chi2]
+        mfs['ndof']      = [ndof]
+        mfs['chi2_red']  = [chi2_red]
     elif len(mfs['alpha']) <= k:
         mfs['alpha'].append(alpha)
         mfs['alpha_err'].append(alpha_err)
+        mfs['chi2'].append(chi2)
+        mfs['ndof'].append(ndof)
+        mfs['chi2_red'].append(chi2_red)
 
     # If save_plot is False, we only needed the spectral index computation above.
     if not save_plot:
@@ -1542,6 +1730,15 @@ def plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k,
             ax.set_ylabel(f'{label}  (mJy/beam)', fontsize=10)
             ax.grid(True, which='both', alpha=0.3, linestyle=':')
             ax.legend(fontsize=9, loc='best')
+
+    # Overlay flagged channels on all panels as translucent red spans.
+    # Width of each span = minimum channel separation in the frequency array.
+    if len(flagged_freqs) > 0 and len(freq_arr) >= 2:
+        _chan_width = float(np.min(np.diff(np.sort(freq_arr))))
+        for _f in flagged_freqs:
+            for _ax in axes:
+                _ax.axvspan(_f - _chan_width / 2, _f + _chan_width / 2,
+                            color='red', alpha=0.2, zorder=0, linewidth=0)
 
     # Shared x-axis label on the bottom panel only
     axes[-1].set_xlabel('Frequency (GHz)', fontsize=11)

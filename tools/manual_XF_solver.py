@@ -782,6 +782,21 @@ def global_sigma_clip_gains(per_scan_gains, per_scan_flags, scan_numbers, sigma=
     return per_scan_flags, global_flagged_per_scan
 
 
+def _bin_qu_native_to_xf(qu_native, n_xf):
+    """Bin a native-resolution QU array to n_xf channels by nanmean."""
+    nchan    = len(qu_native)
+    bin_size = nchan / n_xf
+    qu_xf    = np.full(n_xf, np.nan)
+    for i in range(n_xf):
+        lo    = int(round(i * bin_size))
+        hi    = int(round((i + 1) * bin_size))
+        valid = qu_native[lo:hi]
+        valid = valid[np.isfinite(valid)]
+        if len(valid):
+            qu_xf[i] = np.nanmean(valid)
+    return qu_xf
+
+
 def poly_baseline_mad_clip(gains, flags, n_chan, poly_order, window, sigma,
                            iterative=True, max_iter=20, weights=None):
     """
@@ -1591,6 +1606,39 @@ print(f"Spectral window: {nchan} channels")
 print(f"Frequency range: {freq_min:.3f} - {freq_max:.3f} GHz")
 
 # ============================
+# Channel Averaging (if input > 1024 channels)
+# ============================
+# Build a channel-averaged temporary MS so downstream code always works on
+# ≤1024 channels.  The temp MS writes the averaged CORRECTED_DATA into its
+# DATA column; it is deleted after the per-scan visibility loading is done.
+vis_to_load = myms
+tmpms = None
+
+if nchan > 1024:
+    avg_factor = int(np.ceil(nchan / 1024))
+    nchan_avg = int(np.ceil(nchan / avg_factor))
+    print(f"\nInput has {nchan} channels (> 1024) — channel-averaging by factor "
+          f"{avg_factor} to {nchan_avg} channels before extracting visibilities.")
+    tmpms = myms.rstrip('/') + '_tmp_chanavg.ms'
+    if os.path.isdir(tmpms):
+        shutil.rmtree(tmpms)
+    mstransform(vis=myms, outputvis=tmpms,
+                field=pacal_name,
+                chanaverage=True, chanbin=avg_factor,
+                datacolumn='corrected',
+                keepflags=True)
+    tb.open(tmpms + '/SPECTRAL_WINDOW')
+    chan_freq = tb.getcol('CHAN_FREQ')
+    tb.close()
+    freq_ghz = (chan_freq / 1.0e9).flatten()
+    nchan = len(freq_ghz)
+    freq_min = freq_ghz.min()
+    freq_max = freq_ghz.max()
+    vis_to_load = tmpms
+    print(f"Averaged spectral window: {nchan} channels, "
+          f"{freq_min:.3f} — {freq_max:.3f} GHz")
+
+# ============================
 # Retrieve Scan Information
 # ============================
 print("\nRetrieving scan information from MS...")
@@ -1666,6 +1714,14 @@ if os.path.isfile(stokes_cache_path):
 if not stokes_cached:
     print(f"\nAveraging visibilities per scan (collapse baseline/time axes)...")
 
+    # Check once whether CORRECTED_DATA exists in this MS (split/averaged MSes
+    # have DATA only; the original calibrated MS has CORRECTED_DATA).
+    tb.open(vis_to_load)
+    _has_corrected = 'CORRECTED_DATA' in tb.colnames()
+    tb.close()
+    _data_col = 'corrected_data' if _has_corrected else 'data'
+    print(f"  Using data column: {_data_col.upper()}")
+
     vis_avg = np.zeros((4, n_scans, nchan), dtype=complex)
     scan_times = np.zeros(n_scans, dtype=float)
 
@@ -1673,7 +1729,7 @@ if not stokes_cached:
     total_unflagged = 0
 
     for scan_idx, scan in enumerate(scan_numbers):
-        ms.open(myms)
+        ms.open(vis_to_load)
         ms.selectinit(reset=True)
         ok = ms.msselect({'field': pacal_name, 'scan': str(scan)})
         if not ok:
@@ -1683,12 +1739,12 @@ if not stokes_cached:
             continue
 
         ms.selectpolarization(['I', 'Q', 'U', 'V'])
-        d = ms.getdata(['corrected_data', 'flag', 'weight_spectrum', 'weight', 'time'])
+        d = ms.getdata([_data_col, 'flag', 'weight_spectrum', 'weight', 'time'])
         ms.close()
 
-        # corrected_data column carries the pre-XF calibrated visibilities
-        if 'corrected_data' in d:
-            d['data'] = d.pop('corrected_data')
+        # Normalise to 'data' key regardless of which column was read
+        if _data_col != 'data' and _data_col in d:
+            d['data'] = d.pop(_data_col)
 
         missing = [k for k in ('data', 'flag') if k not in d]
         if missing:
@@ -1737,6 +1793,11 @@ if not stokes_cached:
              freq_ghz=freq_ghz, scan_numbers=scan_numbers, scan_times=scan_times,
              vis_avg=vis_avg)
     print(f"Saved: {stokes_cache_path}")
+
+    if tmpms is not None and os.path.isdir(tmpms):
+        print(f"\nRemoving temporary channel-averaged MS: {tmpms}")
+        shutil.rmtree(tmpms)
+        tmpms = None
 
 # ============================
 # Extract Stokes and Run Quality Checks (always, even on cached runs)
@@ -2127,27 +2188,31 @@ snr_flagged_per_scan = {scan: np.zeros(n_xf_chan, dtype=bool) for scan in scan_n
 snr_per_scan         = {scan: np.full(n_xf_chan, np.nan) for scan in scan_numbers}
 
 if XF_MIN_SN > 0:
-    win_size = max(3, n_xf_chan // 10)
+    # Estimate noise at native resolution — more data points and finer windows
+    # than operating on the XF-averaged grid.
+    win_size_nat = max(3, nchan // 100)
     all_mads = []
     for scan_idx, scan in enumerate(scan_numbers):
-        qu = np.sqrt(U_xf_scans[scan_idx]**2 + V_xf_scans[scan_idx]**2)
-        for start in range(0, n_xf_chan, win_size):
-            seg = qu[start:start + win_size]
+        qu_nat = np.sqrt(U_scans[scan_idx]**2 + V_scans[scan_idx]**2)
+        for start in range(0, nchan, win_size_nat):
+            seg   = qu_nat[start:start + win_size_nat]
             valid = seg[np.isfinite(seg)]
             if len(valid) >= 3:
                 all_mads.append(float(np.median(np.abs(valid - np.median(valid)))))
     if all_mads:
         noise = float(np.median(all_mads)) * 1.4826
         print(f"  Estimated noise: {noise:.4e} Jy "
-              f"(pooled {len(all_mads)} windows, {n_scans} scan(s))")
+              f"(pooled {len(all_mads)} windows of {win_size_nat} native ch, "
+              f"{n_scans} scan(s))")
     else:
         noise = 0.0
         print("  WARNING: could not estimate noise — SNR flagging skipped")
 
     if noise > 0:
         for scan_idx, scan in enumerate(scan_numbers):
-            qu = np.sqrt(U_xf_scans[scan_idx]**2 + V_xf_scans[scan_idx]**2)
-            snr = np.where(np.isfinite(qu), qu / noise, np.nan)
+            qu_nat = np.sqrt(U_scans[scan_idx]**2 + V_scans[scan_idx]**2)
+            qu_xf  = _bin_qu_native_to_xf(qu_nat, n_xf_chan)
+            snr    = np.where(np.isfinite(qu_xf), qu_xf / noise, np.nan)
             # NaN any channel already flagged for any reason at this point
             already_flagged = raw_flags_per_scan[scan] | working_flags[scan]
             snr = np.where(already_flagged, np.nan, snr)
@@ -2157,8 +2222,11 @@ if XF_MIN_SN > 0:
             working_flags[scan] = working_flags[scan] | low_snr
             snr_flagged_per_scan[scan] = low_snr
 
+            _snr_fin = snr[np.isfinite(snr)]
+            _snr_rng = (f"[{_snr_fin.min():.2f}, {_snr_fin.max():.2f}]"
+                        if len(_snr_fin) else "[all NaN]")
             print(f"  Scan {scan}: {n_new} channels flagged (SNR < {XF_MIN_SN:.1f}), "
-                  f"SNR range [{np.nanmin(snr):.2f}, {np.nanmax(snr):.2f}]")
+                  f"SNR range {_snr_rng}")
             print(f"    {'ch':>5}  {'Freq(GHz)':>10}  {'SNR':>10}  {'flag':>8}")
             print(f"    {'-'*40}")
             for ch in range(n_xf_chan):

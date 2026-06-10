@@ -11,6 +11,7 @@ import os.path as o
 import subprocess
 import numpy as np
 
+from astropy.io import fits as pyfits
 from pyrap.tables import table
 
 sys.path.append(o.abspath(o.join(o.dirname(sys.modules[__name__].__file__), "..")))
@@ -20,7 +21,25 @@ from oxkat import config as cfg
 
 def msg(txt):
     stamp = time.strftime(' %Y-%m-%d %H:%M:%S | ')
-    print(stamp+txt)
+    print(stamp+txt, flush=True)
+
+
+def trim_mask(mask_path, imsize, output_path):
+    with pyfits.open(mask_path) as hdul:
+        data = hdul[0].data.copy()
+        header = hdul[0].header.copy()
+    ny, nx = data.shape[-2], data.shape[-1]
+    if ny == imsize and nx == imsize:
+        return mask_path
+    cy, cx = ny // 2, nx // 2
+    half = imsize // 2
+    data = data[..., cy - half:cy + half, cx - half:cx + half]
+    if 'CRPIX1' in header:
+        header['CRPIX1'] = header['CRPIX1'] - (cx - half)
+    if 'CRPIX2' in header:
+        header['CRPIX2'] = header['CRPIX2'] - (cy - half)
+    pyfits.writeto(output_path, data, header, overwrite=True)
+    return output_path
 
 
 def get_total_ints(myms):
@@ -54,18 +73,55 @@ def main():
     # Deconvolution choice -- don't do this unless absolutely necessary
     niter = 0
     if cfg.SNAP_DECONV:
-        niter = 100
-              
-    mask = False
-    if cfg.SNAP_DECONVMASK:
-        mask = cfg.SNAP_DECONVMASK  
-    
+        niter = 100_000
+
     if len(sys.argv) == 1:
         print('Please specify an MS file for interval imaging')
         sys.exit()
     else:
         myms = sys.argv[1]
-    
+
+    mask = False
+    if cfg.SNAP_DECONVMASK:
+        msg(f'Deconvolution mask set explicitly: {cfg.SNAP_DECONVMASK}')
+        mask = cfg.SNAP_DECONVMASK
+    elif cfg.SNAP_DECONV:
+        candidate = None
+        if cfg.WSC_MASK != '' and cfg.WSC_MASK is not False and o.exists(cfg.WSC_MASK):
+            msg(f'Mask found from WSC_MASK config: {cfg.WSC_MASK}')
+            candidate = cfg.WSC_MASK
+        else:
+            for pattern in [
+                cfg.IMAGES + f'/img_{myms}_snapblind-MFS-image.mask.fits',
+                cfg.IMAGES + f'/img_{myms}_datablind-MFS-image.mask.fits',
+            ]:
+                if o.exists(pattern):
+                    msg(f'Mask found from pattern: {pattern}')
+                    candidate = pattern
+                    break
+            if candidate is None:
+                msg('No target-specific mask found, falling back to glob search')
+                found = sorted(glob.glob(cfg.IMAGES + '/img_*datablind*.mask.fits'))
+                if not found:
+                    found = sorted(glob.glob(cfg.IMAGES + '/img_*.mask.fits'))
+                if found:
+                    msg(f'Mask found via glob: {found[0]}')
+                    candidate = found[0]
+
+        if candidate:
+            trimmed = cfg.IMAGES + f'/img_{myms}_snap_deconv_mask.fits'
+            with pyfits.open(candidate) as hdul:
+                ny, nx = hdul[0].data.shape[-2], hdul[0].data.shape[-1]
+            if ny != imsize or nx != imsize:
+                msg(f'Mask size {nx}x{ny}px does not match imsize {imsize}px — trimming')
+                mask = trim_mask(candidate, imsize, trimmed)
+                msg(f'Trimmed mask written to: {mask}')
+            else:
+                msg(f'Mask already matches imsize {imsize}px — no trimming needed')
+                mask = candidate
+        else:
+            msg('WARNING: SNAP_DECONV is True but no mask found in IMAGES — running without mask')
+
     # Get number of integrations in each scan
     int_arr = get_total_ints(myms)
     nint_arr = []
@@ -108,7 +164,9 @@ def main():
                         interval0 = int0,
                         interval1 = int1,
                         field='0',
-                        mask = mask)
+                        mask = mask,
+                        automask = 6.0,
+                        autothreshold = 1.0)
 
         for syscall in imcall:
             subprocess.run([syscall], shell=True)

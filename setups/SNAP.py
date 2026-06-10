@@ -61,11 +61,18 @@ def main():
     with open('project_info.json') as f:
         project_info = json.load(f)
     
-    target_names = project_info['working_names']
     myms = project_info['working_ms']
 
     if cfg.SNAP_FIELDS != '':
         target_names = cfg.SNAP_FIELDS.split(',')
+    else:
+        working = project_info.get('working_names', [])
+        target_names = list(dict.fromkeys(
+            [n for n in project_info.get('target_names', []) if n in working]
+        ))
+        if not target_names:
+            print(gen.col('ERROR') + 'No targets found in project_info.json (target_names and working_names are both empty) — please populate the SNAP_FIELDS option in config.py')
+            sys.exit(1)
 
     predict_pol = cfg.WSC_POL
 

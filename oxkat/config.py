@@ -298,6 +298,17 @@ XF_USE_SMOOTHING     = False # Apply Savitzky-Golay smoothing to XF solutions be
 XF_SAVGOL_WINDOW     = None  # Smoothing window length in channels (odd integer); None = auto
 XF_SAVGOL_POLYORDER  = 3     # Polynomial order for Savitzky-Golay filter (must be < XF_SAVGOL_WINDOW)
 
+# Post-solve adjustments applied in 1GC_05_casa_refcal.py after XF solving
+XF_REFERENCE_PHASE = ''  # Resolve the +/-180 deg degeneracy: each unflagged channel is flipped
+                          # if the flipped value is closer to this reference (degrees).
+                          # Applied to whichever Xf table is active (solved or override).
+                          # Empty string = skip.
+
+XF_OVERRIDE_TABLE  = ''  # If non-empty, replace the solved Xf table with this path before
+                          # applycal.  Useful for importing a pre-computed table from another
+                          # run (e.g. from global_crosshand_phase.py).
+                          # Empty string = use the solved table.
+
 # -----------------------------------------------------------------------
 # DEPRECATED — parameters below are no longer used in the current
 # manual XF solver (tools/manual_XF_solver.py). Retained for
@@ -504,17 +515,19 @@ WSC_INTERVAL1 = None   # Last time interval to image (-interval end)
 WSC_INTERVALSOUT = False  # Number of output time intervals (-intervals-out); False = single image
 
 # --- Inner UV taper (suppress short-spacing artefacts) ---
-WSC_TUKEYTAPER  = False   # Inner Tukey taper in wavelengths (-taper-inner-tukey);
+WSC_TUKEYTAPER  = 3000.0  # Inner Tukey taper in wavelengths (-taper-inner-tukey);
                           # suppresses emission on scales larger than ~1/taper radians
-WSC_TAPERMASK   = False   # If True, apply WSC_MINUVL/MAXUVL/TUKEYTAPER only during
-                          # blind masking and self-cal; final image uses full UV range
+WSC_TAPERMASK   = True    # If False, WSC_MINUVL/MAXUVL/TUKEYTAPER applied only to the
+                          # final self-calibrated image; masking and self-cal use full UV
+                          # range. If True, UV cuts also applied during blind masking and
+                          # self-calibration.
 
 # --- Parallelism ---
 WSC_PARALLELREORDERING = 8  # Number of parallel threads for MS reordering (-parallel-reordering)
 WSC_PARALLELGRIDDING   = 8  # Number of parallel gridding threads (-parallel-gridding)
 
 # --- Image dimensions ---
-WSC_IMSIZE     = 10240       # Image size in pixels for science targets (must be even)
+WSC_IMSIZE     = 8500       # Image size in pixels for science targets (must be even)
 WSC_CAL_IMSIZE = 2560        # Image size in pixels for calibrators
 WSC_CELLSIZE   = '1.1asec'   # Pixel scale (arcsec/pixel); overridden per-band below
 
@@ -534,7 +547,7 @@ WSC_PREDICTCHANNELS = 64    # Number of channels used during model prediction
 WSC_WEIGHT       = 'briggs 0.0'  # Visibility weighting scheme for science targets
 WSC_WEIGHT_CAL   = 'uniform'     # Visibility weighting scheme for calibrators
 WSC_TAPERGAUSSIAN = ''           # Gaussian UV taper (-taper-gaussian); '' = disabled
-WSC_MFWEIGHT     = True          # Apply multi-frequency weighting (-mf-weighting / -no-mf-weighting)
+WSC_MFWEIGHT     = False          # Apply multi-frequency weighting (-mf-weighting / -no-mf-weighting)
 
 # High-resolution uniform-weight image (made alongside the main Briggs image)
 WSC_UNIFORM_IMAGE  = True       # Generate an additional uniform-weight image
@@ -556,7 +569,7 @@ WSC_CIRCULARBEAM = False # Force a circular (not elliptical) restoring beam (-ci
 
 # --- Channel strategy ---
 WSC_BLIND_CHANNELSOUT = 8     # Blind (shallow, no mask) image — used only to generate initial mask
-WSC_PCAL_CHANNELSOUT  = 8     # Final self-calibrated (pcalmask) image
+WSC_PCAL_CHANNELSOUT  = 32     # Final self-calibrated (pcalmask) image
 WSC_DMASK_CHANNELSOUT = WSC_PCAL_CHANNELSOUT  # Data-masked image (stage 1 selfcal model);
                                                # set independently if a different channelisation is needed
 WSC_CAL_CHANNELSOUT   = 16    # Calibrator images (secondaries / primary)
@@ -564,7 +577,7 @@ WSC_CAL_CHANNELSOUT   = 16    # Calibrator images (secondaries / primary)
 # Memory-safe channel chunking: if WSC_MAX_CHANNELS < channels-out, wsclean is called
 # multiple times in channel-range blocks of WSC_MAX_CHANNELS, then the results are
 # assembled into a full cube. Must divide evenly into both PRE_NCHANS and channels-out.
-WSC_MAX_CHANNELS = 16
+WSC_MAX_CHANNELS = 32
 
 # Spectral polynomial fitting across output channels (-fit-spectral-pol N)
 # Applied during deconvolution to constrain spectral index. 0 = disabled.
@@ -578,7 +591,7 @@ WSC_JOINCHANNELS = True
 # (-squared-channel-joining). Only active when WSC_JOINCHANNELS = True.
 # Appropriate for Q/U which can rapidly oscillate positive/negative across channels
 # (e.g. due to Faraday rotation); the sum-of-squares avoids cancellation.
-WSC_SQUARECHANS  = False
+WSC_SQUARECHANS  = True
 
 # Controls QU/IV deconvolution behaviour when WSC_SPLITPOL is True.
 #   0       : disabled — no changes to QU or IV, local-rms not added
@@ -594,7 +607,7 @@ WSC_POL = 'IQUV'
 #       with large RMs where Q/U vary rapidly and non-smoothly across the band
 #   IV: no squared-channel-joining — not appropriate for Stokes V
 # Recommended for targets with large rotation measures (>~100 rad/m^2).
-WSC_SPLITPOL = False
+WSC_SPLITPOL = True
 
 # Join polarisations during peak finding (-join-polarizations).
 # Useful for faint sources where combining Stokes improves peak detection.
@@ -607,65 +620,70 @@ WSC_JOINPOLARIZATIONS = True
 WSC_LOCALRMS_STRENGTH = 0.5
 
 # --- Masking: blind image (stage 0 — mask generation only) ---
-WSC_AUTOMASK_BLIND    = 5.0   # Auto-mask threshold (sigma) for blind image
-WSC_AUTOTHRESHOLD_BLIND = 1.0 # Auto-threshold (sigma) at which CLEAN stops for blind image
-WSC_THRESHOLD_BLIND   = False # Absolute flux threshold for blind image; False = use auto-threshold
-WSC_LOCALRMS_BLIND    = True  # Use a local RMS map for masking in the blind image
+WSC_AUTOMASK_BLIND      = 5.0   # Auto-mask threshold (sigma) for blind image
+WSC_AUTOTHRESHOLD_BLIND = 1.0   # Auto-threshold (sigma) at which CLEAN stops for blind image
+WSC_THRESHOLD_BLIND     = False  # Absolute flux threshold for blind image; False = use auto-threshold
+WSC_LOCALRMS_BLIND      = True   # Use a local RMS map for masking in the blind image
 
-# --- Masking: main self-calibration images ---
+# --- Masking: first self-calibration pass (two-stage workflow only) ---
+# Restricts cleaning to high-significance pixels before any amplitude self-calibration.
+# Has no effect in the standard single-round 2GC workflow.
+WSC_SHALLOWMASK = 10.0  # Auto-mask threshold (sigma) for the first deconvolution pass;
+                         # calibrators use 2× this value
+
+# --- Masking: intermediate image (two-stage workflow only) ---
+# An intermediate image is made from CORRECTED_DATA after stage 1 phase self-calibration.
+# This model is used for amplitude self-calibration in stage 2.
+# Has no effect in the standard single-round 2GC workflow.
+WSC_INTER_LOCALRMS      = True   # Use local RMS map for intermediate image masking
+WSC_INTER_AUTOMASK      = 3.0    # Auto-mask threshold (sigma) for intermediate image
+WSC_INTER_AUTOTHRESHOLD = 1.0    # Auto-threshold (sigma) for intermediate image and shallow clean
+
+# --- Masking: final image ---
+# Standard 2GC: applied to both self-calibration imaging passes.
+# Two-stage 2GC: applied to the final imaging pass only.
 WSC_MASK          = False    # FITS mask to use; False = no mask (blind deconvolution)
                               # Can also be a list of per-field mask paths
 WSC_THRESHOLD     = False    # Absolute flux threshold (Jy) at which to stop cleaning; False = use auto
-WSC_SHALLOWMASK   = 10.0     # Initial auto-mask threshold (sigma) for the first deconvolution pass;
-                              # in the two-stage self-calibration workflow, calibrators use 2x this value
 WSC_AUTOMASK      = 2.0      # Auto-mask threshold (sigma) for main deconvolution
 WSC_AUTOTHRESHOLD = 0.5      # Auto-threshold (sigma) at which CLEAN stops
 WSC_LOCALRMS      = False    # Use a local RMS map for adaptive masking during main deconvolution
 
-# --- Masking: intermediate image (two-stage self-calibration only) ---
-# In the two-stage workflow, an intermediate image is made from CORRECTED_DATA
-# after stage 1 phase self-calibration. This model is then used for amplitude
-# self-calibration in stage 2. These masking parameters apply to that image only.
-WSC_INTER_LOCALRMS      = True   # Use local RMS map for intermediate image masking
-WSC_INTER_AUTOMASK      = 3.0    # Auto-mask threshold (sigma) for intermediate image
-WSC_INTER_AUTOTHRESHOLD = 1.0    # Auto-threshold (sigma) for intermediate image
+# --- Minimum baseline UV cut ---
+# If True, sets WSC_MINUVL by converting WSC_BASELINE_CUTLENGTH to wavelengths at the band centre.
+# Useful for excluding short baselines that contribute large-scale confusion.
+# WSC_BASELINE_CUTLENGTH can be:
+#   '<value>m'  — a physical length in metres; converted to wavelengths per band (frequency-dependent)
+#   '<value>'   — already in wavelengths; used directly with no frequency scaling
+WSC_BASELINE_CUT = False
+WSC_BASELINE_CUTLENGTH = '600m'  # Default: exclude baselines shorter than 600 m
 
-# --- Post-processing: beam homogenisation ---
-WSC_HOMOGENIZEBEAM = False  # Homogenise across frequency channels only
-WSC_HOMOGENIZETIME = False  # Homogenise across both frequency channels and time intervals
+if WSC_BASELINE_CUT:
+    _cutlen = str(WSC_BASELINE_CUTLENGTH).strip()
+    if _cutlen.endswith('m'):
+        _baseline_m = float(_cutlen[:-1])
+        _speed_of_light = 299792458.  # m / s
+        _band_mid = {
+            'UHF':  816.0e6,
+            'L':   1284.0e6,
+            'S0':  2187.0e6,
+            'S1':  2406.0e6,
+            'S2':  2625.0e6,
+            'S3':  2843.0e6,
+            'S4':  3062.0e6,
+        }
+        if BAND in _band_mid:
+            _wavelength = _speed_of_light / _band_mid[BAND]
+            WSC_MINUVL = '{:.1f}'.format(_baseline_m / _wavelength)
+    else:
+        # Already in wavelengths — use directly, no frequency scaling
+        WSC_MINUVL = '{:.1f}'.format(float(_cutlen))
+
 
 # --- Model modification before predict (two-stage self-calibration only) ---
 # If True, runs mod_model_selfcal.py after fix_nan_models.py before each predict step
 # in the two-stage self-calibration workflow. Has no effect in a single-round workflow.
 MOD_MODEL_SELFCAL = False
-# Determine if you want to match the large resolvable angular scale by frequency
-WSC_MATCHSCALES = WSC_HOMOGENIZEBEAM
-if WSC_MATCHSCALES:
-    speed_of_light = 299792458. # m / s
-    min_baseline = 29. # m 
-    # Calculate the largest resovable angular scale using top of band + 10 wavelengths as padding
-    if BAND == 'UHF':
-        minuvl = min_baseline / (speed_of_light / 1088.0e6) + 10. 
-        WSC_MINUVL = '{}.0'.format(round(minuvl))
-    if BAND == 'L':
-        minuvl = min_baseline / (speed_of_light / 1712.0e6) + 10. 
-        WSC_MINUVL = '{}.0'.format(round(minuvl))
-    if BAND == 'S0':
-        minuvl = min_baseline / (speed_of_light / 2625.0e6) + 10. 
-        WSC_MINUVL = '{}.0'.format(round(minuvl))
-    if BAND == 'S1':
-        minuvl = min_baseline / (speed_of_light / 2843.0e6) + 10. 
-        WSC_MINUVL = '{}.0'.format(round(minuvl))
-    if BAND == 'S2':
-        minuvl = min_baseline / (speed_of_light / 3062.0e6) + 10. 
-        WSC_MINUVL = '{}.0'.format(round(minuvl))
-    if BAND == 'S3':
-        minuvl = min_baseline / (speed_of_light / 3281.0e6) + 10. 
-        WSC_MINUVL = '{}.0'.format(round(minuvl))
-    if BAND == 'S4':
-        minuvl = min_baseline / (speed_of_light / 3500.0e6) + 10. 
-        WSC_MINUVL = '{}.0'.format(round(minuvl))
-
 # Band modifiers
 if BAND == 'UHF':
     WSC_CELLSIZE = '1.7asec'
@@ -679,9 +697,43 @@ if BAND == 'S1':
 if BAND == 'S2':
     WSC_CELLSIZE = '0.58asec'
 if BAND == 'S3':
-    WSC_CELLSIZE = '0.54asec'    
+    WSC_CELLSIZE = '0.54asec'
 if BAND == 'S4':
     WSC_CELLSIZE = '0.5asec'
+
+# --- Post-processing: beam homogenisation ---
+WSC_HOMOGENIZEBEAM = False  # Homogenise across frequency channels only
+WSC_HOMOGENIZETIME = False  # Homogenise across both frequency channels and time intervals
+
+# [EXPERIMENTAL] Match the minimum-UV cut to the physical minimum baseline length per band,
+# ensuring the large-scale sensitivity is consistent across frequency when homogenising the beam.
+# Override WSC_MINUVL manually below the auto-calculated block if needed.
+WSC_MATCHSCALES = WSC_HOMOGENIZEBEAM
+if WSC_MATCHSCALES:
+    speed_of_light = 299792458. # m / s
+    min_baseline = 29. # m
+    # Largest resolvable angular scale: top of band + 10 wavelengths padding
+    if BAND == 'UHF':
+        minuvl = min_baseline / (speed_of_light / 1088.0e6) + 10.
+        WSC_MINUVL = '{}.0'.format(round(minuvl))
+    if BAND == 'L':
+        minuvl = min_baseline / (speed_of_light / 1712.0e6) + 10.
+        WSC_MINUVL = '{}.0'.format(round(minuvl))
+    if BAND == 'S0':
+        minuvl = min_baseline / (speed_of_light / 2625.0e6) + 10.
+        WSC_MINUVL = '{}.0'.format(round(minuvl))
+    if BAND == 'S1':
+        minuvl = min_baseline / (speed_of_light / 2843.0e6) + 10.
+        WSC_MINUVL = '{}.0'.format(round(minuvl))
+    if BAND == 'S2':
+        minuvl = min_baseline / (speed_of_light / 3062.0e6) + 10.
+        WSC_MINUVL = '{}.0'.format(round(minuvl))
+    if BAND == 'S3':
+        minuvl = min_baseline / (speed_of_light / 3281.0e6) + 10.
+        WSC_MINUVL = '{}.0'.format(round(minuvl))
+    if BAND == 'S4':
+        minuvl = min_baseline / (speed_of_light / 3500.0e6) + 10.
+        WSC_MINUVL = '{}.0'.format(round(minuvl))
 
 
 # ------------------------------------------------------------------------
@@ -879,6 +931,43 @@ KMS_NCHANSOLS = 8
 # [KAFCA]
 KMS_NITERKF = 9
 KMS_COVQ = 0.05
+
+# ------------------------------------------------------------------------
+#
+# RM Synthesis pipeline defaults (RMSYNTH_01 extraction + RM-Tools)
+#
+
+# --- Extraction (RMSYNTH_01_extract_fluxes.py) ---
+
+RMSYN_OVERWRITE           = True    # Re-run fitting even when the output JSON already exists.
+                                    # Set False to skip to plotting only.
+
+RMSYN_FORCE_FIX_STOKES_V  = True   # Always anchor the Stokes V position to Stokes I regardless
+                                    # of S/N. Recommended: leakage dominates V for most sources.
+
+RMSYN_SPEC_PLOT_SNR_THRESH = 10     # Minimum MFS Stokes I S/N for a per-channel spectrum PNG.
+
+RMSYN_SPEC_INDEX_SNR_THRESH = 25    # Minimum MFS Stokes I S/N to attempt the spectral index fit.
+                                    # Below this alpha, chi2, ndof, chi2_red are stored as None.
+
+RMSYN_SPEC_INDEX_MAD_CLIP  = 10     # Iterative MAD outlier rejection threshold (in sigma) applied
+                                    # to channels during the spectral index power-law fit.
+
+RMSYN_MAX_I_DRIFT_PIX      = False  # Maximum pixel drift allowed for a Stokes I fitted position
+                                    # before the fit is re-run with the position fixed.
+                                    # False = no drift check; float = threshold in pixels.
+
+# --- rmsynth1d (RM-Tools) ---
+
+RMSYN_FARADAY_RANGE        = 2500   # Half-range of the Faraday depth domain: |phi| <= this (rad/m²) (-l)
+RMSYN_POLY_ORDER           = 4      # Polynomial order for the Stokes I spectral model fit (-o)
+RMSYN_RMSF_SAMPLES         = 10     # Number of samples across the FWHM of the RMSF (-s)
+RMSYN_SUPER_RESOLUTION     = True   # Enable super-resolution deconvolution (--super-resolution)
+
+# --- rmclean1d (RM-Tools) ---
+
+RMCLEAN_CUTOFF             = -9     # CLEAN stopping threshold; negative = multiples of the noise (-c)
+RMCLEAN_WINDOW             = -4     # CLEAN window half-width; negative = multiples of RMSF half-width (-w)
 
 # ------------------------------------------------------------------------
 #

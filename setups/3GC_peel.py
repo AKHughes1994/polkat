@@ -95,6 +95,12 @@ def main():
 
         targetname = target_names[tt]
         myms = target_ms[tt]
+
+        # If a two-stage self-cal was run, its final amplitude-calibrated data lives
+        # in the stage2 MS.  Detect it here; myms is overwritten after image prefixes
+        # are set so that all data operations pick up stage2 automatically.
+        stage2_ms = myms.replace('.ms', '_stage2.ms')
+
         CAL_3GC_PEEL_REGION = cfg.CAL_3GC_PEEL_REGION
         skip = False
 
@@ -144,16 +150,22 @@ def main():
             gen.print_spacer()
             print(gen.col('Target')+targetname)
             print(gen.col('Measurement Set')+myms)
+            if o.isdir(stage2_ms):
+                print(gen.col('Working MS (two-stage)')+stage2_ms)
             print(gen.col('Code')+code)
             print(gen.col('Peeling region(s):'), CAL_3GC_PEEL_REGION)
 
 
-            # Image prefixes
+            # Image prefixes — always use the original myms so naming matches 2GC/two-stage outputs
             prepeel_img_prefix = IMAGES+'/img_'+myms+'_prepeel'
             peel_img_prefix = IMAGES+'/img_'+myms+'_peel'
             pcal_img_prefix = IMAGES+f'/img_{myms}_pcalmask'
             dir_img_prefixes = [prepeel_img_prefix+'-'+region.split('/')[-1].split('.')[0] for region in CAL_3GC_PEEL_REGION]
 
+            # Switch to stage2 MS now that image prefixes are fixed; all step syscalls below
+            # will operate on the amplitude-calibrated data if two-stage was run.
+            if o.isdir(stage2_ms):
+                myms = stage2_ms
 
             # Target-specific kill file
             kill_file = SCRIPTS+'/kill_3GC_peel_jobs_'+filename_targetname+'.sh'

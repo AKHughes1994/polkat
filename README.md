@@ -17,9 +17,47 @@ If you make use of this software, please cite:
 ---
 
 
-### Latest modification (April, 2026)
+### Latest modification (May, 2026)
 
-#### Update: UHF Band and Manual Cross-Hand Solver
+#### Update: Branch Update
+
+The `polkat_QC_selfcal` default branch has been significantly updated through a merger with the `dev` branch.
+
+---
+
+#### Update: Ionospheric RM — Migrated from ALBUS to Spinifex
+
+Ionospheric RM estimation has been migrated from ALBUS to [Spinifex](https://spinifex.readthedocs.io/en/latest/), which is now bundled in the main container. The separate `polkat-albus.sif` container is no longer required.
+
+---
+
+#### Update: New 1GC Config Parameters (`CAL_1GC_BL_MODE`, `CAL_1GC_APPLYPARANG`)
+
+**`CAL_1GC_BL_MODE`** — a new flagging mode during the deterministic flagging step of 1GC, replacing the older `CAL_1GC_AGGRESSIVE_FLAGS` boolean. The available options are:
+
+- `’freq’` *(default)* — flags specific RFI-affected frequency bands only on short baselines (< 600 m). Recommended for most observations.
+- `’none’` — disables all baseline-length-dependent flagging entirely.
+- `’aggressive’` — flags *all* data on the affected short baselines, regardless of frequency. This was found to remove discontinuities in the Stokes I spectrum arising from dynamic-range-limited data, and is recommended for in-band spectral work (e.g., with 15-minute observations). If using `’aggressive’`, also consider disabling multi-frequency weighting by setting `WSC_MFWEIGHT = False` in `config.py`.
+
+**`CAL_1GC_APPLYPARANG`** (`True` by default) — when `True`, the parallactic angle correction is applied to `CORRECTED_DATA` before splitting to the target MS, placing the data in the sky frame and meaning self-calibration corrections are also solved in the sky frame. When `False`, the correction is instead applied after the final self-calibration step. For phase-only self-calibration the choice has negligible effect. If you are performing **amplitude self-calibration — especially of the off-diagonal Jones terms** — consider setting this to `False` to keep the solve in the feed frame. This is recommended only for **snapshot observations (≲1 hour)** where parallactic angle rotation is small enough that Q and U are not significantly mixed. For longer tracks where phase-only calibration is sufficient, leave this `True`. If you have a longer track and need feed-frame amplitude self-calibration, you will need to populate the model column with a sky model, de-rotate the model, and rotate `CORRECTED_DATA` accordingly — an improper treatment will double-correct or smear the sky model. Feel free to raise a discussion on the repository if this applies to your use case.
+
+---
+
+#### Update: Two-Stage Self-Calibration and wsclean 3.5
+
+An alternative 2GC script, [`waterhole/setup_2GC_twostage.py`](waterhole/setup_2GC_twostage.py), performs two rounds of self-calibration: a first pass on high-significance pixels only (controlled by `WSC_SHALLOWMASK`), followed by amplitude self-calibration on an intermediate image, then a final imaging pass. wsclean has been upgraded to **version 3.5**, adding `--local-rms-strength`, exposed as `WSC_LOCALRMS_STRENGTH` (default `0.5`). Intermediate masking parameters (`WSC_INTER_AUTOMASK`, `WSC_INTER_AUTOTHRESHOLD`, `WSC_INTER_LOCALRMS`) apply only to this workflow. See the 2GC section below for full parameter listings.
+
+**Amplitude self-calibration** YAML files have been added to `data/quartical/`. [`2GC_complex.yaml`](data/quartical/2GC_complex.yaml) performs direction-independent amplitude self-calibration; [`2GC_complex_2dir.yaml`](data/quartical/2GC_complex_2dir.yaml) extends this to two directions and is used to peel a problematic in-field source. Place a DS9 region file named `DIR.reg` in your working directory to activate the peeling. This is intended for **advanced users**; inspect your solutions carefully.
+
+---
+
+#### Update: New Config Parameter (`MOD_MODEL_SELFCAL`)
+
+`MOD_MODEL_SELFCAL` (`False` by default) zeros Stokes V in the sky model before each predict step in the two-stage self-calibration workflow. This is designed for polarization observations of dynamic-range-limited fields (e.g., X-ray binaries) where the model could otherwise accumulate a spurious non-zero Stokes V component. Has no effect in the standard single-round 2GC workflow.
+
+---
+
+#### Previous Update (April, 2026): UHF Band and Manual Cross-Hand Solver
 
 Full UHF band support is now available. The cross-hand phase (XF) calibration has been extended with a **manual solver** that handles cases where CASA’s XF solver introduces large discontinuities, discussed more under INFO.
 
@@ -191,10 +229,16 @@ CAL_1GC_DIAGNOSTICS = True  # (default: on) Images calibrators in Stokes I, Q, U
                              # (typically J1939) should be unpolarized; the polarization angle 
                              # calibrator should match catalogue values. Leave this on for 
                              # calibration checks.
-CAL_1GC_AGGRESSIVE_FLAGS = False  # (default: off) More aggressive baseline flagging. Default flags 
-                                   # RFI on short baselines; turning this on flags RFI on all 
-                                   # baselines, can remove RFI inducing low-fractional polarisation 
-                                   # structure.
+CAL_1GC_APPLYPARANG = True  # Apply parallactic angle correction after 1GC (sky-frame self-cal).
+                             # Set False for feed-frame amplitude self-calibration; recommended 
+                             # only for short snapshots (≲1 hour). See 2GC notes for full details.
+CAL_1GC_BL_MODE = 'freq'    # Baseline-dependent flagging mode during deterministic flags.
+                             # 'freq'       (default) — flags RFI-affected bands on baselines < 600 m only.
+                             # 'none'                 — disables all baseline-dependent flagging.
+                             # 'aggressive'           — flags all data on affected short baselines.
+                             #   The 'aggressive' mode removes Stokes I spectral discontinuities
+                             #   in dynamic-range-limited data; recommended for in-band spectral
+                             #   work alongside WSC_MFWEIGHT = False.
 POLANG_MOD = [1.0, 0.0, 0.5, 0.0]  # Initialization model for the polarization angle calibrator 
                                     # (default: 3C286); used by setjy in CASA. The config file also 
                                     # includes a model for 3C138. This model is used by the default 
@@ -218,7 +262,38 @@ python3 setups/2GC.py idia
 ./submit_2GC_job.sh
 ```
 
-For fields with clear artefacts around bright sources (possibly due to calibration errors or residual RFI), an alternative two-stage self-calibration approach is available via `python3 waterhole/setup_2GC_twostage.py idia`. This performs iterative self-calibration first on pixels meeting the `WSC_SHALLOWMASK` threshold before proceeding to the full imaging workflow.
+For fields with clear artefacts around bright sources (possibly due to calibration errors or residual RFI), an alternative two-stage self-calibration approach is available:
+
+```bash
+python3 waterhole/setup_2GC_twostage.py idia
+./submit_2GC_twostage_job.sh
+```
+
+This performs two rounds of self-calibration: a first pass restricted to high-significance pixels (controlled by `WSC_SHALLOWMASK`), followed by amplitude self-calibration on an intermediate image, before proceeding to the final imaging pass. wsclean has been upgraded to **version 3.5**, which introduces the `--local-rms-strength` option, exposed as `WSC_LOCALRMS_STRENGTH`. The relevant `config.py` parameters are:
+
+```python
+WSC_LOCALRMS_STRENGTH = 0.5   # local-rms strength factor (wsclean 3.5+); scales how aggressively 
+                               # the local RMS map modulates the clean threshold. 
+                               # 0.5 = weight by sqrt of local noise; see wsclean docs for details.
+
+# Intermediate image (two-stage self-calibration only)
+WSC_INTER_LOCALRMS      = True   # Use local RMS map for intermediate image masking
+WSC_INTER_AUTOMASK      = 3.0    # Auto-mask threshold (sigma) for intermediate image
+WSC_INTER_AUTOTHRESHOLD = 1.0    # Auto-threshold (sigma) for intermediate image
+
+WSC_SHALLOWMASK = 10.0  # Initial auto-mask threshold (sigma) for the first deconvolution pass;
+                         # in the two-stage workflow, calibrators use 2× this value
+```
+
+**Amplitude self-calibration** YAML files are available in `data/quartical/`. [`2GC_complex.yaml`](data/quartical/2GC_complex.yaml) performs direction-independent amplitude self-calibration; [`2GC_complex_2dir.yaml`](data/quartical/2GC_complex_2dir.yaml) extends this to two directions to peel a problematic in-field source. To use the peeling configuration, create a DS9 region file named `DIR.reg` in your working directory specifying the source. This is intended for **advanced users**.
+
+A new `config.py` parameter, `MOD_MODEL_SELFCAL`, controls whether Stokes V is zeroed in the sky model before each predict step in the two-stage workflow. This is designed for polarization observations of dynamic-range-limited fields (e.g., X-ray binaries), where the model could otherwise accumulate a spurious non-zero Stokes V component:
+
+```python
+MOD_MODEL_SELFCAL = False  # If True, zeros Stokes V in the self-calibration sky model before 
+                            # each predict step (two-stage workflow only). Recommended for  
+                            # polarization observations of dynamic-range-limited sources.
+```
 
 Most imaging parameters for 2GC are found in `config.py` after the comment `# wsclean and 2GC defaults`, and correspond directly to [wsclean](https://wsclean.readthedocs.io/en/latest/) options. **Please consult the wsclean documentation for detailed explanations of all available parameters.** The variables listed below are the ones most commonly adjusted for typical use cases (but note that the defaults are generally suitable for standard MeerKAT observations).:
 
@@ -265,19 +340,21 @@ WSC_NONEGATIVE = False     # Enforce non-negative constraint during deconvolutio
 WSC_STOPNEGATIVE = False   # Stop deconvolution when negative components appear
 WSC_CIRCULARBEAM = False   # Force circular restoring beam
 
-# Masking for blind imaging (initial image to create mask)
-WSC_AUTOMASK_BLIND = 10.0        # Auto-masking sigma threshold for blind image
-WSC_AUTOTHRESHOLD_BLIND = 2.0    # Auto-threshold sigma for blind cleaning
-WSC_THRESHOLD_BLIND = False      # Manual threshold for blind image (False = auto)
-WSC_LOCALRMS_BLIND = False       # Use local RMS for blind image masking (False = global RMS)
+# Masking: blind image (mask generation only)
+WSC_AUTOMASK_BLIND      = 5.0   # Auto-mask threshold (sigma) for blind image
+WSC_AUTOTHRESHOLD_BLIND = 1.0   # Auto-threshold (sigma) at which CLEAN stops for blind image
+WSC_THRESHOLD_BLIND     = False  # Absolute flux threshold for blind image; False = use auto-threshold
+WSC_LOCALRMS_BLIND      = True   # Use a local RMS map for masking in the blind image
 
-# Masking for science imaging (final images)
-WSC_MASK = False            # Use existing mask file (False = auto-generate from blind image)
-WSC_THRESHOLD = False       # Manual cleaning threshold (False = auto)
-WSC_SHALLOWMASK = 50.0      # Shallow mask sigma threshold for initial mask creation
-WSC_AUTOMASK = 4.0          # Auto-masking sigma threshold for science imaging
-WSC_AUTOTHRESHOLD = 1.0     # Auto-threshold sigma for final cleaning
-WSC_LOCALRMS = False        # Use local RMS for masking (False = global RMS)
+# Masking: final image
+# Standard 2GC: applied to both self-calibration imaging passes.
+# Two-stage 2GC: applied to the final imaging pass only.
+# (For two-stage shallow/intermediate masking params, see WSC_SHALLOWMASK / WSC_INTER_* above.)
+WSC_MASK          = False   # FITS mask to use; False = no mask (blind deconvolution)
+WSC_THRESHOLD     = False   # Absolute flux threshold (Jy) to stop cleaning; False = use auto
+WSC_AUTOMASK      = 2.0     # Auto-mask threshold (sigma) for main deconvolution
+WSC_AUTOTHRESHOLD = 0.5     # Auto-threshold (sigma) at which CLEAN stops
+WSC_LOCALRMS      = False   # Use a local RMS map for adaptive masking
 ```
 
 
@@ -289,7 +366,28 @@ This pipeline supports spectrally resolved functionality (e.g., Rotation Measure
 
 Self-calibration solutions are controlled via Quartical YAML files in `data/quartical`. The default configuration (`2GC_phase.yaml`) performs phase-only self-calibration with a frequency-dependent slope. See the [Quartical documentation](https://quartical.readthedocs.io/en/latest/) for details. The key parameter is `time_interval='1'`, which sets the solution interval to 1 integration time by default.
 
-**Note on parallactic angle:** The QC routine does not de-rotate or re-apply parallactic angle corrections during self-calibration, as the DATA column already has parallactic angle rotation applied after 1GC. While there was initial concern this could reduce calibration fidelity (due to feed-frame vs. sky-frame issues), in practice this effect appears minor—much smaller than measurement errors or other systematics. If you encounter a case where this makes a significant difference, please report it.
+**Parallactic angle and self-calibration frame (`CAL_1GC_APPLYPARANG`):**
+
+```python
+CAL_1GC_APPLYPARANG = True  # When True, the parallactic angle correction is applied to 
+                             # CORRECTED_DATA before splitting to the target MS (sky-frame 
+                             # self-calibration). When False, the correction is applied after 
+                             # the final self-calibration step (feed-frame self-calibration).
+```
+
+When `True` (default), `CORRECTED_DATA` is in the sky frame before self-calibration, meaning the diagonal (XX/YY) and off-diagonal (XY/YX) Jones terms may be mixed by parallactic angle rotation. For phase-only self-calibration this has negligible effect. If you are performing **amplitude self-calibration — especially of the off-diagonal Jones terms** — consider setting this to `False` to keep the solve in the feed frame, with the parallactic angle correction applied after the final self-calibration step instead. This is recommended only for **snapshot observations (≲1 hour)** where parallactic angle rotation is small enough that Q and U are not significantly mixed over the course of the observation. For longer tracks where phase-only calibration is sufficient, leave this `True`. If you have a longer track and need feed-frame amplitude self-calibration, you will need to populate the model column with a sky model, de-rotate the model, and rotate `CORRECTED_DATA` accordingly — an improper treatment will either double-correct or smear the sky model. Feel free to raise a discussion on the repository if this applies to your use case.
+
+The corresponding Quartical YAML controls for the parallactic angle are:
+
+```yaml
+input_model:
+  apply_p_jones: false      # Apply P-Jones rotation to the model before solving.
+                             # Set True when the data is in the feed frame (CAL_1GC_APPLYPARANG = False)
+                             # so that the model is rotated to match.
+output:
+  apply_p_jones_inv: true   # Apply the inverse P-Jones rotation when writing CORRECTED_DATA.
+                             # Set True to rotate the output back into the sky frame.
+```
 
 **Output:**  
 Final images will have suffixes such as `pcalmask-MFS-I-image.fits` or `pcalmask-[CHAN_NUMBER]-I-image.fits` (`I` for Stokes I). In addition to Stokes images, 2GC also produces linear polarization intensity (`Plin`, $\sqrt{Q^2+U^2}$) and total polarization intensity (`Ptot`, $\sqrt{Q^2+U^2+V^2}$) images.
@@ -392,7 +490,7 @@ The RMSYNTH step automates the process of extracting fluxes and polarization pro
 1. Fits target MFS, channelized, and/or snapshot images with user-specified Gaussians using the CASA task `imfit`.
 2. If `CAL_1GC_DIAGNOSTICS = True`, quantifies systematic calibration effects via image-plane analysis of calibrators.
 3. Runs RM Synthesis on every Gaussian component from every target, extracting polarization angles and rotation measures.
-4. Runs ALBUS to estimate the ionospheric RM for post-processing corrections. (Note: ALBUS may fail randomly; if so, rerun or change `RED_TYPE = RI_G03` to `RED_TYPE = RI_G01` in `config.py`.)
+4. Runs Spinifex to estimate the ionospheric RM for post-processing corrections.
 
 You may need to modify `data/rmsynth/rmsynth_info.json` to match your dataset. Example configuration:
 
@@ -448,14 +546,15 @@ polkat is fundamentally a compilation of existing software; these packages are t
 | [`wsclean`](https://gitlab.com/aroffringa/wsclean) | 2GC, 3GC | Imaging, model prediction | [Offringa et al., 2014](https://ui.adsabs.harvard.edu/abs/2014MNRAS.444..606O/abstract)|
 | [`pypher`](https://pypher.readthedocs.io/en/latest/) | 2GC, 3GC | Residual Homogenization | [Boucaud et al., 2016](https://ui.adsabs.harvard.edu/abs/2016A%26A...596A..63B/abstract)|
 | [`RMTools`](https://github.com/CIRADA-Tools/RM-Tools?tab=readme-ov-file) | RMSynth | Rotation Measure Synthesis | [Van Eck et al.](https://ui.adsabs.harvard.edu/abs/2020ascl.soft05003P/abstract)|
-| [`ALBUS`](https://github.com/twillis449/ALBUS_ionosphere) | RMSynth | Ionospheric RM Estimation | Willis et al.|
+| [`Spinifex`](https://spinifex.readthedocs.io/en/latest/) | RMSynth | Ionospheric RM Estimation | - |
 
 
 ---
 
 ## TO DO LIST
 
-1. Further improve documentation and include a PDF with some examples.
-2. Make a Quartical only branch
+1. A dedicated processing guide for the X-KAT/ThunderKAT collaboration is currently in preparation and will be appended to this repository when complete.
+2. Further improve documentation and include a PDF with worked examples.
+3. Make a Quartical-only branch.
 
 

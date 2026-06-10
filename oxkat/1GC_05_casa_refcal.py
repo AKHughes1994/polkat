@@ -940,7 +940,38 @@ if pacal_name != '':
         # Cross hand calibration tables
         cross_table = [xftab]
         cross_field = [pacal_name]
-        cross_interp = ['linear']     
+        cross_interp = ['linear']
+
+    # --- Optional: replace the active Xf table with an external one ---
+    # When overriding, drop KCROSS from the gain tables since the external
+    # table was not solved against it.
+    if str(XF_OVERRIDE_TABLE) != '':
+        print(f'  [XF] Overriding active Xf table with external: {XF_OVERRIDE_TABLE}')
+        xftab        = XF_OVERRIDE_TABLE
+        cross_table  = [xftab]
+        cross_field  = [pacal_name]
+        cross_interp = ['linear']
+        print(f'  [XF] KCROSS removed from gain tables; cross_table = {cross_table}')
+
+    # --- Optional: resolve the +/-180 deg degeneracy to a reference phase ---
+    # Applied to whichever Xf table is active (solved or overridden above).
+    if str(XF_REFERENCE_PHASE) != '':
+        _ref_rad = np.deg2rad(float(XF_REFERENCE_PHASE))
+        _n_flip  = 0
+        tb.open(xftab, nomodify=False)
+        _cparam = tb.getcol('CPARAM')
+        _flags  = tb.getcol('FLAG')
+        for _corr in range(_cparam.shape[0]):
+            _ph      = np.angle(_cparam[_corr])
+            _diff    = np.abs(np.angle(np.exp(1j * (_ph - _ref_rad))))
+            _diff_fl = np.abs(np.angle(np.exp(1j * (_ph + np.pi - _ref_rad))))
+            _flip    = (_diff_fl < _diff) & (~_flags[_corr])
+            _cparam[_corr][_flip] *= -1
+            _n_flip += int(np.sum(_flip))
+        tb.putcol('CPARAM', _cparam)
+        tb.close()
+        print(f'  [XF] Phase degeneracy resolved to reference {XF_REFERENCE_PHASE} deg: '
+              f'{_n_flip} channel(s) flipped.')
 
 
 # ------------------------------------------------------------------------------ #

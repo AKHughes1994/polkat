@@ -17,15 +17,16 @@ myms = project_info['working_ms']
 # Open the ms file table and set receptor angle to 0.0 for all entries
 tb.open(f"{myms}::FEED", nomodify=False)
 fa = tb.getcol("RECEPTOR_ANGLE")
+print('MAX/MIN angles before: ', np.amax(fa), np.amin(fa))
 fa[...] = 0.0
 tb.putcol("RECEPTOR_ANGLE", fa)
 tb.flush()
 tb.close()
-   
+
 # This code will re-open and output the receptor angles, to double check it worked
 tb.open(f"{myms}::FEED", nomodify=True)
 fa = tb.getcol("RECEPTOR_ANGLE")
-print('MAX/MIN angles are (should both be 0.0): ', np.amax(fa), np.amin(fa))
+print('MAX/MIN angles after (should both be 0.0): ', np.amax(fa), np.amin(fa))
 tb.close()
 
 # Save flags
