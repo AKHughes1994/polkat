@@ -60,7 +60,7 @@ BINDPATH = '$PWD,'+CWD+','+BIND
 IDIA_CONTAINER_PATH = ['/idia/software/containers/',HOME+'/containers/', CWD, HOME]
 CHPC_CONTAINER_PATH = [HOME+'/containers/']
 HIPPO_CONTAINER_PATH = None
-NODE_CONTAINER_PATH = [HOME+'/containers/', '/mnt/ephem/containers']
+NODE_CONTAINER_PATH = [HOME+'/containers/', CWD]
 GLAM_CONTAINER_PATH = ['/mnt/users/hughesa', '/mnt/extraspace/thunderkat_pol', CWD]
 
 
@@ -631,6 +631,11 @@ WSC_LOCALRMS_BLIND      = True   # Use a local RMS map for masking in the blind 
 WSC_SHALLOWMASK = 10.0  # Auto-mask threshold (sigma) for the first deconvolution pass;
                          # calibrators use 2× this value
 
+# --- Model modification before predict (two-stage self-calibration only) ---
+# If True, runs mod_model_selfcal.py after fix_nan_models.py before each predict step
+# in the two-stage self-calibration workflow. Has no effect in a single-round workflow.
+MOD_MODEL_SELFCAL = False
+
 # --- Masking: intermediate image (two-stage workflow only) ---
 # An intermediate image is made from CORRECTED_DATA after stage 1 phase self-calibration.
 # This model is used for amplitude self-calibration in stage 2.
@@ -680,10 +685,6 @@ if WSC_BASELINE_CUT:
         WSC_MINUVL = '{:.1f}'.format(float(_cutlen))
 
 
-# --- Model modification before predict (two-stage self-calibration only) ---
-# If True, runs mod_model_selfcal.py after fix_nan_models.py before each predict step
-# in the two-stage self-calibration workflow. Has no effect in a single-round workflow.
-MOD_MODEL_SELFCAL = False
 # Band modifiers
 if BAND == 'UHF':
     WSC_CELLSIZE = '1.7asec'
