@@ -572,7 +572,7 @@ WSC_BLIND_CHANNELSOUT = 8     # Blind (shallow, no mask) image — used only to 
 WSC_PCAL_CHANNELSOUT  = 32     # Final self-calibrated (pcalmask) image
 WSC_DMASK_CHANNELSOUT = WSC_PCAL_CHANNELSOUT  # Data-masked image (stage 1 selfcal model);
                                                # set independently if a different channelisation is needed
-WSC_CAL_CHANNELSOUT   = 16    # Calibrator images (secondaries / primary)
+WSC_CAL_CHANNELSOUT   = WSC_PCAL_CHANNELSOUT    # Calibrator images (secondaries / primary)
 
 # Memory-safe channel chunking: if WSC_MAX_CHANNELS < channels-out, wsclean is called
 # multiple times in channel-range blocks of WSC_MAX_CHANNELS, then the results are
