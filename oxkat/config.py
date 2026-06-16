@@ -88,7 +88,7 @@ SLURM_EXCLUDE = '' # Specify node(s) to exclude
 
 
 SLURM_DEFAULTS = {
-	'TIME': '12:00:00',
+	'TIME': '16:00:00',
 	'PARTITION': 'Main',
 	'NTASKS': '1',
 	'NODES': '1',
@@ -660,8 +660,8 @@ WSC_LOCALRMS      = False    # Use a local RMS map for adaptive masking during m
 # WSC_BASELINE_CUTLENGTH can be:
 #   '<value>m'  — a physical length in metres; converted to wavelengths per band (frequency-dependent)
 #   '<value>'   — already in wavelengths; used directly with no frequency scaling
-WSC_BASELINE_CUT = False
-WSC_BASELINE_CUTLENGTH = '600m'  # Default: exclude baselines shorter than 600 m
+WSC_BASELINE_CUT = True
+WSC_BASELINE_CUTLENGTH = '750m'  # Default: exclude baselines shorter than 750 m
 
 if WSC_BASELINE_CUT:
     _cutlen = str(WSC_BASELINE_CUTLENGTH).strip()

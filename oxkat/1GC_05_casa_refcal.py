@@ -867,8 +867,10 @@ if pacal_name != '':
             # Move bad Xf table
             bad_xftab = xftab.replace('.Xf', '_bad.Xf')
             print(f"  Moving original Xf table to: {bad_xftab}")
+            if os.path.isdir(bad_xftab):
+                shutil.rmtree(bad_xftab)
             shutil.move(xftab, bad_xftab)
-            
+
             # Only handle KCROSS if it's being used (not already moved to _bad)
             if not XF_SKIP_KCROSS:
                 # Move bad KCROSS table
@@ -917,8 +919,10 @@ if pacal_name != '':
             # Move bad Xf table
             bad_xftab = xftab.replace('.Xf', '_bad.Xf')
             print(f"  Moving original Xf table to: {bad_xftab}")
+            if os.path.isdir(bad_xftab):
+                shutil.rmtree(bad_xftab)
             shutil.move(xftab, bad_xftab)
-            
+
             # Only move KCROSS if it's being used (not already moved to _bad)
             if not XF_SKIP_KCROSS:
                 bad_kcross = kcross.replace('.KCROSS', '_bad.KCROSS')

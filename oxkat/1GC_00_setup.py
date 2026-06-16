@@ -388,6 +388,64 @@ def get_primary_tag(candidate_dirs,
 
     return primary_name,primary_id,primary_tag,primary_sep
 
+
+def disambiguate_primary_candidates(master_ms,
+                candidate_dirs,
+                candidate_names,
+                candidate_ids,
+                pre_fields,
+                mylogger):
+
+    """ When multiple primary candidates exist, use PRE_FIELDS or scan counts to select one.
+
+    Priority:
+      1. If PRE_FIELDS is set, filter to candidates whose name appears in it.
+      2. If PRE_FIELDS is empty, or no candidate matches PRE_FIELDS, pick the
+         candidate with the most scans (warns in the latter case).
+    """
+
+    if len(candidate_ids) <= 1:
+        return candidate_dirs, candidate_names, candidate_ids
+
+    mylogger.info(f'Multiple primary candidates found: {list(zip(candidate_ids, candidate_names))}')
+
+    if pre_fields != '':
+        pre_field_list = [f.strip() for f in pre_fields.split(',')]
+        matched_dirs, matched_names, matched_ids = [], [], []
+        for d, n, i in zip(candidate_dirs, candidate_names, candidate_ids):
+            if n in pre_field_list:
+                matched_dirs.append(d)
+                matched_names.append(n)
+                matched_ids.append(i)
+
+        if matched_dirs:
+            mylogger.info(f'Selecting primary from PRE_FIELDS match: {list(zip(matched_ids, matched_names))}')
+            return matched_dirs, matched_names, matched_ids
+
+        mylogger.warning(
+            f'PRE_FIELDS is set ("{pre_fields}") but none of the primary candidates '
+            f'({candidate_names}) appear in it. Add a primary to PRE_FIELDS and re-run. '
+            f'Falling back to most-scans selection.'
+        )
+
+    # Fallback: count scans per candidate and pick the one with the most
+    main_tab = table(master_ms, ack=False)
+    scan_counts = []
+    for fid in candidate_ids:
+        sub_tab = main_tab.query(query=f'FIELD_ID=={fid}')
+        n_scans = len(numpy.unique(sub_tab.getcol('SCAN_NUMBER')))
+        sub_tab.close()
+        scan_counts.append(n_scans)
+    main_tab.close()
+
+    best = int(numpy.argmax(scan_counts))
+    mylogger.info(
+        f'Selecting primary {candidate_ids[best]}: {candidate_names[best]} '
+        f'({scan_counts[best]} scan(s), most among candidates)'
+    )
+    return [candidate_dirs[best]], [candidate_names[best]], [candidate_ids[best]]
+
+
 def target_cal_pairs_old(target_dirs,target_names,target_ids,
                 secondary_dirs,secondary_names,secondary_ids):
 
@@ -613,6 +671,7 @@ def main():
 
     PRE_NCHANS = cfg.PRE_NCHANS
     PRE_SCANS = cfg.PRE_SCANS
+    PRE_FIELDS = cfg.PRE_FIELDS
     POLANG_NAME = cfg.POLANG_NAME
     CAL_1GC_PRIMARY = cfg.CAL_1GC_PRIMARY
     CAL_1GC_SECONDARIES = cfg.CAL_1GC_SECONDARIES
@@ -681,6 +740,14 @@ def main():
                                                             field_dirs,
                                                             field_names,
                                                             field_ids)
+
+    candidate_dirs, candidate_names, candidate_ids = disambiguate_primary_candidates(
+                                                        master_ms,
+                                                        candidate_dirs,
+                                                        candidate_names,
+                                                        candidate_ids,
+                                                        PRE_FIELDS,
+                                                        mylogger)
 
     primary_name, primary_id, primary_tag, primary_sep = get_primary_tag(candidate_dirs, candidate_names, candidate_ids)
 
