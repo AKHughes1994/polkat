@@ -531,7 +531,7 @@ WSC_IMSIZE     = 8500       # Image size in pixels for science targets (must be 
 WSC_CAL_IMSIZE = 2560        # Image size in pixels for calibrators
 WSC_CELLSIZE   = '1.1asec'   # Pixel scale (arcsec/pixel); overridden per-band below
 
-# --- Gridding ---
+# --- Gridding --- DEPRECATED
 WSC_USEWGRIDDER    = True   # Use the w-gridder algorithm (-gridder wgridder); recommended
 WSC_WGRIDDERACCURACY = 5e-5 # w-gridder accuracy parameter (lower = more accurate, slower)
 WSC_BDA            = False  # Enable baseline-dependent averaging during gridding
@@ -569,7 +569,7 @@ WSC_CIRCULARBEAM = False # Force a circular (not elliptical) restoring beam (-ci
 
 # --- Channel strategy ---
 WSC_BLIND_CHANNELSOUT = 8     # Blind (shallow, no mask) image — used only to generate initial mask
-WSC_PCAL_CHANNELSOUT  = 32     # Final self-calibrated (pcalmask) image
+WSC_PCAL_CHANNELSOUT  = 64     # Final self-calibrated (pcalmask) image
 WSC_DMASK_CHANNELSOUT = WSC_PCAL_CHANNELSOUT  # Data-masked image (stage 1 selfcal model);
                                                # set independently if a different channelisation is needed
 WSC_CAL_CHANNELSOUT   = WSC_PCAL_CHANNELSOUT    # Calibrator images (secondaries / primary)
@@ -577,7 +577,7 @@ WSC_CAL_CHANNELSOUT   = WSC_PCAL_CHANNELSOUT    # Calibrator images (secondaries
 # Memory-safe channel chunking: if WSC_MAX_CHANNELS < channels-out, wsclean is called
 # multiple times in channel-range blocks of WSC_MAX_CHANNELS, then the results are
 # assembled into a full cube. Must divide evenly into both PRE_NCHANS and channels-out.
-WSC_MAX_CHANNELS = 32
+WSC_MAX_CHANNELS = 64
 
 # Spectral polynomial fitting across output channels (-fit-spectral-pol N)
 # Applied during deconvolution to constrain spectral index. 0 = disabled.
@@ -613,7 +613,7 @@ WSC_SPLITPOL = True
 # Useful for faint sources where combining Stokes improves peak detection.
 # Avoid for dynamic-range-limited sources or when amplitude self-calibrating,
 # as it can fold Q/U artefacts into the model.
-WSC_JOINPOLARIZATIONS = True
+WSC_JOINPOLARIZATIONS = False
 
 # Local RMS weighting strength for -local-rms (-local-rms-strength).
 # 0.5 = weight by sqrt of local noise; see WSClean docs for full details.

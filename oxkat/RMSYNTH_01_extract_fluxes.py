@@ -46,6 +46,12 @@ def _iso_to_mjd(date_str):
     raise ValueError(f'Cannot parse date string for MJD conversion: {date_str!r}')
 
 
+def _mjd_to_isot(mjd):
+    """Convert MJD (float) to an ISOT-format datetime string (inverse of _iso_to_mjd)."""
+    _epoch = datetime.datetime(1858, 11, 17, 0, 0, 0)
+    return (_epoch + datetime.timedelta(days=mjd)).isoformat()
+
+
 def msg(txt):
     stamp = time.strftime(' %Y-%m-%d %H:%M:%S | ')
     print(stamp+txt, flush=True)
@@ -480,8 +486,8 @@ def _try_get_ms_timing(src_name, n_intervals):
     if neither MS is found or readable.
 
     Returns a list of n_intervals dicts:
-        'centre_mjd' : float  -- interval midpoint in MJD
-        'delta_s'    : float  -- relevant time span in seconds
+        'time_ctr_mjd' : float  -- interval centre in MJD
+        'time_dt'      : float  -- relevant time span in seconds
     """
     if not os.path.isfile('project_info.json'):
         msg('  [timing] project_info.json not found -- will use image header fallback')
@@ -553,10 +559,10 @@ def _try_get_ms_timing(src_name, n_intervals):
     # Compute timing per interval
     # -----------------------------------------------------------------------
     if n_intervals == 1:
-        _centre_mjd = (_t_start + _t_end) / 2.0 / 86400.0
-        _delta_s    = _t_span
-        msg(f'  [timing] MFS: centre = {_centre_mjd:.8f} MJD, delta = {_delta_s:.0f} s')
-        return [{'centre_mjd': _centre_mjd, 'delta_s': _delta_s}]
+        _time_ctr_mjd = (_t_start + _t_end) / 2.0 / 86400.0
+        _time_dt      = _t_span
+        msg(f'  [timing] MFS: centre = {_time_ctr_mjd:.8f} MJD, delta = {_time_dt:.0f} s')
+        return [{'time_ctr_mjd': _time_ctr_mjd, 'time_dt': _time_dt}]
 
     # Time-resolved: split into n_intervals evenly-sized chunks.
     # Each interval centre = start of chunk + half the median inter-chunk step.
@@ -573,7 +579,7 @@ def _try_get_ms_timing(src_name, n_intervals):
     _result = []
     for _i, _t0 in enumerate(_starts):
         _cmjd = (_t0 + _sep_s / 2.0) / 86400.0
-        _result.append({'centre_mjd': _cmjd, 'delta_s': _total})
+        _result.append({'time_ctr_mjd': _cmjd, 'time_dt': _total})
         msg(f'  [timing]   interval {_i:>3}: start = {_t0 / 86400.0:.8f} MJD, '
             f'centre = {_cmjd:.8f} MJD')
 
@@ -794,21 +800,23 @@ def extract_polarization_properties(src_name,
         msg(f'Observation: date={date_obs}  freq={freq_GHz:.4f} GHz  '
             f'beam={bmaj:.2f}"x{bmin:.2f}" PA={bpa:.1f} deg')
 
-        # Per-prefix MJD timing.
+        # Per-prefix MJD timing -- time_ctr_mjd/time_ctr_isot/time_dt always
+        # describe the centre of the relevant exposure, never its start.
         if is_time_resolved:
             # Centre = header DATE-OBS shifted by half the median inter-prefix step.
-            _centre_mjd = float(_hdr_mjds[k]) + _hdr_step_s / 2.0 / 86400.0
-            _delta_s    = _hdr_span_s
-            msg(f'  Timing (image header): centre MJD = {_centre_mjd:.8f}, delta = {_delta_s:.0f} s')
+            _time_ctr_mjd = float(_hdr_mjds[k]) + _hdr_step_s / 2.0 / 86400.0
+            _time_dt      = _hdr_span_s
+            msg(f'  Timing (image header): centre MJD = {_time_ctr_mjd:.8f}, delta = {_time_dt:.0f} s')
         elif _ms_timings is not None:
-            _centre_mjd = _ms_timings[0]['centre_mjd']
-            _delta_s    = _ms_timings[0]['delta_s']
-            msg(f'  Timing (MS): centre MJD = {_centre_mjd:.8f}, delta = {_delta_s:.0f} s')
+            _time_ctr_mjd = _ms_timings[0]['time_ctr_mjd']
+            _time_dt      = _ms_timings[0]['time_dt']
+            msg(f'  Timing (MS): centre MJD = {_time_ctr_mjd:.8f}, delta = {_time_dt:.0f} s')
         else:
             # MFS fallback: DATE-OBS from image header + 15-min default width.
-            _centre_mjd = _iso_to_mjd(date_obs)
-            _delta_s    = 15.0 * 60.0
-            msg(f'  Timing (header fallback): centre MJD = {_centre_mjd:.8f}, delta = 900 s (15 min default)')
+            _time_ctr_mjd = _iso_to_mjd(date_obs)
+            _time_dt      = 15.0 * 60.0
+            msg(f'  Timing (header fallback): centre MJD = {_time_ctr_mjd:.8f}, delta = 900 s (15 min default)')
+        _time_ctr_isot = _mjd_to_isot(_time_ctr_mjd)
 
         # Convert the input RA/Dec guesses (decimal degrees) to pixel coordinates
         # in this specific image.  imstat finds the nearest pixel to the input position.
@@ -901,7 +909,6 @@ def extract_polarization_properties(src_name,
                 output_dictionary['MFS'][component] = {}
                 output_dictionary['MFS'][component]['upperlimit']  = [src_ulims[z]]
                 output_dictionary['MFS'][component]['freq_GHz']    = [freq_GHz]
-                output_dictionary['MFS'][component]['date_isot']   = [date_obs]
                 output_dictionary['MFS'][component]['bmaj_asec']   = [bmaj]
                 output_dictionary['MFS'][component]['bmin_asec']   = [bmin]
                 output_dictionary['MFS'][component]['bpa_deg']     = [bpa]
@@ -910,12 +917,12 @@ def extract_polarization_properties(src_name,
                 output_dictionary['MFS'][component]['I_rms_mJy']    = [rms_I]
                 output_dictionary['MFS'][component]['I_RA_deg']     = [RA_I]
                 output_dictionary['MFS'][component]['I_DEC_deg']    = [DEC_I]
-                output_dictionary['MFS'][component]['centre_mjd']   = [_centre_mjd]
-                output_dictionary['MFS'][component]['delta_s']      = [_delta_s]
+                output_dictionary['MFS'][component]['time_ctr_mjd']  = [_time_ctr_mjd]
+                output_dictionary['MFS'][component]['time_ctr_isot'] = [_time_ctr_isot]
+                output_dictionary['MFS'][component]['time_dt']       = [_time_dt]
             else:
                 # Subsequent epochs: append to existing lists
                 output_dictionary['MFS'][component]['freq_GHz'].append(freq_GHz)
-                output_dictionary['MFS'][component]['date_isot'].append(date_obs)
                 output_dictionary['MFS'][component]['bmaj_asec'].append(bmaj)
                 output_dictionary['MFS'][component]['bmin_asec'].append(bmin)
                 output_dictionary['MFS'][component]['bpa_deg'].append(bpa)
@@ -924,8 +931,9 @@ def extract_polarization_properties(src_name,
                 output_dictionary['MFS'][component]['I_rms_mJy'].append(rms_I)
                 output_dictionary['MFS'][component]['I_RA_deg'].append(RA_I)
                 output_dictionary['MFS'][component]['I_DEC_deg'].append(DEC_I)
-                output_dictionary['MFS'][component]['centre_mjd'].append(_centre_mjd)
-                output_dictionary['MFS'][component]['delta_s'].append(_delta_s)
+                output_dictionary['MFS'][component]['time_ctr_mjd'].append(_time_ctr_mjd)
+                output_dictionary['MFS'][component]['time_ctr_isot'].append(_time_ctr_isot)
+                output_dictionary['MFS'][component]['time_dt'].append(_time_dt)
             
         
         # -----------------------------------------------------------------
@@ -1756,16 +1764,25 @@ def plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k,
 
 def plot_light_curve(output_dictionary, src_name, prefix_arr):
     '''
-    Plot MFS light curves for time-resolved data.
+    Plot MFS IQUV light curves for time-resolved data. Always produced
+    whenever the run is time-resolved, and always plots every epoch -- this
+    is a diagnostic plot, not a detection-filtered one (per-channel spectrum
+    plots from plot_stokes_spectrum() are the ones restricted to high-S/N
+    epochs, see SPEC_PLOT_SNR_THRESH).
 
-    One figure per source with one column per component and up to three rows:
+    One figure per source with one column per component and up to four rows:
       Row 1: Stokes I flux density (mJy/beam) vs time
-      Row 2: Linear polarization fraction LP = P0/I (%) vs time
-      Row 3: Circular polarization fraction CP = V/I (%) vs time
+      Row 2: Stokes Q flux density (mJy/beam) vs time
+      Row 3: Stokes U flux density (mJy/beam) vs time
+      Row 4: Stokes V flux density (mJy/beam) vs time
 
-    Rows 2 and 3 are only shown when polarization data is available.
-    All panels use MAD-based 5-sigma outlier rejection for robust y-axis
-    ranging.
+    Rows 2-4 are only shown when polarization data is available.
+
+    Every epoch is always plotted. A MAD clip (the same threshold used for
+    the spectral-index fit, SPEC_INDEX_MAD_CLIP) is applied to the error
+    array of each row to identify epochs with anomalously large error bars;
+    those epochs are excluded only when setting the y-axis range, so a
+    single bad-error outlier can't blow out the scale for everything else.
 
     Parameters
     ----------
@@ -1782,8 +1799,8 @@ def plot_light_curve(output_dictionary, src_name, prefix_arr):
     components = sorted(mfs.keys())
 
     # Determine whether polarization data exists
-    has_pol = 'LP_frac' in mfs[components[0]]
-    n_rows  = 3 if has_pol else 1
+    has_pol = 'Q_flux_mJy' in mfs[components[0]]
+    n_rows  = 4 if has_pol else 1
     n_cols  = len(components)
 
     fig, axes = plt.subplots(n_rows, n_cols,
@@ -1794,109 +1811,67 @@ def plot_light_curve(output_dictionary, src_name, prefix_arr):
     colours = ['royalblue', 'tomato', 'forestgreen', 'mediumpurple',
                'darkorange', 'teal', 'crimson', 'goldenrod']
 
-    def robust_ylim_linear(ax, vals, errs, floor_lo=None):
-        """Apply MAD-based 5-sigma outlier rejection and set y-limits."""
-        med   = np.nanmedian(vals)
-        mad   = np.nanmedian(np.abs(vals - med))
-        sigma = 1.4826 * mad
-        if sigma > 0:
-            inlier = np.abs(vals - med) <= 5.0 * sigma
+    def mad_clip_ylim(flux, rms):
+        """MAD-clip the error array (a MAD clip, same threshold as the
+        spectral-index fit) to find epochs with well-behaved error bars, and
+        use only those to set the y-axis range. All epochs are still plotted
+        regardless of this mask."""
+        med  = np.nanmedian(rms)
+        mad  = np.nanmedian(np.abs(rms - med))
+        sig  = 1.4826 * mad
+        if sig > 0:
+            keep = np.abs(rms - med) <= SPEC_INDEX_MAD_CLIP * sig
         else:
-            inlier = np.ones(len(vals), dtype=bool)
-        lo = np.nanmin(vals[inlier] - errs[inlier])
-        hi = np.nanmax(vals[inlier] + errs[inlier])
+            keep = np.ones(len(rms), dtype=bool)
+        if not np.any(keep):
+            keep = np.ones(len(rms), dtype=bool)
+        lo = np.nanmin(flux[keep] - rms[keep])
+        hi = np.nanmax(flux[keep] + rms[keep])
         if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
             span = hi - lo
             pad  = 0.15 * span if span > 0 else 0.5
-            if floor_lo is not None:
-                lo = max(floor_lo, lo - pad)
-            else:
-                lo = lo - pad
-            ax.set_ylim(lo, hi + pad)
+            return lo - pad, hi + pad
+        return None
+
+    def plot_stokes_row(ax, dates, flux, rms, label, col, legend_label=None):
+        """Plot every epoch for one Stokes parameter, unconditionally."""
+        ax.axhline(y=0, color='grey', linestyle=':', linewidth=0.8)
+        ax.set_ylabel(f'Stokes {label} (mJy/beam)', fontsize=10)
+        ax.grid(True, alpha=0.3, linestyle=':')
+        ax.errorbar(dates, flux, yerr=rms, fmt='o', markersize=5, capsize=3,
+                    color=col, label=legend_label)
+        if legend_label is not None:
+            ax.legend(fontsize=8, loc='best')
+        ylim = mad_clip_ylim(flux, rms)
+        if ylim is not None:
+            ax.set_ylim(*ylim)
 
     for j, component in enumerate(components):
         comp = mfs[component]
 
-        # Parse observation dates
-        dates = np.array([datetime.datetime.fromisoformat(d) for d in comp['date_isot']])
+        # Parse observation dates (centre of each exposure)
+        dates = np.array([datetime.datetime.fromisoformat(d) for d in comp['time_ctr_isot']])
+        col   = colours[j % len(colours)]
 
         I_flux = np.array(comp['I_flux_mJy'])
         I_rms  = np.array(comp['I_rms_mJy'])
-        col    = colours[j % len(colours)]
-
-        # --- Row 0: Stokes I (independent 5σ filter) ---
-        snr_I  = np.where(I_rms > 0, I_flux / I_rms, 0.0)
-        det_I  = snr_I >= 5.0
-        n_det_I = int(np.sum(det_I))
-        msg(f'  Light curve {component}: Stokes I  {n_det_I}/{len(det_I)} epochs with S/N >= 5')
 
         ax = axes[0, j]
         ax.set_title(component, fontsize=10)
-        ax.set_ylabel('Stokes I (mJy/beam)', fontsize=10)
-        ax.grid(True, alpha=0.3, linestyle=':')
-        if n_det_I > 0:
-            ax.errorbar(dates[det_I], I_flux[det_I], yerr=I_rms[det_I],
-                        fmt='o', markersize=5, capsize=3, color=col,
-                        label=component)
-            ax.legend(fontsize=8, loc='best')
-            robust_ylim_linear(ax, I_flux[det_I], I_rms[det_I])
-        else:
-            ax.set_title(f'{component} (no I detections)', fontsize=10)
+        plot_stokes_row(ax, dates, I_flux, I_rms, 'I', col, legend_label=component)
 
-        if has_pol and 'LP_frac' in comp:
+        if has_pol and 'Q_flux_mJy' in comp:
+            Q_flux = np.array(comp['Q_flux_mJy'])
+            Q_rms  = np.array(comp['Q_rms_mJy'])
+            plot_stokes_row(axes[1, j], dates, Q_flux, Q_rms, 'Q', col)
 
-            # --- Row 1: LP fraction (independent 5σ filter on P0/rms_P) ---
-            P0_flux = np.array(comp['P0_flux_mJy'])
-            P_rms   = np.array(comp['P_rms_mJy'])
-            LP      = np.array(comp['LP_frac'])
-            LP_err  = np.array(comp['LP_frac_err'])
+            U_flux = np.array(comp['U_flux_mJy'])
+            U_rms  = np.array(comp['U_rms_mJy'])
+            plot_stokes_row(axes[2, j], dates, U_flux, U_rms, 'U', col)
 
-            # Validity mask: finite, positive errors, and S/N >= 5
-            valid_LP = (np.isfinite(LP) & np.isfinite(LP_err)
-                        & (LP_err > 0) & (P_rms > 0))
-            snr_LP   = np.where(valid_LP & (P_rms > 0), P0_flux / P_rms, 0.0)
-            det_LP   = valid_LP & (snr_LP >= 5.0)
-            n_det_LP = int(np.sum(det_LP))
-            msg(f'  Light curve {component}: LP frac   {n_det_LP}/{len(det_LP)} epochs with S/N >= 5')
-
-            ax_lp = axes[1, j]
-            ax_lp.axhline(y=0, color='grey', linestyle=':', linewidth=0.8)
-            ax_lp.set_ylabel('LP fraction (%)', fontsize=10)
-            ax_lp.grid(True, alpha=0.3, linestyle=':')
-            if n_det_LP > 0:
-                ax_lp.errorbar(dates[det_LP], LP[det_LP], yerr=LP_err[det_LP],
-                               fmt='s', markersize=5, capsize=3, color=col)
-                robust_ylim_linear(ax_lp, LP[det_LP], LP_err[det_LP], floor_lo=0)
-
-            # --- Row 2: CP fraction (independent 5σ filter on |V|/rms_V) ---
             V_flux = np.array(comp['V_flux_mJy'])
             V_rms  = np.array(comp['V_rms_mJy'])
-
-            snr_CP  = np.where(V_rms > 0, np.abs(V_flux) / V_rms, 0.0)
-            det_CP  = snr_CP >= 5.0
-            n_det_CP = int(np.sum(det_CP))
-            msg(f'  Light curve {component}: CP frac   {n_det_CP}/{len(det_CP)} epochs with S/N >= 5')
-
-            # Compute CP and error only for detected epochs
-            # Need Stokes I at same epochs for the ratio
-            CP     = V_flux[det_CP] / I_flux[det_CP] * 100.0
-            CP_err = np.sqrt((V_rms[det_CP] / I_flux[det_CP]) ** 2 +
-                             (V_flux[det_CP] * I_rms[det_CP] / I_flux[det_CP] ** 2) ** 2) * 100.0
-
-            # Filter to finite, positive-error entries only
-            valid_cp  = np.isfinite(CP) & np.isfinite(CP_err) & (CP_err > 0)
-            dates_cp  = dates[det_CP][valid_cp]
-            CP        = CP[valid_cp]
-            CP_err    = CP_err[valid_cp]
-
-            ax_cp = axes[2, j]
-            ax_cp.axhline(y=0, color='grey', linestyle=':', linewidth=0.8)
-            ax_cp.set_ylabel('CP fraction (%)', fontsize=10)
-            ax_cp.grid(True, alpha=0.3, linestyle=':')
-            if len(CP) > 0:
-                ax_cp.errorbar(dates_cp, CP, yerr=CP_err,
-                               fmt='D', markersize=5, capsize=3, color=col)
-                robust_ylim_linear(ax_cp, CP, CP_err)
+            plot_stokes_row(axes[3, j], dates, V_flux, V_rms, 'V', col)
 
     # Format the time axis on the bottom row
     for ax in axes[-1, :]:
@@ -1910,7 +1885,7 @@ def plot_light_curve(output_dictionary, src_name, prefix_arr):
     all_dates = []
     for component in components:
         all_dates += [datetime.datetime.fromisoformat(d)
-                      for d in mfs[component]['date_isot']]
+                      for d in mfs[component]['time_ctr_isot']]
     if all_dates:
         span = max(all_dates) - min(all_dates)
         if span.total_seconds() > 86400:

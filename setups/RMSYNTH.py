@@ -70,6 +70,18 @@ def main():
     code = gen.get_code(myms)
     steps = []
 
+    # Single-target run: exactly one science target survived the PRE
+    # averaging step (i.e. is present in working_names). In that case we
+    # add a final step that summarizes the key MFS/RM synthesis outputs
+    # into one text file, instead of leaving them scattered across RESULTS.
+    target_names   = project_info.get('target_names', [])
+    working_names  = project_info.get('working_names', [])
+    single_targets = [t for t in target_names if t in working_names]
+    if len(single_targets) == 1:
+        print(gen.col('Single Target')+f'Detected single target {single_targets[0]} -- will write a combined output summary')
+    else:
+        print(gen.col('Single Target')+f'Not applicable ({len(single_targets)} targets present)')
+
 
     step_i = 0
     step = {}
@@ -121,6 +133,19 @@ def main():
     step['syscall'] = syscall
     steps.append(step)
     step_i += 1
+
+    if len(single_targets) == 1:
+        step = {}
+        step['step'] = step_i
+        step['comment'] = f'Summarize MFS/RM synthesis outputs for single target {single_targets[0]}'
+        step['dependency'] = step_i - 1
+        step['slurm_config'] = cfg.SLURM_RM
+        step['id'] = 'RMSUM'+code
+        syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
+        syscall += 'python3 '+cfg.OXKAT+'/RMSYNTH_04_summarize_target.py'
+        step['syscall'] = syscall
+        steps.append(step)
+        step_i += 1
 
     # step = {}
     # step['step'] = step_i
