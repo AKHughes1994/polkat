@@ -558,7 +558,7 @@ WSC_PARALLELDECONVOLUTION = 2560  # Tile size in pixels for parallel deconvoluti
 WSC_MULTISCALE       = False      # Enable multi-scale CLEAN (-multiscale)
 WSC_SCALES           = '0,3,9'   # Multi-scale CLEAN scale sizes in pixels
 WSC_MULTISCALE_BIAS  = 0.7       # Multi-scale bias parameter; higher = prefer smaller scales
-WSC_CHANDECONV       = False      # Number of sub-band images used during deconvolution
+WSC_CHANDECONV       = 16      # Number of sub-band images used during deconvolution
                                   # (--deconvolution-channels); False = same as channels-out
 WSC_NITER  = 800000  # Maximum number of CLEAN minor-cycle iterations (-niter)
 WSC_GAIN   = 0.15    # Minor-cycle loop gain; fraction of peak subtracted per iteration (-gain)
