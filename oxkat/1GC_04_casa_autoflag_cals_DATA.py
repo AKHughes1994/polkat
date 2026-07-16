@@ -2,12 +2,12 @@
 # fraser.cowie@physics.ox.ac.uk
 
 # --- RFlag parameters (flagdata mode='rflag') ---
-RFLAG_TIMEDEVSCALE = 6.0   # Flagging threshold (sigma) for time-direction deviation
-RFLAG_FREQDEVSCALE = 6.0   # Flagging threshold (sigma) for freq-direction deviation
+RFLAG_TIMEDEVSCALE = 5.0   # Flagging threshold (sigma) for time-direction deviation
+RFLAG_FREQDEVSCALE = 5.0   # Flagging threshold (sigma) for freq-direction deviation
 
 # --- TFCrop parameters (flagdata mode='tfcrop') ---
-TFCROP_TIMECUTOFF = 5.0    # Flagging threshold (sigma) in the time direction
-TFCROP_FREQCUTOFF = 4.0    # Flagging threshold (sigma) in the freq direction
+TFCROP_TIMECUTOFF = 4.0    # Flagging threshold (sigma) in the time direction
+TFCROP_FREQCUTOFF = 3.0    # Flagging threshold (sigma) in the freq direction
 
 exec(open('oxkat/config.py').read())
 exec(open('oxkat/casa_read_project_info.py').read())

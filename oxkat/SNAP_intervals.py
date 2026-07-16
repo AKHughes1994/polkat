@@ -5,11 +5,13 @@
 import glob
 import os
 import pickle
+import re
 import time
 import sys
 import os.path as o
 import subprocess
 import numpy as np
+from collections import Counter
 
 from astropy.io import fits as pyfits
 from pyrap.tables import table
@@ -19,9 +21,33 @@ sys.path.append(o.abspath(o.join(o.dirname(sys.modules[__name__].__file__), ".."
 from oxkat import generate_jobs as gen
 from oxkat import config as cfg
 
+# Comma-separated list of scan indices (0-based, in MS scan order) to (re)image
+# this run. Leave as '' to process every scan found in the MS.
+# Entries can be single indices or CASA-style ranges:
+#     '2,3'   -> scans 2 and 3
+#     '2~5'   -> scans 2 through 5 inclusive
+#     '2~'    -> scan 2 through the last scan
+#     '~3'    -> scan 0 through scan 3 inclusive
+# (see the WARNING printed at the end of a run for the exact list of scans that need re-running)
+SNAP_SCANS = ''
+
 def msg(txt):
     stamp = time.strftime(' %Y-%m-%d %H:%M:%S | ')
     print(stamp+txt, flush=True)
+
+
+def parse_scan_spec(spec, n_scans):
+    scans = set()
+    for token in spec.split(','):
+        token = token.strip()
+        if '~' in token:
+            lo_str, hi_str = token.split('~', 1)
+            lo = int(lo_str) if lo_str.strip() != '' else 0
+            hi = int(hi_str) if hi_str.strip() != '' else n_scans - 1
+            scans.update(range(lo, hi + 1))
+        else:
+            scans.add(int(token))
+    return sorted(scans)
 
 
 def trim_mask(mask_path, imsize, output_path):
@@ -124,27 +150,50 @@ def main():
 
     # Get number of integrations in each scan
     int_arr = get_total_ints(myms)
+
+    # Interval boundaries for every scan, independent of SNAP_SCANS, so t-label numbering
+    # is identical whether this is a full run or a re-run of only some scans.
+    int0_arr = []
+    int1_arr = []
     nint_arr = []
-
-    # Lists to store rename pairs
-    rename_pairs = []
-
-    # Iterate through scans:
-    scan_n = 0
-    for ints in int_arr:
-
-        # Starting interval        
+    for scan_n, ints in enumerate(int_arr):
         int0 = int(np.sum(int_arr[:scan_n]))
-        
-        # Determine if we want to truncate the end intervals or not
         if cfg.SNAP_INTEND:
             int1 = ints - ints % intbin + int0
             nint = int((int1 - int0) / intbin)
         else:
             int1 = int0 + ints
             nint = int(np.ceil((int1 - int0) / intbin))
-
+        int0_arr.append(int0)
+        int1_arr.append(int1)
         nint_arr.append(nint)
+
+    if SNAP_SCANS.strip() != '':
+        scans_to_run = parse_scan_spec(SNAP_SCANS, len(int_arr))
+    else:
+        scans_to_run = list(range(len(int_arr)))
+
+    msg(f'Imaging {len(scans_to_run)}/{len(int_arr)} scan(s): {scans_to_run}')
+
+    # Regex used later to count distinct per-channel (non-MFS) image files, e.g.
+    # '...-t0000-0005-image.fits' or '...-t0000-0005-I-image.fits' -> interval '0000', channel '0005'
+    img_re = re.compile(r'-t(\d{4})-(\d{4})-(?:[IQUV]-)?image\.fits$')
+
+    # Lists to store rename pairs
+    rename_pairs = []
+    scan_images = {}
+    failed_scans = []
+    processed_scans = []
+
+    # Iterate through the selected scans:
+    for run_idx, scan_n in enumerate(scans_to_run, start=1):
+
+        ints = int_arr[scan_n]
+        int0 = int0_arr[scan_n]
+        int1 = int1_arr[scan_n]
+        nint = nint_arr[scan_n]
+
+        msg(f'Processing scan {scan_n:04d} ({run_idx}/{len(scans_to_run)})')
 
         # Temporary name for scan image
         image_prefix = cfg.INTERVALS+f'/img_{myms}_modelsub_scan{scan_n:04d}'
@@ -168,30 +217,111 @@ def main():
                         automask = 6.0,
                         autothreshold = 1.0)
 
+        wsclean_failed = False
         for syscall in imcall:
-            subprocess.run([syscall], shell=True)
+            result = subprocess.run([syscall], shell=True)
+            if result.returncode != 0:
+                msg(f'ERROR: wsclean exited with code {result.returncode} for scan {scan_n:04d} '
+                    f'(signal {-result.returncode} if negative)')
+                wsclean_failed = True
+
+        # wsclean leaves '*-tmp.fits' files behind (e.g. a per-channel model file) when it
+        # crashes partway through a channel/Stokes -- their presence means the scan is incomplete
+        # even if the process's own exit code came back 0.
+        tmp_files = sorted(glob.glob(f'{image_prefix}*tmp*'))
+        if tmp_files:
+            msg(f'ERROR: Scan {scan_n:04d} left {len(tmp_files)} temp file(s) behind -- wsclean did not finish cleanly:')
+            for f in tmp_files:
+                msg(f'  {f}')
+            wsclean_failed = True
+
+        if wsclean_failed:
+            failed_scans.append(scan_n)
+            continue
 
         # Fix channel naming (necessary when breaking up frequency images due to memory constraints)
         syscall = f'python3 {cfg.TOOLS}/fix_image_naming.py {chanout} {image_prefix}'
         subprocess.run([syscall], shell=True)
 
+        images = sorted(glob.glob(f'{image_prefix}*'))
+
+        if not images:
+            msg(f'ERROR: Scan {scan_n:04d} produced no output images -- imaging failed, skipping')
+            failed_scans.append(scan_n)
+            continue
+
+        scan_images[scan_n] = images
+        processed_scans.append(scan_n)
 
         # Fix 'scan' naming to obey the 't0...' wsclean naming convention -- again has to be a bettter way to do this but this'll work
         # Basic idea is to add the scan number to the t-label; e.g., if scan 0 has 100 integrations:
         # scan0001-t0000 becomes t100 (easier indexing imo and avoids scan boundaries without the need to split MS files)
-        images= sorted(glob.glob(f'{image_prefix}*')) 
-
         for image in images:
             image_prefix_fix = image_prefix.replace(f'_scan{scan_n:04d}','') # remove scan string
             image_fix = image.replace(image_prefix, image_prefix_fix) # replace it in image name
-            suffix = image_fix.split(image_prefix_fix + '-t')[-1] # get suffix with improper t-label number
+            marker = image_prefix_fix + '-t'
+            if marker not in image_fix: # not a normal t-labelled output (tmp files are already caught above)
+                msg(f'WARNING: Skipping unexpected file for scan {scan_n:04d} (no t-label found): {image}')
+                continue
+            suffix = image_fix.split(marker)[-1] # get suffix with improper t-label number
             suffix_fix = suffix.split('-')
             suffix_fix[0] = '{:04d}'.format(int(suffix_fix[0]) + (sum(nint_arr[:scan_n]) if scan_n > 0 else 0))
             image_fix = image_fix.replace(suffix, '-'.join(suffix_fix)) # replace t-label in image
             rename_pairs.append((image, image_fix))
 
-        scan_n += 1
-        
+    if failed_scans:
+        failed_str = ','.join(str(s) for s in failed_scans)
+        msg(f'WARNING: {len(failed_scans)} scan(s) produced no images and were skipped: '
+            f'{[f"{s:04d}" for s in failed_scans]}')
+        msg(f'To re-run only the failed scans, edit this file, set SNAP_SCANS = \'{failed_str}\', and re-run.')
+
+    if not processed_scans:
+        msg('ERROR: No scans produced any images -- nothing to rename.')
+        sys.exit(1)
+
+    # A scan that silently dropped channels or intervals (e.g. a partial/OOM wsclean failure)
+    # still produces some images, so check the counts match before renaming anything.
+    msg('Validating channel and interval counts across processed scans')
+    n_channels_by_scan = {}
+    n_intervals_by_scan = {}
+    for scan_n in processed_scans:
+        intervals_seen = set()
+        channels_seen = set()
+        for image in scan_images[scan_n]:
+            match = img_re.search(image)
+            if match:
+                intervals_seen.add(match.group(1))
+                channels_seen.add(match.group(2))
+        n_channels_by_scan[scan_n] = len(channels_seen)
+        n_intervals_by_scan[scan_n] = len(intervals_seen)
+
+    # All scans image with the same chanout, so a successful scan's channel count should match
+    # every other successful scan's -- use the most common value as the reference.
+    expected_channels = Counter(n_channels_by_scan.values()).most_common(1)[0][0]
+
+    bad_scans = []
+    for scan_n in processed_scans:
+        n_channels = n_channels_by_scan[scan_n]
+        n_intervals = n_intervals_by_scan[scan_n]
+        expected_nint = nint_arr[scan_n]
+
+        problems = []
+        if n_channels != expected_channels:
+            problems.append(f'{n_channels} channel(s), expected {expected_channels} (to match other scans)')
+        if n_intervals != expected_nint:
+            problems.append(f'{n_intervals} interval(s), expected {expected_nint}')
+
+        if problems:
+            msg(f'ERROR: Scan {scan_n:04d} failed validation -- ' + '; '.join(problems))
+            bad_scans.append(scan_n)
+        else:
+            msg(f'Scan {scan_n:04d} OK -- {n_channels} channels x {n_intervals} intervals')
+
+    if bad_scans:
+        msg(f'Channel/interval count validation failed for scan(s): {[f"{s:04d}" for s in bad_scans]}')
+        msg('Rename operations aborted.')
+        sys.exit(1)
+
     # After all scans are processed, validate and perform renames
     msg(f'Validating {len(rename_pairs)} image rename operations')
 
@@ -209,13 +339,20 @@ def main():
             msg('Rename operations aborted.')
             sys.exit(1)
 
-    # All checks passed, perform the renames
-    msg('Removing "scan" label in image names to standardize the snapshots')
-    for old_path, new_path in rename_pairs:
-        syscall = f'mv {old_path} {new_path}'
-        subprocess.run([syscall], shell = True)
+    # All checks passed, perform the renames (source/dest are always on the same INTERVALS
+    # directory, so a plain rename is safe)
+    total = len(rename_pairs)
+    msg(f'Removing "scan" label in image names to standardize the snapshots ({total} files)')
+    report_every = max(1, total // 10)
+    for i, (old_path, new_path) in enumerate(rename_pairs, start=1):
+        os.rename(old_path, new_path)
+        if i % report_every == 0 or i == total:
+            msg(f'Renamed {i}/{total} images ({100*i//total}%)')
 
-    msg(f'Successfully renamed {len(rename_pairs)} images')
+    if failed_scans:
+        msg(f'Successfully renamed {total} images ({len(failed_scans)} scan(s) skipped due to failures)')
+    else:
+        msg(f'Successfully renamed {total} images')
 
 
 

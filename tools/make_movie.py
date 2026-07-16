@@ -10,6 +10,8 @@ import numpy
 import string
 import sys
 
+from itertools import repeat
+
 from astropy.io import fits
 from astropy.time import Time
 from multiprocessing import Pool
@@ -32,13 +34,50 @@ def generate_temp(k=16):
     tmpfits = 'temp_' + ''.join(random.choices(string.ascii_uppercase + string.digits, k=k)) + '.fits'
     return tmpfits
 
-def make_png(ff, i):
+def get_scaling(fitslist, frac=0.5, floor=1e-3, default=(-0.0008, 0.0018)):
+    """
+    Determine mViewer grayscale limits from the first non-zero, non-NaN image.
+
+    Scans fitslist in order for the first FITS file containing at least one
+    finite, non-zero pixel, then sets the scaling to frac (50%) of the most
+    positive and most negative pixel values in that image. The limits are
+    capped at a minimum magnitude of `floor` so faint fields don't collapse
+    the scaling range to near zero.
+
+    Parameters:
+    - fitslist (list): Sorted list of FITS file paths for a given Stokes parameter.
+    - frac (float): Fraction of the extreme pixel values to use as the scaling.
+    - floor (float): Minimum magnitude for vmin/vmax.
+    - default (tuple): Fallback (vmin, vmax) if no valid image is found.
+
+    Returns:
+    - (vmin, vmax): Scaling limits to pass to mViewer.
+    """
+    for ff in fitslist:
+        data = fits.getdata(ff)
+        data = numpy.asarray(data)
+        finite = numpy.isfinite(data)
+        if not finite.any():
+            continue
+        valid = data[finite]
+        if not numpy.any(valid != 0):
+            continue
+        vmax = max(frac * valid.max(), floor)
+        vmin = min(frac * valid.min(), -floor)
+        return vmin, vmax
+
+    logging.warning(f' | No non-zero/non-NaN image found for scaling, using default {default}')
+    return default
+
+def make_png(ff, i, vmin, vmax):
     """
     Process a FITS file to generate a PNG image with metadata overlays.
 
     Parameters:
     - ff (str): Path to the input FITS file.
     - i (int): Frame index for the current FITS file.
+    - vmin (float): Lower grayscale scaling limit for mViewer.
+    - vmax (float): Upper grayscale scaling limit for mViewer.
 
     Returns:
     - None
@@ -64,7 +103,7 @@ def make_png(ff, i):
     logging.info(f' | File {i} | PNG         {pp}')
 
     # Generate the PNG image using mViewer
-    syscall = f'mViewer -ct 0 -gray {tmpfits} -0.0008 0.0018 -out {pp}'
+    syscall = f'mViewer -ct 0 -gray {tmpfits} {vmin} {vmax} -out {pp}'
     os.system(syscall)
 
     logging.info(f' | File {i} | Time        {tt}')
@@ -114,9 +153,13 @@ if __name__ == '__main__':
                 nframes = len(fitslist)
                 j = 8  # Number of parallel processes
 
+                # Determine grayscale scaling from the first non-zero, non-NaN image
+                vmin, vmax = get_scaling(fitslist)
+                logging.info(f' | Stoke {stoke or "I(pseudo)"} | Scaling {vmin} {vmax}')
+
                 # Process FITS files in parallel to generate PNGs
                 pool = Pool(processes=j)
-                pool.starmap(make_png, zip(fitslist, ids))
+                pool.starmap(make_png, zip(fitslist, ids, repeat(vmin), repeat(vmax)))
 
                 # Compile the PNGs into a video using FFmpeg
                 frame = '2340x2340'

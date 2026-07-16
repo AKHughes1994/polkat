@@ -79,8 +79,9 @@ def main():
     with open('project_info.json') as f:
         project_info = json.load(f)
 
-    band  = project_info['band']
-    myms  = project_info['working_ms']
+    band      = project_info['band']
+    myms      = project_info['working_ms']
+    master_ms = project_info.get('master_ms', myms)
 
     ref_ant_arg = None
     if SET_REFANT:
@@ -123,6 +124,8 @@ def main():
     scantimes_patterns = [
         f'scantimes*{myms}*log',
         f'scantimes*{o.basename(myms)}*log',
+        f'scantimes*{master_ms}*log',
+        f'scantimes*{o.basename(master_ms)}*log',
     ]
     scantimes_matches = []
     for pattern in scantimes_patterns:

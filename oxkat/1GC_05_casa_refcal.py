@@ -176,7 +176,7 @@ for i in range(0,len(pcal_names)):
 gaincal(vis=myms,
     field=bpcal_name,
     caltable=ktab0,
-    uvrange=primary_uvrange_use,
+    # uvrange=primary_uvrange_use,
     # spw=myspw,
     refant=str(ref_ant),
     gaintype='K',
@@ -317,7 +317,7 @@ flagmanager(vis=myms,
 gaincal(vis=myms,
     field=bpcal_name,
     caltable=ktab,
-    uvrange=primary_uvrange_use,
+    # uvrange=primary_uvrange_use,
     # spw=myspw,
     refant=str(ref_ant),
     gaintype='K',
@@ -451,7 +451,7 @@ if pacal_name != '':
     gaincal(vis=myms,
         field=pacal_name,
         caltable=ktab0,
-        uvrange=myuvrange,
+        # uvrange=myuvrange,
         # spw=myspw,
         refant=str(ref_ant),
         gaintype='K',
@@ -511,7 +511,7 @@ for i in range(0,len(pcal_names)):
     gaincal(vis=myms,
         field=pcal,
         caltable=ktab0,
-        uvrange=myuvrange,
+        # uvrange=myuvrange,
         # spw=myspw,
         refant=str(ref_ant),
         gaintype='K',
@@ -641,7 +641,7 @@ if pacal_name != '':
     gaincal(vis=myms,
         field=pacal_name,
         caltable=ktab,
-        uvrange=myuvrange,
+        # uvrange=myuvrange,
         # spw=myspw,
         refant=str(ref_ant),
         gaintype='K',
@@ -700,7 +700,7 @@ for i in range(0,len(pcal_names)):
     gaincal(vis=myms,
         field=pcal,
         caltable=ktab,
-        uvrange=myuvrange,
+        # uvrange=myuvrange,
         # spw=myspw,
         refant=str(ref_ant),
         gaintype='K',
@@ -997,9 +997,23 @@ applycal(vis = myms,
 
 # ----- If no polarization angle calibrator apply subset of tables and kill script
 
-if pacal_name == '':   
+if pacal_name == '':
 
-    # ------- Secondaries 
+    # --- Optional: apply an external Xf table to secondaries/targets even with no local
+    # polarization angle calibrator to solve one from. Never applied to BPCAL.
+    override_cross_table = []
+    override_cross_field = []
+    override_cross_interp = []
+    override_parang = False
+    if str(XF_OVERRIDE_TABLE) != '':
+        print(f'  [XF] No polarization angle calibrator, but XF_OVERRIDE_TABLE is set -- '
+              f'applying external Xf table to secondaries and targets only: {XF_OVERRIDE_TABLE}')
+        override_cross_table = [XF_OVERRIDE_TABLE]
+        override_cross_field = ['']
+        override_cross_interp = ['nearest,linear']
+        override_parang = CAL_1GC_APPLYPARANG
+
+    # ------- Secondaries
 
     for i in range(0,len(pcal_names)):
 
@@ -1009,13 +1023,13 @@ if pacal_name == '':
         if pcal == bpcal_name or pcal == pacal_name:
             # If so, skip to the next iteration as it is already in the working tables
             continue
-    
+
         applycal(vis = myms,
-            gaintable = [ktab, gptab, bptab, ftab, dftab],
+            gaintable = [ktab, gptab, bptab, ftab, dftab] + override_cross_table,
             field = pcal,
-            parang = False,
-            gainfield = [pcal, pcal, bpcal_name, pcal, bpcal_name],
-            interp = ['nearest','linear','linear','linear','linear'],
+            parang = override_parang,
+            gainfield = [pcal, pcal, bpcal_name, pcal, bpcal_name] + override_cross_field,
+            interp = ['nearest','linear','linear','linear','linear'] + override_cross_interp,
             flagbackup=False)
 
     # ------- Targets
@@ -1025,11 +1039,11 @@ if pacal_name == '':
         related_pcal = target_cal_map[i]
 
         applycal(vis=myms,
-                gaintable = [ktab, gptab, bptab, ftab, dftab],
+                gaintable = [ktab, gptab, bptab, ftab, dftab] + override_cross_table,
                 field=target,
-                parang=False,
-                gainfield = [related_pcal, related_pcal, bpcal_name, related_pcal, bpcal_name],
-                interp = ['nearest','linear','linear','linear','linear'],
+                parang=override_parang,
+                gainfield = [related_pcal, related_pcal, bpcal_name, related_pcal, bpcal_name] + override_cross_field,
+                interp = ['nearest','linear','linear','linear','linear'] + override_cross_interp,
                 flagbackup=False)
 
         # Flag target

@@ -64,7 +64,7 @@ NODE_CONTAINER_PATH = [HOME+'/containers/', CWD]
 GLAM_CONTAINER_PATH = ['/mnt/users/hughesa', '/mnt/extraspace/thunderkat_pol', CWD]
 
 
-PYTHON3_PATTERN = 'polkat-0.2.4'
+PYTHON3_PATTERN = 'polkat-0.2.5'
 CASA_PATTERN = PYTHON3_PATTERN
 QUARTICAL_PATTERN = PYTHON3_PATTERN
 WSCLEAN_PATTERN = PYTHON3_PATTERN
@@ -325,7 +325,7 @@ XF_DELTARM_TRIALS    = [-7,7] # Was: [min, max] RM offsets (rad/m²) defining th
 
 # Reference antennas
 CAL_1GC_REF_ANT = 'auto'             # Comma-separated list to manually specify refant(s)
-CAL_1GC_REF_POOL = ['m060','m061','m059','m058', 'm048', 'm062', 'm063'] 
+CAL_1GC_REF_POOL = ['m060','m061','m059','m058', 'm050', 'm048', 'm062', 'm063'] 
                                      # Pool to re-order for reference antenna list for 'auto'
 
 # Field selection, IDs only at present. (Use tools/ms_info.py.)
