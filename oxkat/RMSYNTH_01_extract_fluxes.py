@@ -473,7 +473,7 @@ def get_imstat_values(image, xpix, ypix, manual_rms_region = False):
     # Extract RMS
     rms = imstat(image, region = rms_region)['rms'][0]
 
-    return [flux, xpix, ypix, rms]
+    return [flux, xpix, ypix, rms, rms_region]
     
     
 def check_position(fname, image, xpix, ypix, snr_thresh=5.0, P_image=False,
@@ -1383,11 +1383,14 @@ def extract_polarization_properties(src_name,
             err_I_log  = MFS_I_imfit['results'][component]['peak']['error'] * 1e3
             RA_I_log   = MFS_I_imfit['results'][component]['shape']['direction']['m0']['value'] * 180 / np.pi
             DEC_I_log  = MFS_I_imfit['results'][component]['shape']['direction']['m1']['value'] * 180 / np.pi
-            rms_I_log  = get_imstat_values(MFS_images[0], MFS_I_ra_pix[z], MFS_I_dec_pix[z], manual_rms_region)[3] * 1e3
+            _I_log_stats = get_imstat_values(MFS_images[0], MFS_I_ra_pix[z], MFS_I_dec_pix[z], manual_rms_region)
+            rms_I_log  = _I_log_stats[3] * 1e3
+            rms_region_I_log = _I_log_stats[4]
             msg(f'  {component}: RA={RA_I_log:.6f} deg  Dec={DEC_I_log:.6f} deg  '
                 f'({MFS_I_ra_pix[z]:.1f}, {MFS_I_dec_pix[z]:.1f}) pix')
             msg(f'    Flux = {flux_I_log:.3f} +/- {err_I_log:.3f} mJy  '
                 f'rms = {rms_I_log:.3f} mJy  S/N = {flux_I_log/rms_I_log:.1f}')
+            msg(f'    RMS region: {rms_region_I_log}')
         msg('')
 
         # Populate the output dictionary with MFS Stokes I results
@@ -1554,7 +1557,7 @@ def extract_polarization_properties(src_name,
                 RA_P   = MFS_P_imfit['results'][component]['shape']['direction']['m0']['value'] * 180 / np.pi
                 DEC_P = MFS_P_imfit['results'][component]['shape']['direction']['m1']['value'] * 180 / np.pi
                 
-                rms_I = get_imstat_values(MFS_images[1], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3                
+                rms_I = get_imstat_values(MFS_images[0], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3
                 rms_Q = get_imstat_values(MFS_images[2], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3                
                 rms_U = get_imstat_values(MFS_images[3], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3                
                 rms_V = get_imstat_values(MFS_images[4], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3                

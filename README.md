@@ -38,6 +38,12 @@ A new [`extra/`](extra/) directory has been added for advanced/experimental imag
 
 ---
 
+#### Update: New `extra/setup_extended_imaging.py` for Full-UV-Range Extended Imaging
+
+[`extra/setup_extended_imaging.py`](extra/setup_extended_imaging.py) jointly images an arbitrary set of measurement sets (given as a glob pattern or a `.txt` list) at the **full UV range** — it forces mf-weighting on and forces the inner Tukey taper / `minuv-l` / `maxuv-l` cuts off, overriding `config.py` regardless of the short-baseline defaults described in the 2GC section below. It performs no calibration: blind image → automask → final masked image (or final image only, if an existing FITS mask is supplied via `-m`). This is intended for recovering extended/diffuse structure that the default image-plane uv-cut and taper are designed to suppress during standard 2GC point-source imaging.
+
+---
+
 #### Update: Bring Your Own Xf Table (`XF_OVERRIDE_TABLE`)
 
 For observations without a dedicated cross-hand calibrator, `XF_OVERRIDE_TABLE` lets you supply a pre-solved cross-hand phase (Xf) table to use instead of solving one from the current dataset. Cross-hand phase appears to be very stable over timescales of months, provided the same reference antenna is used, so a table solved on a different observation with the same refant can often be reused directly. A helper function that builds an override table from a set of input tables, or from a text file of phase/frequency pairings, is planned. This is intended for **advanced users** — open a discussion on the repository if you'd like to see how this might work for your use case.
@@ -264,6 +270,8 @@ If 1GC is successful, check the visibility/gain solutions. Polarization can be f
 ## 2GC
 
 After completing 1GC, move on to the 2GC step. This stage performs final flagging, imaging (using [wsclean](https://wsclean.readthedocs.io/en/latest/)), and direction-independent phase self-calibration. The 2GC process produces both channelized images and a single MFS (multi-frequency synthesis) image. The MFS image maximizes sensitivity, but may be affected by bandwidth depolarization.
+
+By default, 2GC applies an image-plane UV cut and taper to suppress short-baseline artefacts (`WSC_BASELINE_CUT = True`, `WSC_TAPERMASK = True` — see "Image-Plane UV Cuts for Short Baselines" above) — X-KAT observations are mostly focused on point sources, so this is the appropriate default. If you instead need to recover extended/diffuse structure, re-image with `WSC_BASELINE_CUT = False`, or use [`extra/setup_extended_imaging.py`](extra/setup_extended_imaging.py) to jointly image across the full UV range without re-running calibration.
 
 **To run 2GC:**
 
