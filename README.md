@@ -1,3 +1,4 @@
+> **NOTE:** Following a large merge of changes from `dev`, `main` (this branch) is now the default branch going forward. `polkat_QC_selfcal` is no longer the default — it is preserved as-is for posterity.
 
 If you make use of this software, please cite:
 
@@ -17,11 +18,29 @@ If you make use of this software, please cite:
 ---
 
 
-### Latest modification (May, 2026)
+### Latest modification (July, 2026)
 
-#### Update: Branch Update
+#### Update: Image-Plane UV Cuts for Short Baselines (X-KAT Tuning)
 
-The `polkat_QC_selfcal` default branch has been significantly updated through a merger with the `dev` branch.
+The default `config.py` is now tuned for X-KAT observations, where preserving spectral fidelity across the band is the priority. Short baselines are now excluded via an **image-plane** UV cut (`WSC_BASELINE_CUT = True`, `WSC_BASELINE_CUTLENGTH = '750m'` by default, `WSC_TAPERMASK = True`) rather than by flagging the data. This addresses the same short-baseline artefacts that motivate `CAL_1GC_BL_MODE`, but without discarding any visibilities from the MS — the cut is only applied at imaging/deconvolution time, so you can always re-image the same MS with the full baseline range afterward (e.g. by setting `WSC_BASELINE_CUT = False`) to search for extended structure.
+
+---
+
+#### Update: Default Channels-Out Increased to 64; Joint-Polarization Cleaning Removed
+
+`WSC_PCAL_CHANNELSOUT` (and the calibrator / data-masked channel counts, which follow it by default) now default to **64** channels, up from 8, and `WSC_JOINPOLARIZATIONS` now defaults to `False`. Sixty-four channels is about the highest channelisation a standard IDIA node can image without either running into memory errors or having to split the channelisation into blocks (`WSC_MAX_CHANNELS`), which loses the MFS (continuum) image. Please read through `config.py` — particularly the 2GC section — to see the full set of changes, and raise a discussion if anything is unclear on why a particular default was chosen.
+
+---
+
+#### Update: New `extra/` Directory for Advanced Imaging Routines
+
+A new [`extra/`](extra/) directory has been added for advanced/experimental imaging scripts that sit outside the standard pipeline stages. The two-stage self-calibration script has moved here, from `waterhole/setup_2GC_twostage.py` to [`extra/setup_2GC_twostage.py`](extra/setup_2GC_twostage.py) — update any submission scripts that reference the old path. `extra/` will be populated with further routines over time as they mature enough for general use, and is intended to serve advanced users who want to go beyond the standard workflow.
+
+---
+
+#### Update: Bring Your Own Xf Table (`XF_OVERRIDE_TABLE`)
+
+For observations without a dedicated cross-hand calibrator, `XF_OVERRIDE_TABLE` lets you supply a pre-solved cross-hand phase (Xf) table to use instead of solving one from the current dataset. Cross-hand phase appears to be very stable over timescales of months, provided the same reference antenna is used, so a table solved on a different observation with the same refant can often be reused directly. A helper function that builds an override table from a set of input tables, or from a text file of phase/frequency pairings, is planned. This is intended for **advanced users** — open a discussion on the repository if you'd like to see how this might work for your use case.
 
 ---
 
@@ -37,15 +56,15 @@ Ionospheric RM estimation has been migrated from ALBUS to [Spinifex](https://spi
 
 - `’freq’` *(default)* — flags specific RFI-affected frequency bands only on short baselines (< 600 m). Recommended for most observations.
 - `’none’` — disables all baseline-length-dependent flagging entirely.
-- `’aggressive’` — flags *all* data on the affected short baselines, regardless of frequency. This was found to remove discontinuities in the Stokes I spectrum arising from dynamic-range-limited data, and is recommended for in-band spectral work (e.g., with 15-minute observations). If using `’aggressive’`, also consider disabling multi-frequency weighting by setting `WSC_MFWEIGHT = False` in `config.py`.
+- `’aggressive’` — flags *all* data on the affected short baselines, regardless of frequency. This was found to remove discontinuities in the Stokes I spectrum arising from dynamic-range-limited data. If using `’aggressive’`, also consider disabling multi-frequency weighting by setting `WSC_MFWEIGHT = False` in `config.py`.
 
-**`CAL_1GC_APPLYPARANG`** (`True` by default) — when `True`, the parallactic angle correction is applied to `CORRECTED_DATA` before splitting to the target MS, placing the data in the sky frame and meaning self-calibration corrections are also solved in the sky frame. When `False`, the correction is instead applied after the final self-calibration step. For phase-only self-calibration the choice has negligible effect. If you are performing **amplitude self-calibration — especially of the off-diagonal Jones terms** — consider setting this to `False` to keep the solve in the feed frame. This is recommended only for **snapshot observations (≲1 hour)** where parallactic angle rotation is small enough that Q and U are not significantly mixed. For longer tracks where phase-only calibration is sufficient, leave this `True`. If you have a longer track and need feed-frame amplitude self-calibration, you will need to populate the model column with a sky model, de-rotate the model, and rotate `CORRECTED_DATA` accordingly — an improper treatment will double-correct or smear the sky model. Feel free to raise a discussion on the repository if this applies to your use case.
+**`CAL_1GC_APPLYPARANG`** (`True` by default) — when `True`, the parallactic angle correction is applied to `CORRECTED_DATA` before splitting to the target MS, placing the data in the sky frame and meaning self-calibration corrections are also solved in the sky frame. When `False`, the correction is instead applied after the final self-calibration step. For phase-only self-calibration the choice has negligible effect. If you are performing **amplitude self-calibration — especially of the off-diagonal Jones terms** — consider setting this to `False` to keep the solve in the feed frame. This is recommended only for **short-track observations (≲1 hour)** where parallactic angle rotation is small enough that Q and U are not significantly mixed. For longer tracks where phase-only calibration is sufficient, leave this `True`. If you have a longer track and need feed-frame amplitude self-calibration, you will need to populate the model column with a sky model, de-rotate the model, and rotate `CORRECTED_DATA` accordingly — an improper treatment will double-correct or smear the sky model. Feel free to raise a discussion on the repository if this applies to your use case.
 
 ---
 
 #### Update: Two-Stage Self-Calibration and wsclean 3.5
 
-An alternative 2GC script, [`waterhole/setup_2GC_twostage.py`](waterhole/setup_2GC_twostage.py), performs two rounds of self-calibration: a first pass on high-significance pixels only (controlled by `WSC_SHALLOWMASK`), followed by amplitude self-calibration on an intermediate image, then a final imaging pass. wsclean has been upgraded to **version 3.5**, adding `--local-rms-strength`, exposed as `WSC_LOCALRMS_STRENGTH` (default `0.5`). Intermediate masking parameters (`WSC_INTER_AUTOMASK`, `WSC_INTER_AUTOTHRESHOLD`, `WSC_INTER_LOCALRMS`) apply only to this workflow. See the 2GC section below for full parameter listings.
+An alternative 2GC script, [`extra/setup_2GC_twostage.py`](extra/setup_2GC_twostage.py), performs two rounds of self-calibration: a first pass on high-significance pixels only (controlled by `WSC_SHALLOWMASK`), followed by amplitude self-calibration on an intermediate image, then a final imaging pass. wsclean has been upgraded to **version 3.5**, adding `--local-rms-strength`, exposed as `WSC_LOCALRMS_STRENGTH` (default `0.5`). Intermediate masking parameters (`WSC_INTER_AUTOMASK`, `WSC_INTER_AUTOTHRESHOLD`, `WSC_INTER_LOCALRMS`) apply only to this workflow. See the 2GC section below for full parameter listings.
 
 **Amplitude self-calibration** YAML files have been added to `data/quartical/`. [`2GC_complex.yaml`](data/quartical/2GC_complex.yaml) performs direction-independent amplitude self-calibration; [`2GC_complex_2dir.yaml`](data/quartical/2GC_complex_2dir.yaml) extends this to two directions and is used to peel a problematic in-field source. Place a DS9 region file named `DIR.reg` in your working directory to activate the peeling. This is intended for **advanced users**; inspect your solutions carefully.
 
@@ -57,20 +76,9 @@ An alternative 2GC script, [`waterhole/setup_2GC_twostage.py`](waterhole/setup_2
 
 ---
 
-#### Previous Update (April, 2026): UHF Band and Manual Cross-Hand Solver
-
-Full UHF band support is now available. The cross-hand phase (XF) calibration has been extended with a **manual solver** that handles cases where CASA’s XF solver introduces large discontinuities, discussed more under INFO.
-
-This routine has been tested on standard polarization calibrators **3C286** and **3C138** for **MeerKAT L-, S-, and UHF-bands**, and now recovers stable and correct polarization angles across the full frequency range.  
-
-
----
-
 ### What is this?
 
 This repository contains a modified version of the MeerKAT semi-automated data processing routine [oxkat](https://github.com/IanHeywood/oxkat), enhanced to support full polarization calibration and Stokes I, Q, U, V imaging. It is assumed that you are already familiar with the oxkat workflow and file system, and that you configure data processing options by editing `oxkat/config.py`. This guide walks you through a standard use case, highlighting changes to `config.py` and introducing new options.
-
-This branch, `polkat_QC_selfcal`, is designed to closely mimic the main `oxkat` branch, with the primary change being the upgrade from Cubical to Quartical for self-calibration. Unlike the main `polkat` branch (which uses CASA for self-calibration and does not split out the target field), this version is a near one-to-one adaptation, but with additional features and the ability to handle full polarization observations. An added benefit is that this branch includes the capability to perform the 3GC peeling step.
 
 **IMPORTANT: For time series or multi-epoch campaigns**, it is strongly recommended that you download a local branch and use it consistently throughout your project. This repository is actively maintained, and improvements to flux density calibration or other processing steps may introduce global offsets or systematic differences between epochs processed with different versions. To ensure consistency across your dataset, fix your version at the start of your campaign.
 
@@ -80,15 +88,17 @@ This branch, `polkat_QC_selfcal`, is designed to closely mimic the main `oxkat` 
 
 This routine is designed primarily for use on the ILIFU clusters operated by The Inter-university Institute for Data Intensive Astronomy (IDIA), but you can run it locally if you have the required software. The necessary software is bundled into containers using [apptainer](https://apptainer.org/) (formerly singularity). Containers are available in `/software/containers` on ILIFU and follow the naming convention `polkat-[version].sif`. If you do not have ILIFU access but want to use polkat, you can get container access via pulling from dockerhub:
 
+**Note:** the image bundles CASA, wsclean, QuartiCal, Spinifex, and tricolour, so it is several GB, and `singularity pull` doesn't just download it — it also has to unpack and re-squash every layer into a single SIF file, which is CPU/I/O-bound rather than network-bound. Do this from an interactive/compute-node session with local scratch space rather than a login node with a networked home directory, or it can take a very long time.
+
 ```
 # The main container 
-singularity pull polkat-0.2.4.sif docker://hughesakh/polkat:0.2.4
+singularity pull polkat-0.2.5.sif docker://hughesakh/polkat:0.2.5
 
 # If you need to point to particular storage areas for build (i.e., can't use default home/tmp)
 mkdir -p .singularity_tmp .singularity_cache
 SINGULARITY_TMPDIR="$PWD/.singularity_tmp" \
 SINGULARITY_CACHEDIR="$PWD/.singularity_cache" \
-singularity pull "$PWD/polkat-0.2.4.sif" docker://hughesakh/polkat:0.2.4
+singularity pull "$PWD/polkat-0.2.5.sif" docker://hughesakh/polkat:0.2.5
 
 # ALBUS container for ionospheric corrections (no longer needed as the main has SPINIFEX)
 singularity pull polkat-albus.sif docker://hughesakh/polkat_albus:latest
@@ -105,7 +115,7 @@ Assume a Linux-based OS (e.g., Ubuntu).
    ```bash
    mkdir working_directory
    cd working_directory
-   git clone -b polkat_QC_selfcal https://github.com/AKHughes1994/polkat.git
+   git clone https://github.com/AKHughes1994/polkat.git
    ln -s /idia/raw/point/to/your/file.ms .
    ```
 
@@ -265,7 +275,7 @@ python3 setups/2GC.py idia
 For fields with clear artefacts around bright sources (possibly due to calibration errors or residual RFI), an alternative two-stage self-calibration approach is available:
 
 ```bash
-python3 waterhole/setup_2GC_twostage.py idia
+python3 extra/setup_2GC_twostage.py idia
 ./submit_2GC_twostage_job.sh
 ```
 
