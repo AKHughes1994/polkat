@@ -1,0 +1,69 @@
+input_ms:
+  data_column: DATA
+  time_chunk: '115'
+  freq_chunk: '0'
+  is_bda: false
+  group_by:
+  - SCAN_NUMBER
+  - FIELD_ID
+  - DATA_DESC_ID
+  select_corr:
+  select_fields: [0]
+  select_ddids: []
+  select_uv_range:
+  - 0.0
+  - 0.0
+input_model:
+  recipe: MODEL_DATA
+  beam:
+  beam_l_axis: X
+  beam_m_axis: Y
+  invert_uvw: true
+  source_chunks: 500
+  apply_p_jones: false
+output:
+  gain_directory: ../DI_gains.qc
+  log_directory: ../DI_logs.qc
+  log_to_terminal: true
+  overwrite: true
+  products: [corrected_data]
+  columns: [CORRECTED_DATA]
+  flags: true
+  apply_p_jones_inv: false
+  net_gains:
+  compute_baseline_corrections: false
+  apply_baseline_corrections: false
+mad_flags:
+  enable: false
+  whitening: disabled
+  threshold_bl: 5.0
+  threshold_global: 5.0
+  max_deviation: 5.0
+solver:
+  terms:
+  - K
+  iter_recipe:
+  - 50
+  propagate_flags: true
+  robust: false
+  threads: 1  # Controls solver specific threads. See docs.
+  convergence_fraction: 0.99
+  convergence_criteria: 1e-06
+  reference_antenna: 0
+dask:
+  threads: 6  # Controls dask threads i.e. number of chunks processed simultaneously. See docs.
+  workers: 1
+  address:
+  scheduler: threads
+K:
+  type: delay_and_offset
+  solve_per: antenna
+  direction_dependent: false
+  pinned_directions:
+  - 0
+  time_interval: '1'
+  freq_interval: '0'
+  interp_mode: reim
+  interp_method: 2dlinear
+  respect_scan_boundaries: true
+  initial_estimate: false
