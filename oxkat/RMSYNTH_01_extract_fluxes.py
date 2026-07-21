@@ -368,9 +368,9 @@ def get_imfit_values(fname, image, xpix, ypix):
     if n_comp == 1: 
         x = xpix[0]
         y = ypix[0]
-        r = 3 * bmaj
+        r = 5 * bmaj
         src_region = f'circle[[{x}pix,{y}pix],{r}arcsec]'
-    
+
     # For multi-components (this won't work if there are components that are VERY far from eachother largely because it will just time out)
     else:
         # Define an array of coordinates [[x1,y1], [x2,y2], etc.])
@@ -454,9 +454,9 @@ def get_imstat_values(image, xpix, ypix, manual_rms_region = False):
     bmin = imhead(image, mode='get', hdkey = 'BMIN')['value']
     bpa  = imhead(image, mode='get', hdkey = 'BPA')['value']    
 
-    # Define the regions of interest (rms is ~100 beam area)
-    r_in  = 3.0 * bmaj
-    r_out = np.sqrt(100 * 0.25 * bmaj * bmin + r_in ** 2)
+    # Define the regions of interest (rms is ~500 beam area)
+    r_in  = 5.0 * bmaj
+    r_out = np.sqrt(500 * 0.25 * bmaj * bmin + r_in ** 2)
     src_region = f'circle[[{xpix}pix,{ypix}pix],3.0pix]'
     rms_region = f'annulus[[{xpix}pix,{ypix}pix],[{r_in}arcsec,{r_out}arcsec]]'
     if manual_rms_region:
@@ -1068,7 +1068,7 @@ def extract_polarization_properties(src_name,
                            controls which P image type is fitted (Plin vs Ptot)
                            and which de-biasing formula is applied in calculate_P0
     manual_rms_region   -- CASA region string for the noise measurement box/annulus;
-                           if False, a default annulus of ~100 beam areas is used
+                           if False, a default annulus of ~500 beam areas is used
     image_directory     -- top-level image directory (e.g. 'IMAGES' or 'INTERVALS')
     image_identifier    -- image identifier string (e.g. 'pcalmask', 'restored')
     fix_additional_comps-- if True, secondary components (k>0) have their positions
@@ -1093,7 +1093,7 @@ def extract_polarization_properties(src_name,
     if manual_rms_region:
         msg(f'  RMS region       : MANUAL -- {manual_rms_region}')
     else:
-        msg(f'  RMS region       : default annulus (~100 beam areas) centred on source')
+        msg(f'  RMS region       : default annulus (~500 beam areas) centred on source')
     msg(f'  Polarization angle calibrator present: {pol_flag}')
     msg(f'  Fix secondary component positions    : {fix_additional_comps}')
     msg(f'{"="*70}')

@@ -12,7 +12,9 @@
 #   RESULTS/img_<target_ms>_pcalmask_polarization.json
 #       ['MFS']['component<N>']:
 #           I_flux_mJy[0], I_err_mJy[0]        -- MFS Stokes I +/- error
-#           alpha[0], alpha_err[0]             -- spectral index (absent if not fit)
+#           alpha[0], alpha_err[0]             -- spectral index (None if not fit)
+#           chi2_red[0], ndof[0]               -- reduced chi2 of the alpha fit and its dof
+#                                                  (None if not fit)
 #           time_ctr_mjd[0]                    -- MJD at the centre of the exposure
 #           time_ctr_isot[0]                   -- ISOT date/time at the centre of the exposure
 #           time_dt[0]                         -- exposure time (s)
@@ -151,6 +153,10 @@ def main():
             line('MFS Stokes I (mJy)', fmt(comp_mfs.get("I_flux_mJy", [None])[0], comp_mfs.get("I_err_mJy", [None])[0]))
             if 'alpha' in comp_mfs:
                 line('Spectral index', fmt(comp_mfs.get("alpha", [None])[0], comp_mfs.get("alpha_err", [None])[0]))
+                chi2_red = comp_mfs.get("chi2_red", [None])[0]
+                ndof     = comp_mfs.get("ndof", [None])[0]
+                if chi2_red is not None:
+                    line('Spectral index fit, chi2_red (ndof)', f'{fmt(chi2_red)} ({fmt(ndof)})')
             else:
                 line('Spectral index', 'N/A')
             line('Date/time, centre (ISOT, UTC)', fmt(time_ctr_isot))
