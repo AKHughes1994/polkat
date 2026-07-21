@@ -38,9 +38,20 @@ if CAL_1GC_BAD_FREQS != []:
 # ------------------------------------------------------------------------
 # Frequency ranges to flag over a subset of baselines
 
-if CAL_1GC_BL_FREQS != []:
+# Read in CAL_1GC_BL_MODE from config.py, if it doesn't exist set it to 'freq' and print a warning
+if CAL_1GC_BL_MODE not in ['freq', 'aggressive', 'none']:
+    CAL_1GC_BL_MODE = 'freq'
+    print('Warning: CAL_1GC_BL_MODE not a valid option defaulting to "freq". Please set this variable to "freq", "aggressive", or "none" in config.py.')
 
-    myspw = ','.join(CAL_1GC_BL_FREQS)
+if CAL_1GC_BL_FREQS != [] and CAL_1GC_BL_MODE != 'none':
+    print(f"Flagging baselines with uvrange {CAL_1GC_BL_FLAG_UVRANGE} using mode {CAL_1GC_BL_MODE}")
+
+    # If aggressive mode is selected, flag the uvrange on all frequencies, otherwise flag only the specified frequencies on the specified uvrange
+    if CAL_1GC_BL_MODE == 'aggressive':
+        myspw = ''
+    else:
+        myspw = ','.join(CAL_1GC_BL_FREQS)
+        print(f"Using spw string {myspw} for baseline specific flagging.")
 
     # myspw = ''
     # for badfreq in CAL_1GC_BL_FREQS:
@@ -52,6 +63,8 @@ if CAL_1GC_BL_FREQS != []:
         spw = myspw,
         uvrange = CAL_1GC_BL_FLAG_UVRANGE,
         flagbackup=False)
+else:
+    print("No baseline specific flagging will be applied.")
 
 # ------------------------------------------------------------------------
 # Clipping, quacking, zeros, autos

@@ -63,9 +63,17 @@ def make_png(ff, i):
     pp = f'pic_{str(i).zfill(4)}.png'
     logging.info(f' | File {i} | PNG         {pp}')
 
-    # Generate the PNG image using mViewer
-    syscall = f'mViewer -ct 0 -gray {tmpfits} -0.0008 0.0018 -out {pp}'
+    # Calculate adaptive scaling limits to prevent saturation
+    temp_hdu = fits.open(tmpfits)[0]
+    data = temp_hdu.data
+    data_valid = data[~numpy.isnan(data)]  # Remove NaNs
+    vmin = numpy.percentile(data_valid, 0.1)   # 0.1st percentile (very conservative)
+    vmax = numpy.percentile(data_valid, 99.9)  # 99.9th percentile (very conservative)
+    
+    # Generate the PNG image using mViewer with adaptive scaling
+    syscall = f'mViewer -ct 0 -gray {tmpfits} {vmin} {vmax} -out {pp}'
     os.system(syscall)
+    logging.info(f' | File {i} | Scaling     {vmin:.6f} to {vmax:.6f}')
 
     logging.info(f' | File {i} | Time        {tt}')
 
@@ -90,36 +98,53 @@ if __name__ == '__main__':
     - Compiles the PNG images into a video using FFmpeg.
     """
     # Get the input directory from the command-line arguments
-    interval = sys.argv[-1]
-
-    # Find unique prefixes for FITS files in the directory
-    suffixes = glob.glob(f'{interval}/*_restored-*')
-    suffixes = numpy.unique([x.split('_restored')[0] for x in suffixes])
+    intervals_base = sys.argv[-1]
 
     # Set up logging
     logfile = 'make_movie.log'
     logging.basicConfig(filename=logfile, level=logging.DEBUG, format='%(asctime)s |  %(message)s', datefmt='%d/%m/%Y %H:%M:%S ')
 
-    # Process each suffix
-    for suffix in suffixes:
+    # Iterate through source subdirectories in INTERVALS
+    source_dirs = sorted(glob.glob(f'{intervals_base}/*/'))
+    
+    if not source_dirs:
+        logging.warning(f'No subdirectories found in {intervals_base}')
+        print(f'No subdirectories found in {intervals_base}')
+        sys.exit(1)
+    
+    for source_dir in source_dirs:
+        source_name = os.path.basename(source_dir.rstrip('/'))
+        logging.info(f'Processing source: {source_name}')
+        print(f'Processing source: {source_name}')
+        
+        # Find unique prefixes for FITS files in this source directory
+        suffixes = glob.glob(f'{source_dir}*_restored-*')
+        suffixes = numpy.unique([x.split('_restored')[0] for x in suffixes])
 
-        for stoke in ['', '-I', '-Q', '-U', '-V', '-Ptot', '-Plin']:
-            # Find FITS files for the current suffix and stoke
-            fitslist = sorted(glob.glob(f'{suffix}_restored-t*-MFS{stoke}-image.fits'))
-            if not fitslist:
-                fitslist = sorted(glob.glob(f'{suffix}_restored-t*-MFS{stoke}-image.homogenized.fits'))
+        # Process each suffix
+        for suffix in suffixes:
+            for stoke in ['', '-I', '-Q', '-U', '-V', '-Ptot', '-Plin']:
+                # Find FITS files for the current suffix and stoke
+                fitslist = sorted(glob.glob(f'{suffix}_restored-t*-MFS{stoke}-image.fits'))
+                if not fitslist:
+                    fitslist = sorted(glob.glob(f'{suffix}_restored-t*-MFS{stoke}-image.homogenized.fits'))
 
-            if fitslist:
-                ids = numpy.arange(0, len(fitslist))
-                nframes = len(fitslist)
-                j = 8  # Number of parallel processes
+                if fitslist:
+                    ids = numpy.arange(0, len(fitslist))
+                    nframes = len(fitslist)
+                    j = 8  # Number of parallel processes
 
-                # Process FITS files in parallel to generate PNGs
-                pool = Pool(processes=j)
-                pool.starmap(make_png, zip(fitslist, ids))
+                    # Process FITS files in parallel to generate PNGs
+                    pool = Pool(processes=j)
+                    pool.starmap(make_png, zip(fitslist, ids))
 
-                # Compile the PNGs into a video using FFmpeg
-                frame = '2340x2340'
-                fps = 10
-                opmovie = fitslist[0].split('-t')[0] + f'{stoke}.mp4'
-                os.system(f'ffmpeg -y -r {fps} -f image2 -s {frame} -i pic_%04d.png -vcodec libx264 -crf 25 -pix_fmt yuv420p {opmovie}')
+                    # Compile the PNGs into a video using FFmpeg
+                    frame = '2340x2340'
+                    fps = 10
+                    opmovie = fitslist[0].split('-t')[0] + f'{stoke}.mp4'
+                    os.system(f'ffmpeg -y -r {fps} -f image2 -s {frame} -i pic_%04d.png -vcodec libx264 -crf 25 -pix_fmt yuv420p {opmovie}')
+                    
+                    # Clean up PNG files after video creation
+                    os.system('rm pic_*.png')
+        
+        logging.info(f'Completed processing for source: {source_name}')

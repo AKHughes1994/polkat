@@ -69,40 +69,81 @@ def get_refant(master_ms,field_id):
 
     mylogger = logging.getLogger(__name__) 
 
+    # Get list of all antenna names in the MS
     ant_names = get_antnames(master_ms)
     main_tab = table(master_ms,ack='False')
     
+    # Get the pool of candidate reference antennas from config
     ref_pool = cfg.CAL_1GC_REF_POOL
     
+    # Initialize lists to store flag percentages and antenna indices
     pc_list = []
     idx_list = []
+    ant_name_list = []  # Track antenna names for m060 check
 
     main_tab = table(master_ms,ack=False)
     field_id = int(field_id)
+    
+    # Loop through each antenna in the reference pool
     for i in range(0,len(ref_pool)):
         ant = ref_pool[i]
+        # Check if this antenna exists in the MS
         if ant in ant_names:
+            # Get the antenna index in the MS
             idx = ant_names.index(ant)
+            # Query for all baselines involving this antenna for the specific field
             mytaql = 'ANTENNA1=={idx} || ANTENNA2=={idx} && FIELD_ID=={field_id}'.format(**locals())
             sub_tab = main_tab.query(query=mytaql)
+            # Get the FLAG column to calculate flag percentage
             flags = sub_tab.getcol('FLAG')
             vals,counts = numpy.unique(flags,return_counts=True)
+            # Calculate flag percentage based on unique flag values
             if len(vals) == 1 and vals == True:
-                flag_pc = 100.0
+                flag_pc = 100.0  # All data flagged
             elif len(vals) == 1 and vals == False:
-                flag_pc = 0.0
+                flag_pc = 0.0  # No data flagged
             else:
+                # counts[1] is True flags, counts[0] is False (unflagged)
                 flag_pc = 100.*round(float(counts[1])/float(numpy.sum(counts)),8)
+            # Only include antennas with less than 80% flagged data
             if flag_pc < 80.0:
                 pc_list.append(flag_pc)
                 idx_list.append(str(idx))
+                ant_name_list.append(ant)
             mylogger.info('Antenna '+str(idx)+':'+ant+' is '+str(round(flag_pc,2))+chr(37)+' flagged')
+    
+    # Convert lists to numpy arrays for easier manipulation
     pc_list = numpy.array(pc_list)
     idx_list = numpy.array(idx_list)
+    ant_name_list = numpy.array(ant_name_list)
 
+    # Find the antenna with the minimum flag percentage
     ref_idx = idx_list[numpy.where(pc_list==(numpy.min(pc_list)))][0]
 
+    # Sort antennas by flag percentage (ascending order)
     ranked_list = [x for _,x in sorted(zip(pc_list,idx_list))]
+    
+    # Check if m060 is in the list and should be prioritized
+    if 'm060' in ant_name_list:
+        # Get m060's index in our lists
+        m060_pos = numpy.where(ant_name_list == 'm060')[0][0]
+        m060_flag_pc = pc_list[m060_pos]
+        m060_idx = idx_list[m060_pos]
+        
+        # Calculate median and standard deviation of flag percentages
+        median_flag_pc = numpy.median(pc_list)
+        std_flag_pc = numpy.std(pc_list)
+        
+        # Check if m060's flag fraction is within one standard deviation of median
+        if abs(m060_flag_pc - median_flag_pc) <= std_flag_pc:
+            # Remove m060 from its current position in ranked list
+            if m060_idx in ranked_list:
+                ranked_list.remove(m060_idx)
+            # Place m060 at the front of the list
+            ranked_list.insert(0, m060_idx)
+            mylogger.info('m060 flag percentage ('+str(round(m060_flag_pc,2))+'%) is within 1-sigma of median ('+str(round(median_flag_pc,2))+'%), placing at front of list')
+    
+    # Convert list to comma-separated string
     ranked_list = ','.join(ranked_list)
 
     return ranked_list
@@ -442,7 +483,37 @@ def target_ms_list(working_ms,target_names):
     return target_ms
 
 
-def secondary_ms_list(master_ms, working_ms, secondary_names, secondary_ids):
+def primary_ms_list(master_ms, working_ms, primary_name, primary_id, include_scans=None):
+
+    """ Return a list of MS names for primary calibrator with scan numbering """
+
+    main_tab = table(master_ms, ack=False)
+    
+    # Query for the primary field to get unique scans
+    sub_tab = main_tab.query(query=f'FIELD_ID=={primary_id}')
+    scans = numpy.unique(sub_tab.getcol('SCAN_NUMBER'))
+    sub_tab.close()
+    
+    # Filter to include only specified scans if PRE_SCANS is set
+    if include_scans is not None and len(include_scans) > 0:
+        scans = numpy.array([s for s in scans if s in include_scans])
+    
+    # Determine zero-padding width based on total number of scans
+    max_scan = numpy.max(scans)
+    num_digits = len(str(max_scan))
+    
+    # Create MS names for each scan
+    primary_ms_list = []
+    for scan in scans:
+        scan_str = str(scan).zfill(num_digits)
+        ms_name = working_ms.replace('.ms', f'_{primary_name.replace(" ", "_")}_scan{scan_str}.ms')
+        primary_ms_list.append(ms_name)
+    
+    main_tab.close()
+    return primary_ms_list
+
+
+def secondary_ms_list(master_ms, working_ms, secondary_names, secondary_ids, include_scans=None):
 
     """ Return a list of MS names for secondary calibrators with scan numbering """
 
@@ -457,21 +528,59 @@ def secondary_ms_list(master_ms, working_ms, secondary_names, secondary_ids):
         scans = numpy.unique(sub_tab.getcol('SCAN_NUMBER'))
         sub_tab.close()
         
-        # Determine zero-padding width based on total number of scans
-        max_scan = numpy.max(scans)
-        num_digits = len(str(max_scan))
+        # Filter to include only specified scans if PRE_SCANS is set
+        if include_scans is not None and len(include_scans) > 0:
+            scans = numpy.array([s for s in scans if s in include_scans])
         
-        # Create MS names for each scan
+        # Create MS names for each scan (skip if no scans match)
+        if scans.size == 0:
+            secondary_ms.append([])
+            continue
+
+        # Determine zero-padding width based on total number of scans (minimum 2 digits)
+        max_scan = numpy.max(scans)
+        num_digits = max(2, len(str(max_scan)))
+
         sec_ms_list = []
         for scan in scans:
             scan_str = str(scan).zfill(num_digits)
             ms_name = working_ms.replace('.ms', f'_{sec_name.replace(" ", "_")}_scan{scan_str}.ms')
             sec_ms_list.append(ms_name)
-        
+
         secondary_ms.append(sec_ms_list)
     
     main_tab.close()
     return secondary_ms
+
+
+def polang_ms_list(master_ms, working_ms, polang_name, polang_id, include_scans=None):
+
+    """ Return a list of MS names for polarization angle calibrator with scan numbering """
+
+    main_tab = table(master_ms, ack=False)
+    
+    # Query for the polang field to get unique scans
+    sub_tab = main_tab.query(query=f'FIELD_ID=={polang_id}')
+    scans = numpy.unique(sub_tab.getcol('SCAN_NUMBER'))
+    sub_tab.close()
+    
+    # Filter to include only specified scans if PRE_SCANS is set
+    if include_scans is not None and len(include_scans) > 0:
+        scans = numpy.array([s for s in scans if s in include_scans])
+    
+    # Determine zero-padding width based on total number of scans (minimum 2 digits)
+    max_scan = numpy.max(scans)
+    num_digits = max(2, len(str(max_scan)))
+    
+    # Create MS names for each scan
+    polang_ms_list_result = []
+    for scan in scans:
+        scan_str = str(scan).zfill(num_digits)
+        ms_name = working_ms.replace('.ms', f'_{polang_name.replace(" ", "_")}_scan{scan_str}.ms')
+        polang_ms_list_result.append(ms_name)
+    
+    main_tab.close()
+    return polang_ms_list_result
 
 
 def main():
@@ -498,6 +607,7 @@ def main():
 
 
     PRE_NCHANS = cfg.PRE_NCHANS
+    PRE_SCANS = cfg.PRE_SCANS
     POLANG_NAME = cfg.POLANG_NAME
     CAL_1GC_PRIMARY = cfg.CAL_1GC_PRIMARY
     CAL_1GC_SECONDARIES = cfg.CAL_1GC_SECONDARIES
@@ -506,6 +616,12 @@ def main():
     CAL_1GC_PRIMARY_INTENT = cfg.CAL_1GC_PRIMARY_INTENT
     CAL_1GC_SECONDARY_INTENT = cfg.CAL_1GC_SECONDARY_INTENT
     CAL_1GC_TARGET_INTENT = cfg.CAL_1GC_TARGET_INTENT
+    
+    # Parse PRE_SCANS if specified
+    include_scans = []
+    if PRE_SCANS != '':
+        include_scans = [int(s.strip()) for s in PRE_SCANS.split(',')]
+        mylogger.info('Including only these scans in calibrator MS lists: '+str(include_scans))
 
     working_ms = master_ms.replace('.ms','_'+str(PRE_NCHANS)+'ch.ms')
 
@@ -614,6 +730,25 @@ def main():
         mylogger.info('No Polarization Angle Calibrator')
         polang_name = ''
         polang_id   = ''
+        
+        # Add fields with UNKNOWN intent to secondary list if POLANG_NAME is not specified
+        main_tab = table(master_ms, ack=False)
+        for i in range(0, len(field_ids)):
+            field_dir = field_dirs[i]
+            field_name = field_names[i]
+            field_id = field_ids[i]
+            sub_tab = main_tab.query(query='FIELD_ID=='+str(field_id))
+            states = numpy.unique(sub_tab.getcol('STATE_ID'))
+            for state in states:
+                if state == unknown_state:
+                    # Check if this field is not already in the secondary list
+                    if str(field_id) not in secondary_ids:
+                        secondary_dirs.append(field_dir[0].tolist())
+                        secondary_names.append(field_name)
+                        secondary_ids.append(str(field_id))
+                        mylogger.info('Adding UNKNOWN intent field to secondaries: '+str(field_id)+': '+field_name)
+            sub_tab.close()
+        main_tab.close()
 
     # ------------------------------------------------------------------------------
     #
@@ -658,9 +793,26 @@ def main():
 
     # ------------------------------------------------------------------------------
     #
+    # GENERATE LIST OF PRIMARY MS NAMES
+
+    primary_ms = primary_ms_list(master_ms, working_ms, primary_name, primary_id, include_scans)
+
+
+    # ------------------------------------------------------------------------------
+    #
     # GENERATE LIST OF SECONDARY MS NAMES
 
-    secondary_ms = secondary_ms_list(master_ms, working_ms, secondary_names, secondary_ids)
+    secondary_ms = secondary_ms_list(master_ms, working_ms, secondary_names, secondary_ids, include_scans)
+
+
+    # ------------------------------------------------------------------------------
+    #
+    # GENERATE LIST OF POLANG MS NAMES
+
+    if polang_name != '':
+        polang_ms = polang_ms_list(master_ms, working_ms, polang_name, polang_id, include_scans)
+    else:
+        polang_ms = []
 
 
     # ------------------------------------------------------------------------------
@@ -704,6 +856,13 @@ def main():
         for ms_name in secondary_ms[i]:
             mylogger.info('  - %-50s' % (ms_name))
     
+    if polang_name != '':
+        mylogger.info('')
+        mylogger.info('Polarization Angle Cal   Eventual MS names')
+        mylogger.info('%-24s' % (str(polang_id)+': '+polang_name))
+        for ms_name in polang_ms:
+            mylogger.info('  - %-50s' % (ms_name))
+    
     mylogger.info('')
     mylogger.info('Writing '+outfile)
 
@@ -715,8 +874,10 @@ def main():
     project_info['primary_name'] = primary_name
     project_info['primary_id'] = str(primary_id)
     project_info['primary_tag'] = primary_tag
+    project_info['primary_ms'] = primary_ms
     project_info['polang_name'] = polang_name
     project_info['polang_id'] = str(polang_id)
+    project_info['polang_ms'] = polang_ms
     project_info['secondary_names'] = secondary_names
     project_info['secondary_ids'] = secondary_ids
     project_info['secondary_dirs'] = secondary_dirs

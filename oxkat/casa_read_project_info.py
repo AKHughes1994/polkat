@@ -27,6 +27,7 @@ ref_ant = str(project_info['ref_ant'])
 bpcal = str(project_info['primary_id'])
 bpcal_name = str(project_info['primary_name'])
 primary_tag = str(project_info['primary_tag'])
+primary_ms = str_iterator(project_info['primary_ms'])  # List of per-scan MS files for primary
 
 # Secondary calibrator info
 pcal_names = str_iterator(project_info['secondary_names'])
@@ -44,6 +45,7 @@ target_ms = str_iterator(project_info['target_ms'])
 # Polarization angle calibrator info
 pacal = str(project_info['polang_id']) 
 pacal_name = str(project_info['polang_name'])
+polang_ms = str_iterator(project_info.get('polang_ms', []))  # List of per-scan MS files for polang
 
 # Filter fields if PRE_FIELDS is specified in config
 if PRE_FIELDS != '':

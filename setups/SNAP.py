@@ -6,6 +6,7 @@ import glob
 import json
 import os.path as o
 import sys
+import re
 sys.path.append(o.abspath(o.join(o.dirname(sys.modules[__name__].__file__), "..")))
 
 
@@ -14,6 +15,8 @@ from oxkat import config as cfg
 
 
 def main():
+    # Set to a directory path to use a single shared temp directory, or '' to use per-field temp directories
+    OVERRIDE_TEMP_DIR = '/mnt/scratchssd'
 
     USE_SINGULARITY = cfg.USE_SINGULARITY
 
@@ -62,7 +65,44 @@ def main():
     with open('project_info.json') as f:
         project_info = json.load(f)
     
-    target_names = project_info['working_names']
+    # Build unified list of fields including calibrators with scan naming
+    target_names = []
+    valid_field_names = set()  # Set to track all valid field names for validation
+    
+    # Add working targets
+    for name in project_info['working_names']:
+        target_names.append(name)
+        valid_field_names.add(name)
+    
+    # Add primary calibrator scans (fieldname_scanXX format)
+    bpcal_name = project_info['primary_name']
+    primary_ms = project_info['primary_ms']
+    for myms_cal in primary_ms:
+        scan_str = myms_cal.split('_scan')[-1].replace('.ms', '')
+        field_name = f"{bpcal_name}_scan{scan_str}"
+        target_names.append(field_name)
+        valid_field_names.add(field_name)
+    
+    # Add polarization angle calibrator scans if present
+    pacal_name = project_info.get('polang_name', '')
+    pacal_ms = project_info.get('polang_ms', [])
+    if pacal_name != '' and len(pacal_ms) > 0:
+        for myms_cal in pacal_ms:
+            scan_str = myms_cal.split('_scan')[-1].replace('.ms', '')
+            field_name = f"{pacal_name}_scan{scan_str}"
+            target_names.append(field_name)
+            valid_field_names.add(field_name)
+    
+    # Add secondary calibrator scans
+    pcal_names = project_info['secondary_names']
+    pcal_ms = project_info['secondary_ms']
+    for ss in range(len(pcal_names)):
+        for myms_cal in pcal_ms[ss]:
+            scan_str = myms_cal.split('_scan')[-1].replace('.ms', '')
+            field_name = f"{pcal_names[ss]}_scan{scan_str}"
+            target_names.append(field_name)
+            valid_field_names.add(field_name)
+    
     myms = project_info['working_ms']
 
     if cfg.SNAP_FIELDS != '':
@@ -73,6 +113,14 @@ def main():
     pol = 'I'
     if cfg.SNAP_POL == True:
         pol = 'IQUV'
+    
+    # ------------------------------------------------------------------------------
+    # Calibrator (non-target) imaging parameters
+    # These are used for calibrator fields to reduce image size/channels
+    # ------------------------------------------------------------------------------
+    CALIBRATOR_IMSIZE = 2560
+    CALIBRATOR_MAXCHAN = 128
+    CALIBRATOR_CHANNELSOUT = 64
     
     # ------------------------------------------------------------------------------
     #
@@ -92,7 +140,7 @@ def main():
         
         targetname   = target_names[tt]
 
-        if targetname not in project_info['working_names']:
+        if targetname not in valid_field_names:
 
             gen.print_spacer()
             print(gen.col('Snap Target')+targetname)
@@ -126,7 +174,7 @@ def main():
 
         targetname   = target_names[tt]
 
-        if targetname not in project_info['working_names']:
+        if targetname not in valid_field_names:
 
             gen.print_spacer()
             print(gen.col('Target')+targetname)
@@ -139,21 +187,37 @@ def main():
             steps = []        
             filename_targetname = gen.scrub_target_name(targetname)
 
+            # Determine if this is a target or calibrator
+            # If it has _scanXX in the name, it's a calibrator
+            is_target = not re.search(r'_scan\d+$', targetname)
+
             # Target-specific kill file
             kill_file = SCRIPTS+'/kill_snap_jobs_'+filename_targetname+'.sh'
 
             # Specify target ms name
             target_ms = myms.replace('.ms', f'_{targetname}_snapshot.ms')
 
+            # Create source-specific subdirectory in IMAGES
+            img_dir = f"{IMAGES}/{filename_targetname}"
+            gen.setup_dir(img_dir)
+            
+            # Create temp directory for wsclean intermediate files
+            if OVERRIDE_TEMP_DIR == '':
+                temp_dir = f"{IMAGES}/{filename_targetname}_temp"
+            else:
+                temp_dir = f"{OVERRIDE_TEMP_DIR}/{filename_targetname}_temp"
+            gen.setup_dir(temp_dir)
+
             gen.print_spacer()
-            print(gen.col('Target')+targetname)
+            field_type = 'Target' if is_target else 'Calibrator'
+            print(gen.col(field_type)+targetname)
             print(gen.col('Measurement Set')+myms)
             print(gen.col('Code')+code)
 
             n = 0 # Start counting
 
             # If model image(s) have been specified use it to predict [DEFAULT assumes 2GC pcalmask]
-            model_image_prefix = IMAGES + '/img_' + target_ms.replace('_snapshot','') + '_' + cfg.SNAP_MODELIDENTIFIER
+            model_image_prefix = img_dir + '/img_' + target_ms.replace('_snapshot','') + '_' + cfg.SNAP_MODELIDENTIFIER
             if cfg.SNAP_MODELIDENTIFIER != '' and glob.glob(model_image_prefix + '*model.fits' ) != [] and cfg.WSC_PCAL_CHANNELSOUT == cfg.SNAP_CHANNELSOUT:
                 pass
 
@@ -161,8 +225,8 @@ def main():
             else:
 
                 model_mask = cfg.SNAP_MODELMASK
-                model_image_prefix = IMAGES+'/img_'+target_ms+'_snapmask'
-                blind_image_prefix = IMAGES+'/img_'+target_ms+'_snapblind'                
+                model_image_prefix = img_dir+'/img_'+target_ms+'_snapmask'
+                blind_image_prefix = img_dir+'/img_'+target_ms+'_snapblind'                
 
                 # If you don't have a mask you need a blind clean as well to make a mask
                 if cfg.SNAP_MODELMASK == '' and not o.exists(f"{blind_image_prefix}-MFS-image.mask.fits"):
@@ -177,7 +241,11 @@ def main():
                     absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
                     syscall = ''
                     prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
+                    # Adjust parameters based on field type
+                    imsize_blind = CALIBRATOR_IMSIZE if not is_target else cfg.WSC_IMSIZE
+                    maxchan_blind = CALIBRATOR_MAXCHAN if not is_target else cfg.WSC_MAX_CHANNELS
                     imcall = gen.generate_syscall_wsclean(mslist = [target_ms],
+                        tempdir = temp_dir,
                         imgname = blind_image_prefix,
                         datacol = 'DATA',
                         chanout = cfg.WSC_BLIND_CHANNELSOUT,
@@ -190,6 +258,8 @@ def main():
                         autothreshold = 3.0,
                         tukeytaper=False,
                         field='0',
+                        imsize = imsize_blind,
+                        maxchan = maxchan_blind,
                         absmem = absmem)
                     for call in imcall: 
                         syscall += prefix + call + '\n\n'
@@ -229,13 +299,21 @@ def main():
                 absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
                 syscall = ''
                 prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
+                # Adjust parameters based on field type
+                imsize_snap = CALIBRATOR_IMSIZE if not is_target else cfg.WSC_IMSIZE
+                maxchan_snap = CALIBRATOR_MAXCHAN if not is_target else cfg.WSC_MAX_CHANNELS
+                chanout_snap = CALIBRATOR_CHANNELSOUT if not is_target else cfg.SNAP_CHANNELSOUT
+                pol_snap = 'I' if not is_target else pol
                 imcall = gen.generate_syscall_wsclean(mslist = [target_ms],
+                    tempdir = temp_dir,
                     imgname = model_image_prefix,
                     datacol = 'DATA',
                     mask = model_mask,
-                    chanout = cfg.SNAP_CHANNELSOUT,
+                    chanout = chanout_snap,
                     field= '0',
-                    pol = pol,
+                    pol = pol_snap,
+                    imsize = imsize_snap,
+                    maxchan = maxchan_snap,
                     nomodel = True,
                     sourcelist = False,
                     absmem = absmem)
@@ -245,16 +323,16 @@ def main():
                 steps.append(step)
                 n += 1
 
-                predict_pol = pol # If you make a new image, predict the polarisations based on the imaged polarisations
+                predict_pol = pol_snap # If you make a new image, predict the polarisations based on the imaged polarisations
 
-                if cfg.WSC_MAX_CHANNELS < cfg.SNAP_CHANNELSOUT:
+                if maxchan_snap < chanout_snap:
                     step = {}
                     step['step'] = n
                     step['comment'] = f'Fix Naming of the snap (MASK) images'
                     step['dependency'] = n - 1
                     step['id'] = 'HOSNA'+code
                     prefix = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
-                    syscall =  f'python3 {cfg.TOOLS}/fix_image_naming.py {cfg.SNAP_CHANNELSOUT} {model_image_prefix}'
+                    syscall =  f'python3 {cfg.TOOLS}/fix_image_naming.py {chanout_snap} {model_image_prefix}'
                     step['syscall'] = prefix + syscall 
                     steps.append(step)
                     n += 1
@@ -271,12 +349,17 @@ def main():
             step['pbs_config'] = cfg.PBS_WSCLEAN
             absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
             prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
+            # Set chanout_snap if not already defined (when using existing model)
+            if 'chanout_snap' not in locals():
+                chanout_snap = CALIBRATOR_CHANNELSOUT if not is_target else cfg.SNAP_CHANNELSOUT
+            
             syscall = prefix + 'python3 '+TOOLS+'/fix_nan_models.py ' + model_image_prefix + '\n\n'
             syscall += prefix + gen.generate_syscall_predict(msname = target_ms,
                 imgname = model_image_prefix,
                 field = '0',
                 pol = predict_pol,
-                chanout = cfg.SNAP_CHANNELSOUT,
+                chanout = chanout_snap,
+                tempdir = temp_dir,
                 absmem = absmem)
             step['syscall'] = syscall
             steps.append(step)
@@ -303,7 +386,7 @@ def main():
             step['slurm_config'] = cfg.SLURM_WSCLEAN
             step['pbs_config'] = cfg.PBS_WSCLEAN
             syscall = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
-            syscall += 'python3 '+cfg.OXKAT+f'/SNAP_intervals.py {target_ms}'
+            syscall += 'python3 '+cfg.OXKAT+f'/SNAP_intervals.py {target_ms} {targetname}'
             step['syscall'] = syscall
             steps.append(step)
             n += 1
@@ -317,13 +400,17 @@ def main():
             step['slurm_config'] = cfg.SLURM_WSCLEAN
             step['pbs_config'] = cfg.PBS_WSCLEAN
             syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
-            syscall += 'python3 '+cfg.OXKAT+f'/SNAP_restore.py {model_image_prefix} {target_ms}'
+            syscall += 'python3 '+cfg.OXKAT+f'/SNAP_restore.py {model_image_prefix} {target_ms} {targetname}'
             step['syscall'] = syscall
             steps.append(step)
             n += 1
 
-            if cfg.SNAP_CHANNELSOUT > cfg.WSC_MAX_CHANNELS:
-                restored_image_prefix = cfg.INTERVALS+f'/img_{target_ms}_restored'
+            maxchan_snap = CALIBRATOR_MAXCHAN if not is_target else cfg.WSC_MAX_CHANNELS
+            chanout_snap = CALIBRATOR_CHANNELSOUT if not is_target else cfg.SNAP_CHANNELSOUT
+            if chanout_snap > maxchan_snap:
+                # Use target-specific subdirectory under INTERVALS
+                intervals_subdir = cfg.INTERVALS+f'/{filename_targetname}'
+                restored_image_prefix = intervals_subdir+f'/img_{target_ms}_restored'
                 step = {}
                 step['step'] = n
                 step['comment'] = 'Max channels is less than total channels, making a (really rough) MFS image for '+targetname
@@ -364,6 +451,16 @@ def main():
                 step['syscall'] = syscall
                 steps.append(step)
                 n += 1
+
+            step = {}
+            step['step'] = n
+            step['comment'] = 'Clean temp directory for '+targetname
+            step['dependency'] = n - 1
+            step['id'] = 'CLSNA'+code
+            syscall = f"rm -rf {temp_dir}"
+            step['syscall'] = syscall
+            steps.append(step)
+            n += 1
 
             target_steps.append((steps,kill_file,targetname))
             

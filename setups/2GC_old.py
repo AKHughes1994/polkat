@@ -16,23 +16,7 @@ from oxkat import config as cfg
 
 def main():
     # Set this flag to True to enable batch submission (4 at a time), False for no batching
-    BATCH_FIELD_SUBMISSION = False
-    
-    # Set this flag to True to force all jobs to use 8 cores (useful for debugging/testing)
-    FORCE_CORES_8 = True
-    
-    # Set to a directory path to use a single shared temp directory, or '' to use per-field temp directories
-    OVERRIDE_TEMP_DIR = '/mnt/scratchssd'
-    
-    # Set this flag to False to disable all cleanup operations (find/delete/rm commands)
-    ENABLE_CLEANUP = True
-
-    # Set this flag to True to use custom parameters for the final pcal (WSCMA) image of targets
-    PCAL_TARGET_IMAGE = True
-    PCAL_TARGET_IMSIZE       = 2000    # Image size (pixels)
-    PCAL_TARGET_CHANOUT      = 512     # Number of output channels
-    PCAL_TARGET_MAXCHAN      = 512     # Max deconvolution channels (set equal to chanout = all channels)
-    PCAL_TARGET_FITSPECTRAL  = 0       # Fit spectral polynomial order
+    BATCH_FIELD_SUBMISSION = True
 
     USE_SINGULARITY = cfg.USE_SINGULARITY
 
@@ -219,17 +203,13 @@ def main():
         gen.setup_dir(img_dir)
         
         # Create temp directory for wsclean intermediate files
-        if OVERRIDE_TEMP_DIR == '':
-            temp_dir = f"{IMAGES}/{filename_fieldname}_temp"
-        else:
-            temp_dir = f"{OVERRIDE_TEMP_DIR}/{filename_fieldname}_temp"
+        temp_dir = f"{IMAGES}/{filename_fieldname}_temp"
         gen.setup_dir(temp_dir)
 
         # Image prefixes
         img_prefix = img_dir+f'/img_{myms}_datablind'
         data_img_prefix = img_dir+f'/img_{myms}_datamask'
         inter_img_prefix = img_dir+f'/img_{myms}_intermask'
-        final_img_prefix = img_dir+f'/img_{myms}_finalmask'
         pcal_img_prefix = img_dir+f'/img_{myms}_pcalmask'
         uniform_img_prefix = img_dir+f'/img_{myms}_uniform'
         notaper_img_prefix = img_dir+f'/img_{myms}_notaper'
@@ -278,7 +258,7 @@ def main():
             step['slurm_config'] = cfg.SLURM_WSCLEAN
             step['pbs_config'] = cfg.PBS_WSCLEAN
             absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
-            cores = '8' if FORCE_CORES_8 else step['glam_config']['CPUS']
+            cores = step['glam_config']['CPUS']
             syscall = ''
             prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
             # Adjust parameters based on field type
@@ -308,8 +288,7 @@ def main():
             for call in imcall: 
                 syscall += prefix + call + '\n\n'
             # Clean up intermediate images (keep only MFS-image.fits files)
-            if ENABLE_CLEANUP:
-                syscall += f'find {img_dir} -type f -name "*{os.path.basename(img_prefix)}*" ! -name "*MFS-image.fits" -delete\n\n'
+            syscall += f'find {img_dir} -type f -name "*{os.path.basename(img_prefix)}*" ! -name "*MFS-image.fits" -delete\n\n'
             step['syscall'] = syscall
             step['grouping'] = None
             steps.append(step)
@@ -343,7 +322,7 @@ def main():
         step['slurm_config'] = cfg.SLURM_WSCLEAN
         step['pbs_config'] = cfg.PBS_WSCLEAN
         absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
-        cores = '8' if FORCE_CORES_8 else step['glam_config']['CPUS']
+        cores = step['glam_config']['CPUS']
         syscall = ''
         prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
         # Adjust parameters based on field type
@@ -376,10 +355,11 @@ def main():
         for call in imcall: 
             syscall += prefix + call + '\n\n'
             # Clean up intermediate images (keep only model.fits and MFS*image.fits files)
-            if ENABLE_CLEANUP:
-                syscall += f'find {img_dir} -type f -name "*{os.path.basename(data_img_prefix)}*" ! -name "*model.fits" ! -name "*MFS*image.fits" -delete\n\n' # DEBUG
+            syscall += f'find {img_dir} -type f -name "*{os.path.basename(data_img_prefix)}*" ! -name "*model.fits" ! -name "*MFS*image.fits" -delete\n\n' # DEBUG
+            #syscall += f'find {img_dir} -type f -name "*{os.path.basename(data_img_prefix)}*dirty*" -delete\n'
+            #syscall += f'find {img_dir} -type f -name "*{os.path.basename(data_img_prefix)}*psf*" -delete\n\n'
         step['syscall'] = syscall
-        step['grouping'] = 2 if ENABLE_CLEANUP else None  # Group with next step if cleanup is enabled to ensure cleanup happens immediately after
+        step['grouping'] = 2
         steps.append(step)
         n += 1
 
@@ -408,7 +388,7 @@ def main():
         step['slurm_config'] = cfg.SLURM_PREDICT
         step['pbs_config'] = cfg.PBS_WSCLEAN
         absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
-        cores = '8' if FORCE_CORES_8 else step['glam_config']['CPUS']
+        cores = step['glam_config']['CPUS']
         prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
         # Clean up intermediate images (keep only model.fits and MFS*image.fits files)
         syscall = prefix + 'python3 '+TOOLS+'/fix_nan_models.py ' + data_img_prefix + '\n\n'
@@ -416,11 +396,8 @@ def main():
                 imgname = data_img_prefix,
                 cores = cores,
                 absmem = absmem,
-                tempdir = temp_dir,
-                chanout = chanout_dmask)
-        if ENABLE_CLEANUP:
-            syscall += '\n\nfind ' + img_dir + ' -type f -name "*' + os.path.basename(data_img_prefix) + '*" ! -name "*MFS-image.fits" -delete'
-            pass
+                tempdir = temp_dir)
+        syscall += '\n\nfind ' + img_dir + ' -type f -name "*' + os.path.basename(data_img_prefix) + '*" ! -name "*MFS-image.fits" -delete'
         step['syscall'] = syscall
         steps.append(step)
         n += 1
@@ -431,7 +408,7 @@ def main():
         step['dependency'] = n - 1
         step['id'] = 'C02G2'+code
         step['glam_config'] = cfg.GLAM_COREHEAVY
-        cores = '8' if FORCE_CORES_8 else step['glam_config']['CPUS']
+        cores = step['glam_config']['CPUS']
         syscall = CONTAINER_RUNNER + QUARTICAL_CONTAINER+' ' if USE_SINGULARITY else ''
         # Build extra args with UV range selection if needed
         extra_args = f'output.gain_directory={gain_outdir_2GC} output.log_directory={log_outdir_2GC}'
@@ -455,7 +432,7 @@ def main():
         step['slurm_config'] = cfg.SLURM_WSCLEAN
         step['pbs_config'] = cfg.PBS_WSCLEAN
         absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
-        cores = '8' if FORCE_CORES_8 else step['glam_config']['CPUS']
+        cores = step['glam_config']['CPUS']
         syscall = ''
         prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
         # Adjust parameters based on field type
@@ -476,18 +453,16 @@ def main():
                 nomodel=True,
                 sourcelist = False,
                 fitspectralpol = 0,
-                weight = weight_inter,
+                weight=weight_inter,
                 imsize = imsize_inter,
                 maxchan = maxchan_inter,
                 absmem = absmem)
         for call in imcall: 
             syscall += prefix + call + '\n\n'
             # Clean up intermediate images (keep only model.fits and MFS*image.fits files)
-            if ENABLE_CLEANUP:
-                syscall += f'find {img_dir} -type f -name "*{os.path.basename(inter_img_prefix)}*" ! -name "*model.fits" ! -name "*MFS*image.fits" -delete\n\n'
-                pass
+            syscall += f'find {img_dir} -type f -name "*{os.path.basename(inter_img_prefix)}*" ! -name "*model.fits" ! -name "*MFS*image.fits" -delete\n\n'
         step['syscall'] = syscall
-        step['grouping'] = 2 if ENABLE_CLEANUP else None  # Group with next step if cleanup is enabled to ensure cleanup happens immediately after
+        step['grouping'] = 2
         steps.append(step)
         n += 1
 
@@ -516,18 +491,15 @@ def main():
         step['slurm_config'] = cfg.SLURM_PREDICT
         step['pbs_config'] = cfg.PBS_WSCLEAN
         absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
-        cores = '8' if FORCE_CORES_8 else step['glam_config']['CPUS']
+        cores = step['glam_config']['CPUS']
         prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
         syscall = prefix + 'python3 '+TOOLS+'/fix_nan_models.py ' + inter_img_prefix + '\n\n'
         syscall += prefix + gen.generate_syscall_predict(msname = myms,
                 imgname = inter_img_prefix,
                 cores = cores,
                 absmem = absmem,
-                tempdir = temp_dir,
-                chanout = chanout_inter)
-        
-        if ENABLE_CLEANUP:
-            syscall += '\n\nfind ' + img_dir + ' -type f -name "*' + os.path.basename(inter_img_prefix) + '*" ! -name "*MFS-image.fits" -delete'
+                tempdir = temp_dir)
+        #syscall += '\n\nfind ' + img_dir + ' -type f -name "*' + os.path.basename(inter_img_prefix) + '*" ! -name "*MFS-image.fits" -delete'
         step['syscall'] = syscall
         steps.append(step)
         n += 1
@@ -538,7 +510,7 @@ def main():
         step['dependency'] = n - 1
         step['id'] = 'CL2GC'+code
         step['glam_config'] = cfg.GLAM_COREHEAVY
-        cores = '8' if FORCE_CORES_8 else step['glam_config']['CPUS']
+        cores = step['glam_config']['CPUS']
         syscall = CONTAINER_RUNNER + QUARTICAL_CONTAINER+' ' if USE_SINGULARITY else ''
         # Build extra args with UV range selection if needed
         extra_args = f'output.gain_directory={gain_outdir_2GC} output.log_directory={log_outdir_2GC}'
@@ -555,25 +527,87 @@ def main():
 
         step = {}
         step['step'] = n
-        step['comment'] = 'Shallow blind-like wsclean on CORRECTED_DATA with old mask for {}'.format(fieldname)
+        step['comment'] = f'Run wsclean, masked deconvolution of the CORRECTED_DATA (self-calibrated) for {fieldname}'
         step['dependency'] = n - 1
-        step['id'] = 'WSFMA'+code
-        step['glam_config'] = cfg.GLAM_MEDIUM
+        step['id'] = 'WSCMA'+code
+        step['glam_config'] = cfg.GLAM_WSC_SOURCE if is_target else cfg.GLAM_WSC_CAL
         step['slurm_config'] = cfg.SLURM_WSCLEAN
         step['pbs_config'] = cfg.PBS_WSCLEAN
         absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
-        cores = '8' if FORCE_CORES_8 else step['glam_config']['CPUS']
+        cores = step['glam_config']['CPUS']
         syscall = ''
         prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
         # Adjust parameters based on field type
-        imsize_final = CALIBRATOR_IMSIZE if not is_target else cfg.WSC_IMSIZE
-        maxchan_final = CALIBRATOR_MAXCHAN if not is_target else cfg.WSC_MAX_CHANNELS
-        weight_final = 'uniform' if not is_target else cfg.WSC_WEIGHT
+        imsize_pcal = CALIBRATOR_IMSIZE if not is_target else cfg.WSC_IMSIZE
+        maxchan_pcal = CALIBRATOR_MAXCHAN if not is_target else cfg.WSC_MAX_CHANNELS
+        chanout_pcal = CALIBRATOR_CHANNELSOUT if not is_target else cfg.WSC_PCAL_CHANNELSOUT
+        weight_pcal = 'uniform' if not is_target else cfg.WSC_WEIGHT
         imcall = gen.generate_syscall_wsclean(mslist = [myms],
                 tempdir = temp_dir,
-                imgname = final_img_prefix,
+                imgname = pcal_img_prefix,
                 datacol = 'CORRECTED_DATA',
                 mask = mask,
+                chanout = chanout_pcal,
+                tukeytaper=tukeytaper,
+                minuvl = minuvl,
+                maxuvl = maxuvl,
+                nomodel=True,
+                sourcelist = False,
+                fitspectralpol = 0,
+                weight = weight_pcal,
+                imsize = imsize_pcal,
+                maxchan = maxchan_pcal,
+                cores = cores,
+                absmem = absmem)
+        for call in imcall: 
+            syscall += prefix + call + '\n\n'
+            syscall += f'rm -f {pcal_img_prefix}*dirty*\n\n'
+        step['syscall'] = syscall
+        step['grouping'] = 2
+        steps.append(step)
+        n += 1
+
+        # Skip homogenization for non-targets
+        if is_target and (cfg.WSC_MAX_CHANNELS < cfg.WSC_PCAL_CHANNELSOUT or cfg.WSC_HOMOGENIZEBEAM):
+            step = {}
+            step['step'] = n
+            step['comment'] = f'Homogenize the PCAL resolution across frequency channels'
+            step['dependency'] = n - 1
+            step['id'] = 'HOCMA' + code
+            step['glam_config'] = cfg.GLAM_MEDIUM
+            step['slurm_config'] = cfg.SLURM_WSCLEAN
+            step['pbs_config'] = cfg.PBS_WSCLEAN
+            prefix = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
+            syscall =  prefix + f'python3 {cfg.TOOLS}/fix_image_naming.py {cfg.WSC_PCAL_CHANNELSOUT} {pcal_img_prefix}\n\n'
+            syscall +=  prefix + f'python3 {cfg.TOOLS}/homogenize_beams.py {pcal_img_prefix}\n\n'
+            syscall += f'find . -name "{os.path.basename(pcal_img_prefix)}*homogenized.fits" ! -name "*MFS*" -delete'
+            step['syscall'] = syscall
+            steps.append(step)
+            n += 1
+
+        # High-resolution and no-taper images only for targets
+        if is_target and cfg.WSC_UNIFORM_IMAGE:
+            step = {}
+            step['step'] = n
+            step['comment'] = 'Run high angular resolution, wsclean, masked deconvolution of the CORRECTED_DATA (self-calibrated) for {}'.format(fieldname)
+            step['dependency'] = n - 1
+            step['id'] = 'WSUNI'+code
+            step['glam_config'] = cfg.GLAM_MEDIUM
+            step['slurm_config'] = cfg.SLURM_WSCLEAN
+            step['pbs_config'] = cfg.PBS_WSCLEAN
+            absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
+            cores = step['glam_config']['CPUS']
+            syscall = ''
+            prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
+            # Calculate smaller cellsize for higher resolution (0.8 x default)
+            cellsize_val = float(cfg.WSC_CELLSIZE.replace('asec','').replace('arcsec',''))
+            cellsize_highres = f'{cellsize_val * 0.8:.2f}asec'
+            
+            # First do blind imaging to create mask with correct cell size
+            imcall_blind = gen.generate_syscall_wsclean(mslist = [myms],
+                tempdir = temp_dir,
+                imgname = uniform_img_prefix,
+                datacol = 'CORRECTED_DATA',
                 chanout = cfg.WSC_BLIND_CHANNELSOUT,
                 nomodel = True,
                 pol = 'I',
@@ -582,36 +616,50 @@ def main():
                 localrms = cfg.WSC_LOCALRMS_BLIND,
                 automask = cfg.WSC_AUTOMASK_BLIND,
                 autothreshold = cfg.WSC_AUTOTHRESHOLD_BLIND,
-                tukeytaper=tukeytaper,
-                minuvl = minuvl,
-                maxuvl = maxuvl,
-                weight=weight_final,
-                imsize = imsize_final,
-                maxchan = maxchan_final,
+                tukeytaper=False,
+                minuvl = '',
+                maxuvl = '',
+                weight=cfg.WSC_WEIGHT_HIGHRES,
+                cellsize = cellsize_highres,
                 cores = cores,
                 absmem = absmem)
-        for call in imcall: 
-            syscall += prefix + call + '\n\n'
-        # Clean up intermediate images (keep only MFS-image.fits files)
-        if ENABLE_CLEANUP:
-            syscall += f'find {img_dir} -type f -name "*{os.path.basename(final_img_prefix)}*" ! -name "*MFS-image.fits" -delete\n\n'
-        step['syscall'] = syscall
-        steps.append(step)
-        n += 1
-
-        step = {}
-        step['step'] = n
-        step['comment'] = 'Make finalmask cleaning mask for ' + fieldname
-        step['dependency'] = n - 1
-        step['id'] = 'MASK2'+code
-        step['glam_config'] = cfg.GLAM_SMALL
-        syscall  = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
-        breizorro_thresh = 5.5
-        finalmask = f"{final_img_prefix}-MFS-image.mask.fits"
-        syscall += gen.generate_syscall_breizorro(restoredimage = f"{final_img_prefix}-MFS-image.fits", outfile = finalmask, thresh=breizorro_thresh)[0]
-        step['syscall'] = syscall
-        steps.append(step)
-        n += 1
+            for call in imcall_blind:
+                syscall += prefix + call + '\n\n'
+                syscall += f'rm -f {uniform_img_prefix}*dirty*\n\n'
+            
+            # Generate mask from blind image
+            syscall += prefix + gen.generate_syscall_breizorro(restoredimage = f"{uniform_img_prefix}-MFS-image.fits", 
+                                                      outfile = f"{uniform_img_prefix}-MFS-image.mask.fits")[0] + '\n\n'
+            uniform_mask = f"{uniform_img_prefix}-MFS-image.mask.fits"
+            
+            # Now do masked imaging with the new mask
+            imcall = gen.generate_syscall_wsclean(mslist = [myms],
+                tempdir = temp_dir,
+                imgname = uniform_img_prefix,
+                datacol = 'CORRECTED_DATA',
+                mask = uniform_mask,
+                chanout = cfg.WSC_BLIND_CHANNELSOUT,
+                nomodel=True,
+                intervalsout=False,
+                weight=cfg.WSC_WEIGHT_HIGHRES,
+                mfweight=True,
+                tukeytaper=False,  # Hardcoded no taper
+                minuvl = '',       # Hardcoded no minuvl
+                maxuvl = '',       # Hardcoded no maxuvl
+                pol='I',
+                cellsize = cellsize_highres,
+                sourcelist = False,
+                cores = cores,
+                absmem = absmem)
+            for call in imcall: 
+                syscall += prefix + call + '\n\n'
+                syscall += f'rm -f {uniform_img_prefix}*dirty*\n\n'
+            # Clean up intermediate images (keep only MFS image.fits files)
+            syscall += f'find {img_dir} -type f -name "*{os.path.basename(uniform_img_prefix)}*" ! -name "*MFS*image.fits" -delete\n\n'
+            step['syscall'] = syscall
+            step['grouping'] = None
+            steps.append(step)
+            n += 1
 
         # No-taper image only for targets
         if is_target:
@@ -624,14 +672,14 @@ def main():
             step['slurm_config'] = cfg.SLURM_WSCLEAN
             step['pbs_config'] = cfg.PBS_WSCLEAN
             absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
-            cores = '8' if FORCE_CORES_8 else step['glam_config']['CPUS']
+            cores = step['glam_config']['CPUS']
             syscall = ''
             prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
             imcall = gen.generate_syscall_wsclean(mslist = [myms],
                 tempdir = temp_dir,
                 imgname = notaper_img_prefix,
                 datacol = 'CORRECTED_DATA',
-                mask = finalmask,
+                mask = mask,
                 chanout = cfg.WSC_BLIND_CHANNELSOUT,
                 nomodel=True,
                 intervalsout=False,
@@ -646,93 +694,11 @@ def main():
                 absmem = absmem)
             for call in imcall: 
                 syscall += prefix + call + '\n\n'
-                if ENABLE_CLEANUP:
-                    syscall += f'rm -f {notaper_img_prefix}*dirty*\n\n'
+                syscall += f'rm -f {notaper_img_prefix}*dirty*\n\n'
             # Clean up intermediate images (keep only MFS image.fits files)
-            if ENABLE_CLEANUP:
-                syscall += f'find {img_dir} -type f -name "*{os.path.basename(notaper_img_prefix)}*" ! -name "*MFS*image.fits" -delete\n\n'
+            syscall += f'find {img_dir} -type f -name "*{os.path.basename(notaper_img_prefix)}*" ! -name "*MFS*image.fits" -delete\n\n'
             step['syscall'] = syscall
             step['grouping'] = None
-            steps.append(step)
-            n += 1
-
-        step = {}
-        step['step'] = n
-        step['comment'] = f'Run wsclean, masked deconvolution of the CORRECTED_DATA (self-calibrated) for {fieldname}'
-        step['dependency'] = n - 1
-        step['id'] = 'WSCMA'+code
-        step['glam_config'] = cfg.GLAM_MEDIUM if is_target else cfg.GLAM_WSC_CAL
-        step['slurm_config'] = cfg.SLURM_WSCLEAN
-        step['pbs_config'] = cfg.PBS_WSCLEAN
-        absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
-        cores = '8' if FORCE_CORES_8 else step['glam_config']['CPUS']
-        syscall = ''
-        prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
-        imsize_pcal = cfg.WSC_IMSIZE if is_target else CALIBRATOR_IMSIZE
-        maxchan_pcal = CALIBRATOR_MAXCHAN if not is_target else cfg.WSC_MAX_CHANNELS
-        chanout_pcal = CALIBRATOR_CHANNELSOUT if not is_target else cfg.WSC_PCAL_CHANNELSOUT
-        weight_pcal = 'uniform' if not is_target else cfg.WSC_WEIGHT
-        fitspectralpol_pcal = 0
-        if PCAL_TARGET_IMAGE and is_target:
-            imsize_pcal         = PCAL_TARGET_IMSIZE
-            chanout_pcal        = PCAL_TARGET_CHANOUT
-            maxchan_pcal        = PCAL_TARGET_MAXCHAN
-            fitspectralpol_pcal = PCAL_TARGET_FITSPECTRAL
-            print(gen.col() + f"PCAL image will be made for target {fieldname} with imsize={imsize_pcal}, chanout={chanout_pcal}, maxchan={maxchan_pcal}, fitspectralpol={fitspectralpol_pcal}")
-
-        # By default use the final mask; if we're making a dedicated PCAL target image
-        # for a smaller imsize, trim the final mask to the central imsize and use that
-        # trimmed mask for the PCAL imaging step. Run the trim command immediately
-        # before the wsclean commands by prepending it to the syscall variable.
-        mask_for_pcal = finalmask
-        trim_cmd = ''
-        if PCAL_TARGET_IMAGE and is_target:
-            trimmed_mask = finalmask.replace('finalmask', 'pcalmask')
-            prefix_trim = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
-            trim_cmd = prefix_trim + f'python3 {cfg.TOOLS}/trim_mask_to_center.py {finalmask} {str(imsize_pcal)} {trimmed_mask}\n\n'
-            mask_for_pcal = trimmed_mask
-
-        imcall = gen.generate_syscall_wsclean(mslist = [myms],
-                tempdir = temp_dir,
-                imgname = pcal_img_prefix,
-                datacol = 'CORRECTED_DATA',
-                mask = mask_for_pcal,
-                chanout = chanout_pcal,
-                nomodel=True,
-                sourcelist = False,
-                fitspectralpol = fitspectralpol_pcal,
-                weight = weight_pcal,
-                imsize = imsize_pcal,
-                maxchan = maxchan_pcal,
-                cores = cores,
-                absmem = absmem)
-        # If a trim command was created, run it first, then the wsclean calls
-        if trim_cmd:
-            syscall += trim_cmd
-        for call in imcall: 
-            syscall += prefix + call + '\n\n'
-            if ENABLE_CLEANUP:
-                syscall += f'rm -f {pcal_img_prefix}*dirty*\n'
-        step['syscall'] = syscall
-        steps.append(step)
-        n += 1
-
-        # Homogenize beams if maxchan_pcal is greater than WSC_MAX_CHANNELS
-        if maxchan_pcal < chanout_pcal:
-            step = {}
-            step['step'] = n
-            step['comment'] = f'Homogenize the PCAL resolution across frequency channels'
-            step['dependency'] = n - 1
-            step['id'] = 'HOCMA' + code
-            step['glam_config'] = cfg.GLAM_LARGE
-            step['slurm_config'] = cfg.SLURM_WSCLEAN
-            step['pbs_config'] = cfg.PBS_WSCLEAN
-            prefix = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
-            syscall =  prefix + f'python3 {cfg.TOOLS}/fix_image_naming.py {cfg.WSC_PCAL_CHANNELSOUT} {pcal_img_prefix}\n\n'
-            syscall +=  prefix + f'python3 {cfg.TOOLS}/homogenize_beams.py {pcal_img_prefix}\n\n'
-            if ENABLE_CLEANUP:
-                syscall += f'find . -name "{os.path.basename(pcal_img_prefix)}*homogenized.fits" ! -name "*MFS*" -delete'
-            step['syscall'] = syscall
             steps.append(step)
             n += 1
 
@@ -771,8 +737,7 @@ def main():
         step['glam_config'] = cfg.GLAM_SMALL
         syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
         syscall += f"python3 {cfg.TOOLS}/clean_directory.py {filename_fieldname}\n\n"
-        if ENABLE_CLEANUP:
-            syscall += f"rm -rf {temp_dir}"
+        syscall += f"rm -rf {temp_dir}"
         step['syscall'] = syscall
         steps.append(step)
         n += 1

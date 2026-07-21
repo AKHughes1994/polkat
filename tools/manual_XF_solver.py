@@ -218,6 +218,44 @@ def compute_weighted_averages(data, weights, flags):
     return vis_avg, sigma_proxy
 
 
+def compute_3c286_evpa(freq_ghz):
+    """
+    Compute frequency-dependent EVPA for 3C286 (J1331+3030).
+    
+    Inputs:
+        freq_ghz : array - Frequency in GHz
+    
+    Outputs:
+        evpa_deg : array - EVPA in degrees
+    
+    Reference: Perley & Butler (2013), standard 3C286 polarization model
+    
+    EVPA(ν_GHz) [deg] =
+        32.64 - 85.37λ²           if ν_GHz ∈ [1.7, 12]
+        29.53 + λ²(4005.88(log₁₀(ν_GHz))³ - 39.38)   if ν_GHz < 1.7
+    
+    where λ = c/ν is wavelength in meters, λ² in m²
+    """
+    c = 2.99792458e8  # Speed of light in m/s
+    freq_hz = freq_ghz * 1e9
+    lambda_m = c / freq_hz
+    lambda_sq = lambda_m**2
+    
+    evpa_deg = np.zeros_like(freq_ghz)
+    
+    # High frequency regime: 1.7 - 12 GHz
+    high_freq_mask = freq_ghz >= 1.7
+    evpa_deg[high_freq_mask] = 32.64 - 85.37 * lambda_sq[high_freq_mask]
+    
+    # Low frequency regime: < 1.7 GHz
+    low_freq_mask = freq_ghz < 1.7
+    if np.any(low_freq_mask):
+        log_nu_cubed = np.log10(freq_ghz[low_freq_mask])**3
+        evpa_deg[low_freq_mask] = 29.53 + lambda_sq[low_freq_mask] * (4005.88 * log_nu_cubed - 39.38)
+    
+    return evpa_deg
+
+
 def align_stokes_arrays(freq_ghz, I_flux, Q_flux, U_flux, V_flux):
     """
     Align Stokes parameter arrays to common minimum length.
@@ -578,7 +616,7 @@ def plot_stokes_spectra(freq, I_scans, Q_scans, U_scans, V_scans, scan_numbers, 
 
 
 def plot_polang_deviation(freq_ghz, Q_scans, U_scans, V_scans, rho_rad_scans, chi_deg_scans, 
-                          selected_solution_scans, scan_numbers, global_rm, target_polang, output_dir):
+                          selected_solution_scans, scan_numbers, global_rm, target_polang_array, output_dir):
     """
     Plot deviation of de-rotated polarization angle from target (one plot per scan).
     
@@ -594,7 +632,7 @@ def plot_polang_deviation(freq_ghz, Q_scans, U_scans, V_scans, rho_rad_scans, ch
         selected_solution_scans : array - Solution labels ('positive'=ρ≥0, 'negative'=ρ<0)
         scan_numbers : array - Scan numbers
         global_rm : float - Global rotation measure
-        target_polang : float - Target polarization angle
+        target_polang_array : array - Target polarization angle (per channel, can be freq-dependent)
         output_dir : str - Output directory
     """
     c = 2.99792458e8  # Speed of light
@@ -644,12 +682,15 @@ def plot_polang_deviation(freq_ghz, Q_scans, U_scans, V_scans, rho_rad_scans, ch
         angles_positive = calculate_derotated_angle(Q_final_positive, U_final_positive, global_rm, lambda_sq)
         angles_negative = calculate_derotated_angle(Q_final_negative, U_final_negative, global_rm, lambda_sq)
         
+        # Get target angles for these channels
+        target_angles_channels = target_polang_array[solution_idx]
+        
         # Compute deviations for BOTH options (not just selected)
-        deviation_positive = angles_positive - target_polang
+        deviation_positive = angles_positive - target_angles_channels
         deviation_positive = np.where(deviation_positive > 90, deviation_positive - 180, deviation_positive)
         deviation_positive = np.where(deviation_positive < -90, deviation_positive + 180, deviation_positive)
         
-        deviation_negative = angles_negative - target_polang
+        deviation_negative = angles_negative - target_angles_channels
         deviation_negative = np.where(deviation_negative > 90, deviation_negative - 180, deviation_negative)
         deviation_negative = np.where(deviation_negative < -90, deviation_negative + 180, deviation_negative)
         
@@ -1098,30 +1139,28 @@ os.makedirs(xfdir, exist_ok=True)
 # corrections, but NOT the cross-hand phase (XF), since that's what we're solving for.
 # This gives us calibrated I,Q,U,V visibilities with only the XF correction missing.
 
-# Define calibration tables (primary calibrator solutions)
+# Define calibration tables (matching 1GC_05_casa_refcal.py)
 ktab0 = GAINTABLES+'/cal_1GC_'+myms+'.K0'
 bptab0 = GAINTABLES+'/cal_1GC_'+myms+'.B0'
-gptab0 = GAINTABLES+'/cal_1GC_'+myms+'.Gp0'
-gatab0 = GAINTABLES+'/cal_1GC_'+myms+'.Ga0'
-ftab0 = GAINTABLES+'/cal_1GC_'+myms+'.F0'
+gtab0 = GAINTABLES+'/cal_1GC_'+myms+'.G0'
 dftab0  = GAINTABLES+'/cal_1GC_'+myms+'.Df0'
 
 ktab = GAINTABLES+'/cal_1GC_'+myms+'.K'
 bptab = GAINTABLES+'/cal_1GC_'+myms+'.B'
-gptab = GAINTABLES+'/cal_1GC_'+myms+'.Gp'
-gatab = GAINTABLES+'/cal_1GC_'+myms+'.Ga'
+gtab = GAINTABLES+'/cal_1GC_'+myms+'.G'
 ftab = GAINTABLES+'/cal_1GC_'+myms+'.F'
 dftab  = GAINTABLES+'/cal_1GC_'+myms+'.Df'
 
 kcross  = GAINTABLES+'/cal_1GC_'+myms+'.KCROSS'
 xftab  = GAINTABLES+'/cal_1GC_'+myms+'.Xf'
 
+# Apply all calibration except cross-hand phase (XF), which is what we're solving for
 applycal(vis = myms,
         field = pacal_name,
-        parang = False,
-        gainfield = [pacal_name,pacal_name, bpcal_name, pacal_name, bpcal_name],
-        gaintable = [ktab,gptab,bptab,ftab,dftab],
-        interp = ['linear','linear','linear','linear','linear'],
+        parang = True,
+        gaintable = [ktab, bptab, ftab, dftab],
+        gainfield = [pacal_name, bpcal_name, pacal_name, bpcal_name],
+        interp = ['nearest','linear','linear','linear'],
         flagbackup = False)
 
 # Split out polarization calibrator to temporary MS for analysis
@@ -1196,6 +1235,51 @@ print(f"Processing {nchan} frequency channels")
 
 msmd.close()
 
+# ============================
+# Check for 3C286/J1331 and apply frequency-dependent EVPA model
+# ============================
+use_freq_dependent_evpa = False
+target_polang_array = None
+
+# Check if calibrator is 3C286 or J1331 (case insensitive)
+if '3c286' in pacal_name.lower() or 'j1331' in pacal_name.lower():
+    print("\n" + "="*70)
+    print("DETECTED 3C286 (J1331+3030) - APPLYING FREQUENCY-DEPENDENT EVPA MODEL")
+    print("="*70)
+    print("Using Hugo & Perley (2024) model:")
+    print("  EVPA(ν) = 32.64 - 85.37λ²                              for ν ∈ [1.7, 12] GHz")
+    print("  EVPA(ν) = 29.53 + λ²(4005.88(log₁₀(ν))³ - 39.38)      for ν < 1.7 GHz")
+    print("")
+    
+    use_freq_dependent_evpa = True
+    target_polang_array = compute_3c286_evpa(freq_ghz)
+    
+    print(f"Computed frequency-dependent EVPA:")
+    print(f"  Frequency range: {freq_ghz.min():.3f} - {freq_ghz.max():.3f} GHz")
+    print(f"  EVPA range: {target_polang_array.min():.2f}° - {target_polang_array.max():.2f}°")
+    print(f"  EVPA at band center ({np.median(freq_ghz):.2f} GHz): {np.median(target_polang_array):.2f}°")
+    
+    # Plot the EVPA model
+    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+    ax.plot(freq_ghz, target_polang_array, 'b-', linewidth=2, label='3C286 EVPA model')
+    ax.axhline(XF_TARGET_POLANG, color='red', linestyle='--', linewidth=1.5, 
+               alpha=0.7, label=f'Config file value: {XF_TARGET_POLANG}°')
+    ax.set_xlabel('Frequency [GHz]', fontsize=12)
+    ax.set_ylabel('EVPA [deg]', fontsize=12)
+    ax.set_title('3C286 Frequency-Dependent EVPA Model (Perley & Butler 2013)', fontsize=13)
+    ax.legend(fontsize=10)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    
+    model_plot_path = os.path.join(xfdir, '3c286_evpa_model.png')
+    plt.savefig(model_plot_path, dpi=150)
+    plt.close(fig)
+    print(f"\nSaved EVPA model plot: {model_plot_path}")
+    print("="*70 + "\n")
+else:
+    print(f"\nUsing constant EVPA from config: {XF_TARGET_POLANG}° (not 3C286/J1331)\n")
+    target_polang_array = np.full_like(freq_ghz, XF_TARGET_POLANG)
+
 # Initialize arrays to store scan-averaged visibilities and weights
 # Shape: (N_stokes=4, N_scans, N_channels)
 n_scans = len(scan_numbers)
@@ -1227,7 +1311,12 @@ for scan_idx, scan in enumerate(scan_numbers):
     ms.close()
     
     # Verify required data is present
-    missing = [k for k in ('data', 'flag') if k not in d]
+    # Note: avoid list comprehension here because exec() scoping in Python 3
+    # prevents comprehension sub-scopes from seeing exec'd local variables.
+    missing = []
+    for _k in ('data', 'flag'):
+        if _k not in d:
+            missing.append(_k)
     if missing:
         print(f"WARNING: Scan {scan} missing {missing}, skipping")
         vis_avg[:, scan_idx, :] = np.nan
@@ -1556,10 +1645,12 @@ for scan_idx, scan in enumerate(scan_numbers):
         angles_positive = calculate_derotated_angle(Q_final_positive, U_final_positive, rm, lambda_sq)
         angles_negative = calculate_derotated_angle(Q_final_negative, U_final_negative, rm, lambda_sq)
         
-        dev_positive = np.abs(angles_positive - XF_TARGET_POLANG)
+        target_angles_channels = target_polang_array[unflagged_idx]
+        
+        dev_positive = np.abs(angles_positive - target_angles_channels)
         dev_positive = np.where(dev_positive > 90, 180 - dev_positive, dev_positive)
         
-        dev_negative = np.abs(angles_negative - XF_TARGET_POLANG)
+        dev_negative = np.abs(angles_negative - target_angles_channels)
         dev_negative = np.where(dev_negative > 90, 180 - dev_negative, dev_negative)
         
         better_mask_positive = dev_positive < min_dev_positive
@@ -1666,7 +1757,7 @@ filtered_scan_labels = all_scan_labels[good_solutions]
 plot_delta_rm_diagnostics(all_delta_rms, all_min_deviations, all_best_angles, 
                           filtered_delta_rms, filtered_deviations, filtered_angles,
                           global_delta_rm, all_scan_labels, filtered_scan_labels,
-                          XF_TARGET_POLANG, xfdir)
+                          np.median(target_polang_array), xfdir)
 print(f"Saved: {xfdir}/delta_rm_diagnostics.png")
 
 # ============================
@@ -1716,11 +1807,13 @@ for scan_idx, scan in enumerate(scan_numbers):
     angles_positive = calculate_derotated_angle(Q_final_positive, U_final_positive, global_rm, lambda_sq)
     angles_negative = calculate_derotated_angle(Q_final_negative, U_final_negative, global_rm, lambda_sq)
     
+    target_angles_channels = target_polang_array[unflagged_idx]
+    
     # Select the option closer to target
-    dev_positive = np.abs(angles_positive - XF_TARGET_POLANG)
+    dev_positive = np.abs(angles_positive - target_angles_channels)
     dev_positive = np.where(dev_positive > 90, 180 - dev_positive, dev_positive)
     
-    dev_negative = np.abs(angles_negative - XF_TARGET_POLANG)
+    dev_negative = np.abs(angles_negative - target_angles_channels)
     dev_negative = np.where(dev_negative > 90, 180 - dev_negative, dev_negative)
     
     select_positive = dev_positive <= dev_negative
@@ -1743,9 +1836,10 @@ for i, scan in enumerate(unique_scans):
     ax.hist(polang_at_median_rm[mask], bins=50, alpha=0.6, label=f'Scan {scan}', 
             color=colors[i], edgecolor='black', linewidth=0.5)
 
-# Add vertical line for target angle
-ax.axvline(XF_TARGET_POLANG, color='red', linestyle='--', linewidth=2, 
-          label=f'Target = {XF_TARGET_POLANG}°', zorder=10)
+# Add vertical line for target angle (use median if frequency-dependent)
+target_angle_for_plot = np.median(target_polang_array) if use_freq_dependent_evpa else XF_TARGET_POLANG
+ax.axvline(target_angle_for_plot, color='red', linestyle='--', linewidth=2, 
+          label=f'Target = {target_angle_for_plot:.2f}°', zorder=10)
 
 # Calculate and display statistics
 mean_angle = np.mean(polang_at_median_rm)
@@ -1757,8 +1851,9 @@ ax.axvline(mean_angle, color='green', linestyle=':', linewidth=2,
 
 ax.set_xlabel('Polarization Angle [deg]')
 ax.set_ylabel('Count')
+title_suffix = ' (freq-dependent for 3C286)' if use_freq_dependent_evpa else ''
 ax.set_title(f'Polarization Angle Distribution at Median RM = {global_rm:.2f} rad/m²\n' + 
-            f'(δRM = {global_delta_rm:+.2f} rad/m²)')
+            f'(δRM = {global_delta_rm:+.2f} rad/m²){title_suffix}')
 ax.legend(fontsize=8)
 ax.grid(True, alpha=0.3)
 
@@ -1775,7 +1870,7 @@ plt.close(fig)
 print(f"Saved: {xfdir}/polang_histogram_at_median_rm.png")
 print(f"  Polarization angle statistics at median RM:")
 print(f"    Mean: {mean_angle:.2f}°, Median: {median_angle:.2f}°, Std: {std_angle:.2f}°")
-print(f"    Deviation from target: {mean_angle - XF_TARGET_POLANG:+.2f}°")
+print(f"    Deviation from target: {mean_angle - target_angle_for_plot:+.2f}°")
 
 # ============================
 # STAGE 3: Use global RM to select ±π solution per scan/channel
@@ -1821,10 +1916,12 @@ for scan_idx, scan in enumerate(scan_numbers):
     angles_positive_fixed = calculate_derotated_angle(Q_final_positive, U_final_positive, global_rm, lambda_sq)
     angles_negative_fixed = calculate_derotated_angle(Q_final_negative, U_final_negative, global_rm, lambda_sq)
     
-    dev_positive_fixed = np.abs(angles_positive_fixed - XF_TARGET_POLANG)
+    target_angles_channels = target_polang_array[unflagged_idx]
+    
+    dev_positive_fixed = np.abs(angles_positive_fixed - target_angles_channels)
     dev_positive_fixed = np.where(dev_positive_fixed > 90, 180 - dev_positive_fixed, dev_positive_fixed)
     
-    dev_negative_fixed = np.abs(angles_negative_fixed - XF_TARGET_POLANG)
+    dev_negative_fixed = np.abs(angles_negative_fixed - target_angles_channels)
     dev_negative_fixed = np.where(dev_negative_fixed > 90, 180 - dev_negative_fixed, dev_negative_fixed)
     
     # Select best option per channel based on deviation from target
@@ -1849,7 +1946,7 @@ print("\n=== Per-Channel RM Trial Analysis Complete ===")
 # ============================
 print("\nGenerating polarization angle deviation diagnostic plots (per scan)...")
 plot_polang_deviation(freq_ghz, Q_scans, U_scans, V_scans, rho_rad_scans, chi_deg_scans,
-                     selected_solution_per_channel_scans, scan_numbers, global_rm, XF_TARGET_POLANG, xfdir)
+                     selected_solution_per_channel_scans, scan_numbers, global_rm, target_polang_array, xfdir)
 print(f"Saved: {xfdir}/polang_deviation_scan*.png")
 
 # ============================
@@ -1956,6 +2053,81 @@ for scan_idx, scan in enumerate(scan_numbers):
         print(f"    Insufficient channels ({n_with_solution}) for local scatter analysis")
 
 print("\n=== Two-Stage Outlier Detection Complete ===")
+
+# ============================
+# STAGE 3: Polynomial Sigma Clipping (Optional)
+# ============================
+# Fit a polynomial to the phase vs frequency and flag massive outliers
+# This catches channels with catastrophic errors that survived earlier flagging
+
+if int(XF_POLY_CLIP) > 0:
+    poly_order = int(XF_POLY_CLIP)
+    print(f"\n=== Stage 3: Polynomial Sigma Clipping (order={poly_order}) ===")
+    
+    for scan_idx, scan in enumerate(scan_numbers):
+        print(f"\n--- Scan {scan} Polynomial Clipping ---")
+        
+        rho_per_ch = selected_rho_per_channel_scans[scan_idx]
+        sol_per_ch = selected_solution_per_channel_scans[scan_idx]
+        
+        has_solution = ~np.isnan(rho_per_ch) & (sol_per_ch != 'outlier') & (sol_per_ch != '')
+        n_with_solution = np.sum(has_solution)
+        
+        if n_with_solution < poly_order + 5:
+            print(f"  Insufficient channels ({n_with_solution}) for order-{poly_order} polynomial fit")
+            continue
+        
+        # Get good channels for fitting
+        freq_good = freq_ghz[has_solution]
+        rho_good_rad = rho_per_ch[has_solution]
+        channels_good = np.where(has_solution)[0]
+        
+        # Convert to complex for circular mean
+        complex_good = np.exp(1j * rho_good_rad)
+        
+        # Fit polynomial to real and imaginary parts separately
+        try:
+            poly_real = np.polyfit(freq_good, np.real(complex_good), poly_order)
+            poly_imag = np.polyfit(freq_good, np.imag(complex_good), poly_order)
+            
+            # Evaluate polynomial
+            fit_real = np.polyval(poly_real, freq_good)
+            fit_imag = np.polyval(poly_imag, freq_good)
+            complex_fit = fit_real + 1j * fit_imag
+            complex_fit = complex_fit / np.abs(complex_fit)  # Normalize to unit circle
+            
+            # Calculate residuals as angular distance
+            residuals = np.abs(complex_good - complex_fit)
+            
+            # Compute robust sigma using MAD
+            median_residual = np.median(residuals)
+            mad_residual = np.median(np.abs(residuals - median_residual))
+            sigma_residual = 1.4826 * mad_residual
+            
+            # Flag outliers at 10-sigma level (massive outliers only)
+            threshold = median_residual + 10.0 * sigma_residual
+            
+            outlier_mask = residuals > threshold
+            n_outliers = np.sum(outlier_mask)
+            
+            if n_outliers > 0:
+                print(f"  Fitted order-{poly_order} polynomial")
+                print(f"  Median residual: {median_residual:.4f}, MAD: {mad_residual:.4f}")
+                print(f"  10-sigma threshold: {threshold:.4f}")
+                print(f"  Flagged {n_outliers} massive outliers ({n_outliers/n_with_solution*100:.1f}%)")
+                
+                # Flag the outlier channels
+                outlier_channels = channels_good[outlier_mask]
+                for ch in outlier_channels:
+                    selected_solution_per_channel_scans[scan_idx, ch] = 'outlier'
+            else:
+                print(f"  Fitted order-{poly_order} polynomial: no outliers detected at 10-sigma level")
+                
+        except np.linalg.LinAlgError:
+            print(f"  WARNING: Polynomial fit failed (singular matrix), skipping")
+            continue
+    
+    print("\n=== Polynomial Sigma Clipping Complete ===")
 
 # ============================
 # Frequency Averaging with Linear Extrapolation

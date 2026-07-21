@@ -48,7 +48,8 @@ def main():
         gen.print_spacer()
         sys.exit()
 
-    myms = myms[0]
+    # Default to MS with shortest string length
+    myms = sorted(myms, key=len)[0]
     code = gen.get_code(myms)
 
     steps = []
@@ -66,10 +67,13 @@ def main():
     syscall += CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
     syscall += ' python3 '+cfg.TOOLS+'/find_sun.py '+myms+'\n'
     syscall += CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
+    syscall += ' python3 '+cfg.TOOLS+'/get_elevation_range.py '+myms+'\n'
+    syscall += CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
     syscall += ' python3 '+cfg.OXKAT+'/1GC_00_setup.py '+myms+'\n'
     syscall += CONTAINER_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
     syscall += gen.generate_syscall_casa(casascript=cfg.OXKAT+'/PRE_casa_average_to_1k_add_wtspec.py')
     step['syscall'] = syscall
+    step['glam_config'] = cfg.GLAM_CASA
     steps.append(step)
 
 
@@ -88,45 +92,79 @@ def main():
     f.write('#!/usr/bin/env bash\n')
     f.write('export SINGULARITY_BINDPATH='+cfg.BINDPATH+'\n')
 
-    id_list = []
+    if INFRASTRUCTURE == 'glam':
+        # Use Glamdring-specific submission script
+        f.write('set -euo pipefail\n\n')
+        
+        # First generate the individual job scripts
+        id_list = []
+        for step in steps:
+            step_id = step['id']
+            id_list.append(step_id)
+            if step['dependency'] is not None:
+                dependency = steps[step['dependency']]['id']
+            else:
+                dependency = None
+            syscall = step['syscall']
+            if 'glam_config' in step.keys():
+                glam_config = step['glam_config']
+            else:
+                glam_config = cfg.GLAM_STANDARD
+            
+            # Extract grouping parameter if present
+            grouping = step.get('grouping', None)
+            
+            # Generate the job scripts using job_handler
+            gen.job_handler(syscall = syscall,
+                            jobname = step_id,
+                            infrastructure = INFRASTRUCTURE,
+                            glam_config = glam_config,
+                            grouping = grouping)
+        
+        # Now write the submission commands
+        gen.write_glam_submission_script(f, steps)
+        
+    else:
+        # Original behavior for other infrastructures
+        id_list = []
 
-    for step in steps:
+        for step in steps:
 
-        step_id = step['id']
-        id_list.append(step_id)
-        if step['dependency'] is not None:
-            dependency = steps[step['dependency']]['id']
-        else:
-            dependency = None
-        syscall = step['syscall']
-        if 'slurm_config' in step.keys():
-            slurm_config = step['slurm_config']
-        else:
-            slurm_config = cfg.SLURM_DEFAULTS
-        if 'pbs_config' in step.keys():
-            pbs_config = step['pbs_config']
-        else:
-            pbs_config = cfg.PBS_DEFAULTS
-        comment = step['comment']
+            step_id = step['id']
+            id_list.append(step_id)
+            if step['dependency'] is not None:
+                dependency = steps[step['dependency']]['id']
+            else:
+                dependency = None
+            syscall = step['syscall']
+            if 'slurm_config' in step.keys():
+                slurm_config = step['slurm_config']
+            else:
+                slurm_config = cfg.SLURM_DEFAULTS
+            if 'pbs_config' in step.keys():
+                pbs_config = step['pbs_config']
+            else:
+                pbs_config = cfg.PBS_DEFAULTS
+            comment = step['comment']
 
-        run_command = gen.job_handler(syscall = syscall,
-                        jobname = step_id,
-                        infrastructure = INFRASTRUCTURE,
-                        dependency = dependency,
-                        slurm_config = slurm_config,
-                        pbs_config = pbs_config)
-
-
-        f.write('\n# '+comment+'\n')
-        f.write(run_command)
+            run_command = gen.job_handler(syscall = syscall,
+                            jobname = step_id,
+                            infrastructure = INFRASTRUCTURE,
+                            dependency = dependency,
+                            slurm_config = slurm_config,
+                            pbs_config = pbs_config)
 
 
-    if INFRASTRUCTURE == 'idia' or INFRASTRUCTURE == 'hippo':
-        kill = '\necho "scancel "$'+'" "$'.join(id_list)+' > '+kill_file+'\n'
-        f.write(kill)
-    elif INFRASTRUCTURE == 'chpc':
-        kill = '\necho "qdel "$'+'" "$'.join(id_list)+' > '+kill_file+'\n'
-        f.write(kill)
+            f.write('\n# '+comment+'\n')
+            f.write(run_command)
+
+
+        if INFRASTRUCTURE == 'idia' or INFRASTRUCTURE == 'hippo':
+            kill = '\necho "scancel "$'+'" "$'.join(id_list)+' > '+kill_file+'\n'
+            f.write(kill)
+        elif INFRASTRUCTURE == 'chpc':
+            kill = '\necho "qdel "$'+'" "$'.join(id_list)+' > '+kill_file+'\n'
+            f.write(kill)
     
     f.close()
 

@@ -5,6 +5,7 @@ Iterates through files matching specified patterns and creates central cutouts.
 """
 
 import os
+import sys
 import glob
 from astropy.io import fits
 from astropy import wcs
@@ -100,19 +101,28 @@ def create_zoom_cutout(input_file, output_file, cutout_size=1024):
 def main():
     """Main function to process FITS images."""
     
+    # ================== COMMAND LINE ARGUMENTS ==================
+    
+    if len(sys.argv) < 2:
+        print("Usage: python3 make_cutouts.py <source_name> [cutout_size]")
+        print("  source_name: Name of the source to match in filenames")
+        print("  cutout_size: Optional cutout size in pixels (default: 256)")
+        sys.exit(1)
+    
+    source_name = sys.argv[1]
+    cutout_size = int(sys.argv[2]) if len(sys.argv) > 2 else 1024
+    
     # ================== MODIFIABLE VARIABLES ==================
     
     # Directory containing FITS files (relative to current working directory)
-    DIR = 'IMAGES'
+    # Use source-specific subdirectory
+    DIR = os.path.join('IMAGES', source_name)
     
-    # Identifier(s) to match in filenames - can be string or list of strings
-    identifiers = ['datablind', 'datamask', 'diagnostic', 'pcalmask', 'uniform']
+    # Identifier(s) to match in filenames - only final images
+    identifiers = ['pcalmask', 'uniform', 'notaper', 'datamask']
     
     # Suffix(es) to match - can be string or list of strings  
     suffixes = ['image.fits', 'residual.fits', 'model.fits', 'image.homogenized.fits']
-    
-    # Cutout size in pixels (square cutout of this size)
-    cutout_size = 256  # e.g., 256, 512, 1024
     
     # ===========================================================
     
@@ -130,8 +140,8 @@ def main():
     # Process each combination of identifier and suffix
     for identifier in identifiers[:]:
         for suffix in suffixes[:]:
-            # Create search pattern: *identifier*suffix
-            pattern = os.path.join(full_dir, f"*{identifier}*{suffix}")
+            # Create search pattern: *source_name*identifier*suffix
+            pattern = os.path.join(full_dir, f"*{source_name}*{identifier}*{suffix}")
             
             # Find matching files, excluding those that already have _zoom in the name
             matching_files = [f for f in glob.glob(pattern) if '_zoom' not in os.path.basename(f)]
@@ -140,7 +150,7 @@ def main():
                 print(f"No files found matching pattern: {pattern}")
                 continue
                 
-            print(f"\nProcessing {len(matching_files)} files for identifier '{identifier}' with suffix '{suffix}':")
+            print(f"\nProcessing {len(matching_files)} files for source '{source_name}', identifier '{identifier}' with suffix '{suffix}':")
             
             for input_file in matching_files[:]:
                 try:

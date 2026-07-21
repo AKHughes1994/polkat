@@ -55,22 +55,25 @@ USE_SINGULARITY = True
 # cannot see by default then set BIND to that path.
 # If you wish to bind multiple paths then use a comma-separated list.
 BIND = ''
-BINDPATH = '$PWD,'+CWD+','+BIND
+BINDPATH = '$PWD,'+CWD+',/mnt'
 
 IDIA_CONTAINER_PATH = ['/idia/software/containers/',HOME+'/containers/', CWD]
 CHPC_CONTAINER_PATH = [HOME+'/containers/']
 HIPPO_CONTAINER_PATH = None
-NODE_CONTAINER_PATH = [HOME+'/containers/', '/mnt/ephem/containers']
+NODE_CONTAINER_PATH = [HOME+'/containers/', '/mnt/ephem/containers', '/mnt/users/hughesa']
+GLAM_CONTAINER_PATH = ['/mnt/users/hughesa', '/mnt/extraspace/thunderkat_pol', CWD]
 
 
-PYTHON3_PATTERN = 'polkat-0.2.1'
-CASA_PATTERN = 'polkat-0.2.1'
-QUARTICAL_PATTERN = 'polkat-0.2.1'
-WSCLEAN_PATTERN = 'polkat-0.2.1'
-SHADEMS_PATTERN = 'polkat-0.2.1'
+PYTHON3_PATTERN = 'polkat-0.2.4'
+CASA_PATTERN = PYTHON3_PATTERN
+QUARTICAL_PATTERN = PYTHON3_PATTERN
+WSCLEAN_PATTERN = PYTHON3_PATTERN
+SHADEMS_PATTERN = PYTHON3_PATTERN
+TRICOLOUR_PATTERN = PYTHON3_PATTERN
+MOVIE_PATTERN = PYTHON3_PATTERN
+SPINIFEX_PATTERN = PYTHON3_PATTERN
 ALBUS_PATTERN = 'polkat-albus'
-TRICOLOUR_PATTERN = 'polkat-0.2.1'
-MOVIE_PATTERN = 'polkat-0.2.1'
+
 
 
 # ------------------------------------------------------------------------
@@ -150,6 +153,52 @@ SLURM_HIGHMEM = {
 
 # ------------------------------------------------------------------------
 #
+# GLAM resource settings (simplified SLURM-like for Glamdring cluster)
+#
+
+GLAM_SMALL = {
+	'CPUS': '2',
+	'MEM': '16GB',
+}
+
+GLAM_STANDARD = {
+	'CPUS': '2',
+	'MEM': '64GB',
+}
+
+GLAM_MEDIUM = {
+	'CPUS': '8',
+	'MEM': '120GB',
+}
+
+GLAM_WSC_SOURCE = {
+    'CPUS': '12',
+    'MEM': '180GB',
+}
+
+GLAM_WSC_CAL = {
+    'CPUS': '8',
+    'MEM': '64GB',
+}
+
+GLAM_CASA = {
+    'CPUS': '8',
+    'MEM': '64GB',
+}
+
+GLAM_LARGE = {
+    'CPUS': '24',
+    'MEM': '216GB',
+}
+
+GLAM_COREHEAVY = {
+    'CPUS': '24',
+    'MEM': '72GB',
+}
+
+
+# ------------------------------------------------------------------------
+#
 # PBS resource settings
 #
 
@@ -200,7 +249,7 @@ PBS_EXTRALONG = {
 CAL_1GC_TARGET_INTENT = 'TARGET'     # (partial) string to match for target intents
 CAL_1GC_PRIMARY_INTENT = 'BANDPASS'  # (partial) string to match for primary intents
 CAL_1GC_SECONDARY_INTENT = 'PHASE'   # (partial) string to match for secondary intents
-CAL_1GC_DIAGNOSTICS = True          #  Choose if you want to make diagnostic plots of the Leakage + Phase cal
+CAL_1GC_DIAGNOSTICS = False          #  Choose if you want to make diagnostic plots of the Leakage + Phase cal
 CAL_1GC_AGGRESSIVE_FLAGS = False     #  Choose if you want to aggresively flag the visibilities -- required for high-precision polarimetry (i.e., <1%)
 CAL_1GC_RENAME_FEEDS = True # Turn true [Default] if you need switch feed naming; the SARAO Archive by default mislabels X as Y; and Y as X.  
 
@@ -231,9 +280,10 @@ XF_TARGET_RM = 0.0 # Guess for the intrinsic RM; for 'manual' XF determination a
 XF_MODE = 'auto' # options are: auto (RECOMMENDED: determine based on band and/or if there is large phase discontinuties), casa or  manual
 XF_AUTO_ANG_JUMP = 60.0 # angle in degrees where, if the CASA XF solver has adjacent solution intervals that have a discontinuity
                         # larger than this value, it will solve XF manually.
+XF_SKIP_KCROSS = True # Whether to skip the initial KCROSS solve in CASA XF solving
 
 # XF table targets
-XF_CHANINT = 16  # Channels per solution interval default is 1024 frequency channels so 1024 / 16 = 64 cross-hand phase intervals
+XF_CHANINT = 8  # Channels per solution interval default is 1024 frequency channels so 1024 / 16 = 64 cross-hand phase intervals
 XF_MAX_AVG_CHANNELS = None # If None, auto calculate will be the same as the number of cross-hand solution intervals
 
 # Calibration and outlier thresholds
@@ -246,7 +296,7 @@ XF_RM_ANG_MAX = 20.0  # Maximum separation an angle [deg] from a trial RM can ha
 XF_AVG_SCAN = True # If multi-scan, average XF solutions over all scans to increase SNR
 
 # Smoothing control for XF table creation and interpolation
-XF_USE_SMOOTHING = True  # Apply Savitzky-Golay smoothing before interpolation
+XF_USE_SMOOTHING = False  # Apply Savitzky-Golay smoothing before interpolation
 XF_SAVGOL_WINDOW = None  # Window length (odd integer); None=auto-calculate (recommended)
 XF_SAVGOL_POLYORDER = 3  # Polynomial order for Savitzky-Golay filter
 XF_DELTARM_TRIALS = [-7,7] # min/max atmospheric RM for trialling (21 trials between) with be XF_TARGET_RM + DeltaRM
@@ -255,7 +305,7 @@ XF_DELTARM_TRIALS = [-7,7] # min/max atmospheric RM for trialling (21 trials bet
 
 # Reference antennas
 CAL_1GC_REF_ANT = 'auto'             # Comma-separated list to manually specify refant(s)
-CAL_1GC_REF_POOL = ['m000','m001','m002','m003','m004','m006'] 
+CAL_1GC_REF_POOL = ['m060','m061','m059','m058', 'm048', 'm062', 'm063'] 
                                      # Pool to re-order for reference antenna list for 'auto'
 
 # Field selection, IDs only at present. (Use tools/ms_info.py.)
@@ -278,31 +328,40 @@ CAL_1GC_DELAYCUT = 2.5               # [now defunct] Jy at central freq. Do not 
 CAL_1GC_FILLGAPS = 0                 # Maximum channel gap over which to interpolate bandpass solutions
 
 # Band specific options
+CAL_1GC_BL_MODE = 'freq' # options are 'freq' to flag specific frequencies the 'uvrange' baselin
+                         # 'aggressive' to the uvrange baseline on all frequencis,
+                         # 'none' to not do any baseline specific flagging (initially)
+                         # I've found that baseline flagging can cause artificiall spectral jumps, 
+                         # so 'none' or 'aggressive' are the way to go (I think) whereas freq might be best for MFS (continuum) imaging.
+                         # if you give the wrong option it will default to 'freq' and print a warning
 
 if BAND == 'UHF':       
 
     CAL_1GC_FREQRANGE = '*:850~900MHz'        # Clean part of the band to use for generating UHF 1GC G-solutions
-    CAL_1GC_UVRANGE = '>150m'               # Selection for baselines to include during 1GC B/G solving (K excluded)
+    CAL_1GC_UVRANGE = '>300m'               # Selection for baselines to include during 1GC B/G solving (K excluded)
     CAL_1GC_0408_MODEL = ([27.907,0.0,0.0,0.0],[-1.205],'850MHz') # Defunct, Model now hardcoded into 1GC_0
 
     CAL_1GC_BAD_FREQS = ['*:540~570MHz',      # Lower band edge 
                         '*:1010~1150MHz']     # Upper band edge
 
-    CAL_1GC_BL_FLAG_UVRANGE = '<600'        # Baseline range for which BL_FREQS are flagged
+    CAL_1GC_BL_FLAG_UVRANGE = '<1000m'      # Baseline range for which BL_FREQS are flagged
     CAL_1GC_BL_FREQS = []            
 
 elif BAND == 'L':
 
-    CAL_1GC_FREQRANGE = '*:1300~1400MHz'
-    CAL_1GC_UVRANGE = '>150m'
+    CAL_1GC_FREQRANGE = '*:1326~1357MHz'
+    CAL_1GC_UVRANGE = '>300m'
     CAL_1GC_0408_MODEL = ([17.066,0.0,0.0,0.0],[-1.179],'1284MHz') # Defunct, Model now hardcoded into 1GC_05
 
     CAL_1GC_BAD_FREQS = ['*:850~900MHz',      # Lower band edge
                         '*:1650~1800MHz',     # Upper bandpass edge
                         '*:1419.8~1421.3MHz'] # Galactic HI 
 
-    CAL_1GC_BL_FLAG_UVRANGE = '<600'
-    CAL_1GC_BL_FREQS = ['*:900MHz~915MHz',    # GSM and aviation
+    CAL_1GC_BL_FLAG_UVRANGE = '<1000m'
+    CAL_1GC_BL_FREQS = ['*:935.40~960.05 MHz', #GSM (from katdal)
+                        '*:1145.85~1300.90 MHz', #GPS/GLONASS (from katdal)
+                        '*:1519.35~1608.30 MHz', #GPS/GLONASS (from katdal)
+                        '*:900MHz~915MHz',    # GSM and aviation
                         '*:925MHz~960MHz',                
                         '*:1080MHz~1095MHz',
                         '*:1565MHz~1585MHz',  # GPS
@@ -322,51 +381,51 @@ elif BAND == 'L':
 elif BAND == 'S0':
 
     CAL_1GC_FREQRANGE = '*:2300~2400MHz'
-    CAL_1GC_UVRANGE = '>150m'
+    CAL_1GC_UVRANGE = '>300m'
     CAL_1GC_0408_MODEL = ([9.193,0.0,0.0,0.0],[-1.144],'2187MHz') # Defunct, Model now hardcoded into 1GC_0
     CAL_1GC_BAD_FREQS = ['*:1700~1800MHz',    # Lower band edge 
                         '*:2500~2650MHz']     # Upper band edge
-    CAL_1GC_BL_FLAG_UVRANGE = '<600'
+    CAL_1GC_BL_FLAG_UVRANGE = '<1000m'
     CAL_1GC_BL_FREQS = []
 
 elif BAND == 'S1':
 
     CAL_1GC_FREQRANGE = ''
-    CAL_1GC_UVRANGE = '>150m'
+    CAL_1GC_UVRANGE = '>300m'
     CAL_1GC_0408_MODEL = ([8.244,0.0,0.0,0.0],[-1.138],'2406MHz')    # Defunct, Model now hardcoded into 1GC_0
     CAL_1GC_BAD_FREQS = ['*:1967~2056MHz',    # Lower band edge 
                         '*:2756~2845MHz']     # Upper band edge
-    CAL_1GC_BL_FLAG_UVRANGE = '<600'
+    CAL_1GC_BL_FLAG_UVRANGE = '<1000m'
     CAL_1GC_BL_FREQS = []
 
 elif BAND == 'S2':
 
     CAL_1GC_FREQRANGE = ''
-    CAL_1GC_UVRANGE = '>150m'
+    CAL_1GC_UVRANGE = '>300m'
     CAL_1GC_0408_MODEL = ([7.468,0.0,0.0,0.0],[-1.133],'2625MHz')    # Defunct, Model now hardcoded into 1GC_0
     CAL_1GC_BAD_FREQS = ['*:2187~2275MHz',    # Lower band edge 
                         '*:2975~3063MHz']     # Upper band edge
-    CAL_1GC_BL_FLAG_UVRANGE = '<600'
+    CAL_1GC_BL_FLAG_UVRANGE = '<1000m'
     CAL_1GC_BL_FREQS = []
 
 elif BAND == 'S3':
 
     CAL_1GC_FREQRANGE = ''
-    CAL_1GC_UVRANGE = '>150m'
+    CAL_1GC_UVRANGE = '>300m'
     CAL_1GC_0408_MODEL = ([6.822,0.0,0.0,0.0],[-1.128],'2483MHz')   # Defunct, Model now hardcoded into 1GC_0
     CAL_1GC_BAD_FREQS = ['*:2405~2493MHz',    # Lower band edge 
                         '*:3194~3282MHz']     # Upper band edge
-    CAL_1GC_BL_FLAG_UVRANGE = '<600'
+    CAL_1GC_BL_FLAG_UVRANGE = '<1000m'
     CAL_1GC_BL_FREQS = []
 
 elif BAND == 'S4':
 
     CAL_1GC_FREQRANGE = '*:2900~3000MHz'
-    CAL_1GC_UVRANGE = '>150m'     
+    CAL_1GC_UVRANGE = '>300m'     
     CAL_1GC_0408_MODEL = ([6.423,0.0,0.0,0.0],[-1.124],'3000MHz')   # Defunct, Model now hardcoded into 1GC_0
     CAL_1GC_BAD_FREQS = ['*:2600~2690MHz',    # Lower band edge 
                         '*:3420~3600MHz']     # Upper band edge
-    CAL_1GC_BL_FLAG_UVRANGE = '<600'
+    CAL_1GC_BL_FLAG_UVRANGE = '<1000m'
     CAL_1GC_BL_FREQS = []
 
 
@@ -400,7 +459,7 @@ CAL_2GC_YAML = DATA+'/quartical/2GC_phase.yaml'  # Frequency-dependent, phase-on
 # CAL_2GC_YAML = DATA+'/quartical/2GC_amppol.yaml'
 
 # Flag to skip PB corrections
-SKIP_PB = False
+SKIP_PB = True
 
 # ------------------------------------------------------------------------
 #
@@ -429,7 +488,7 @@ WSC_INTERVAL1 = None
 WSC_INTERVALSOUT = False
 WSC_PARALLELREORDERING = 8
 # Image dimensions
-WSC_IMSIZE = 10240
+WSC_IMSIZE = 8500
 WSC_CAL_IMSIZE = 2560
 WSC_CELLSIZE = '1.1asec'
 # Gridding / degridding
@@ -462,10 +521,10 @@ WSC_NITER = 800000
 WSC_GAIN = 0.15
 WSC_MGAIN = 0.9
 WSC_BLIND_CHANNELSOUT = 8
-WSC_PCAL_CHANNELSOUT = 64
-WSC_DMASK_CHANNELSOUT = 16 # Incase you want a different channelisation for your datamask and pcalmask images
+WSC_PCAL_CHANNELSOUT  = 128
+WSC_DMASK_CHANNELSOUT = WSC_PCAL_CHANNELSOUT # Incase you want a different channelisation for your datamask and pcalmask images
 WSC_CAL_CHANNELSOUT = 16
-WSC_MAX_CHANNELS = 16
+WSC_MAX_CHANNELS = 32
 WSC_FITSPECTRALPOL = 4
 WSC_JOINCHANNELS = True
 WSC_NONEGATIVE = False
@@ -475,13 +534,19 @@ WSC_POL = 'IQUV'
 WSC_SPLITPOL = False # Image V/I and Q/U separately (necessary for High RM and MFS fitting)
 WSC_JOINPOLARIZATIONS = True
 WSC_SQUAREPOLARIZATIONS = False
+WSC_LOCALRMS_STRENGTH = 0.25
+# Masking for BLIND mask creation
+WSC_AUTOMASK_BLIND = 5.0
+WSC_AUTOTHRESHOLD_BLIND = 1.0
+WSC_THRESHOLD_BLIND = False
+WSC_LOCALRMS_BLIND = True
 # Masking
 WSC_MASK = False
 WSC_THRESHOLD = False
-WSC_SHALLOWMASK = 75.0
-WSC_AUTOMASK = 4.0
+WSC_SHALLOWMASK = 35.0
+WSC_AUTOMASK = 3.0
 WSC_AUTOTHRESHOLD = 1.0
-WSC_LOCALRMS = False
+WSC_LOCALRMS = False    
 # Determines if you want to Homogenize the resolution
 WSC_HOMOGENIZEBEAM = False # Homogenize in freq
 WSC_HOMOGENIZETIME = False # Homogenize in freq AND time
@@ -573,7 +638,7 @@ MAKEMASK_DILATION = 3
 BREIZORRO_THRESH = 6.0
 BREIZORRO_BOXSIZE = 50
 BREIZORRO_FILLHOLES = True
-BREIZORRO_DILATION = 3
+BREIZORRO_DILATION = 1
 
 # ------------------------------------------------------------------------
 #

@@ -106,8 +106,14 @@ def restore_fits(modelsub_image, model_data, psf):
 
 if __name__ == '__main__':  
     
+        # Check for --mfs-only flag
+        mfs_only = '--mfs-only' in sys.argv
+        if mfs_only:
+                sys.argv.remove('--mfs-only')
+    
         if len(sys.argv) != 4:
                 print('Incorrect number of inputs should just be (in order) model prefix, target image prefix, stokes parameters (I or IQUV)')
+                print('Optional flag: --mfs-only (only restore MFS images, skip other channels)')
                 sys.exit()
 
         # Inputs
@@ -136,6 +142,11 @@ if __name__ == '__main__':
 
         # Match the modelsub image with its static counterpart 
         for modelsub_image in modelsub_images[:]:
+
+            # Skip non-MFS images if --mfs-only flag is set
+            if mfs_only and '-MFS-' not in modelsub_image:
+                msg(f'Skipping non-MFS image: {modelsub_image.split(cfg.INTERVALS + "/")[-1]}')
+                continue
 
             # A bunch of string manipulation to get the relevant images
             suffix = '-'.join(modelsub_image.split(target_prefix + '-t')[-1].split('-')[1:]).replace('image.fits', 'model.fits') # this will extract frequency/stokes suffix for model matching

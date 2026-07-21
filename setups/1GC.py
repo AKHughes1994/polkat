@@ -78,6 +78,7 @@ def main():
         syscall = CONTAINER_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
         syscall += f"python3 {cfg.OXKAT}/1GC_01_correct_parang.py"
         step['syscall'] = syscall
+        step['glam_config'] = cfg.GLAM_CASA
         steps.append(step)
         n += 1
 
@@ -89,6 +90,7 @@ def main():
         syscall = CONTAINER_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
         syscall += gen.generate_syscall_casa(casascript=cfg.OXKAT+'/1GC_02_zero_feed.py ' + myms)
         step['syscall'] = syscall
+        step['glam_config'] = cfg.GLAM_CASA
         steps.append(step)
         n += 1    
 
@@ -100,6 +102,7 @@ def main():
     syscall = CONTAINER_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
     syscall += gen.generate_syscall_casa(casascript=cfg.OXKAT+'/1GC_03_casa_basic_flags.py')
     step['syscall'] = syscall
+    step['glam_config'] = cfg.GLAM_CASA
     steps.append(step)
     n += 1
 
@@ -111,6 +114,7 @@ def main():
     syscall = CONTAINER_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
     syscall += gen.generate_syscall_casa(casascript=cfg.OXKAT+'/1GC_04_casa_autoflag_cals_DATA.py')
     step['syscall'] = syscall
+    step['glam_config'] = cfg.GLAM_CASA
     steps.append(step)
     n += 1
 
@@ -120,132 +124,48 @@ def main():
     step['dependency'] = n - 1
     step['id'] = 'CL1GC'+code
     syscall = CONTAINER_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
-    syscall += gen.generate_syscall_casa(casascript=cfg.OXKAT+'/1GC_05_casa_refcal.py')
+    syscall += gen.generate_syscall_casa(casascript=cfg.OXKAT+'/1GC_05_casa_refcal_alt.py')
     step['syscall'] = syscall
+    step['glam_config'] = cfg.GLAM_COREHEAVY
     steps.append(step)
+    cl1gc_step = n
     n += 1
 
     step = {}
     step['step'] = n
     step['comment'] = 'Plot the final gain tables'
-    step['dependency'] = n - 1
+    step['dependency'] = cl1gc_step
     step['id'] = 'PLTAB'+code
     syscall = CONTAINER_RUNNER+SHADEMS_CONTAINER+' ' if USE_SINGULARITY else ''
     syscall += 'python3 '+cfg.OXKAT+'/1GC_06_plot_gaintables.py cal_1GC_*'
     step['syscall'] = syscall
+    step['glam_config'] = cfg.GLAM_CASA
     steps.append(step)
     n += 1
 
     step = {}
     step['step'] = n
     step['comment'] = 'Plot the corrected calibrator visibilities'
-    step['dependency'] = n - 1
+    step['dependency'] = cl1gc_step
     step['id'] = 'PLVIS'+code
     syscall = CONTAINER_RUNNER+SHADEMS_CONTAINER+' ' if USE_SINGULARITY else ''
     syscall += 'python3 '+cfg.OXKAT+'/1GC_07_plot_visibilities.py'
     step['syscall'] = syscall
+    step['glam_config'] = cfg.GLAM_MEDIUM
     steps.append(step)
+    plvis_step = n
     n += 1
 
     step = {}
     step['step'] = n
     step['comment'] = 'Split out the target MS files'
-    step['dependency'] = n - 1
+    step['dependency'] = plvis_step
     step['id'] = 'SPTRG'+code
     syscall = CONTAINER_RUNNER+SHADEMS_CONTAINER+' ' if USE_SINGULARITY else ''
     syscall += gen.generate_syscall_casa(casascript=cfg.OXKAT+'/1GC_08_casa_split_targets.py')
     step['syscall'] = syscall
+    step['glam_config'] = cfg.GLAM_CASA
     steps.append(step)
-    
-    if cfg.CAL_1GC_DIAGNOSTICS:
-
-        cal_names = [project_info['primary_name']]
-        if  cfg.POLANG_NAME != '':
-            cal_names += [project_info['polang_name']]
-
-        k = 0
-        for cal_name in cal_names:
-
-            k += 1
-            cal_index   = project_info['working_ids'][project_info['working_names'].index(cal_name)]
-            name_ms   = myms.replace('.ms', f'_{cal_name}.ms')
-            img_prefix = f"{cfg.IMAGES}/img_{name_ms}_diagnostic"
-            mask_prefix = f"{cfg.IMAGES}/img_{name_ms}_mask"
-
-            step = {}
-            step['step'] = n + k
-            step['comment'] = f'Image {cal_name} for diagnostic of calibration systematics'
-            step['dependency'] = n + (k - 1) 
-            step['id'] = 'DIAGN' + (cal_name[-3:])
-            step['slurm_config'] = cfg.SLURM_WSCLEAN
-            step['pbs_config'] = cfg.PBS_WSCLEAN
-            absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
-            syscall = ''
-            prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
-            imcall  = gen.generate_syscall_wsclean(mslist = [myms],
-                imgname = mask_prefix,
-                datacol = 'CORRECTED_DATA',
-                field = cal_index,
-                weight=cfg.WSC_WEIGHT_CAL,
-                imsize = cfg.WSC_CAL_IMSIZE,
-                chanout = cfg.WSC_BLIND_CHANNELSOUT,
-                pol='I',
-                mfweight = True,
-                multiscale = False,
-                joinpolarizations=False,
-                mask = False,
-                automask = 5.0,
-                intervalsout = False,
-                autothreshold = 1.0,
-                localrms= True,
-                threshold = False,
-                nomodel  = True,
-                sourcelist = False,
-                absmem = absmem)
-            for call in imcall: 
-                syscall += prefix + call + '\n\n'
-            syscall += prefix + gen.generate_syscall_breizorro(restoredimage = f"{mask_prefix}-MFS-image.fits", 
-                                                      outfile = f"{mask_prefix}-MFS-image.mask.fits", thresh = 6.0)[0] + '\n\n'
-            imcall = gen.generate_syscall_wsclean(mslist = [myms],
-                imgname = img_prefix,
-                datacol = 'CORRECTED_DATA',
-                field = cal_index,
-                weight=cfg.WSC_WEIGHT_CAL,
-                chanout = cfg.WSC_CAL_CHANNELSOUT,
-                imsize = cfg.WSC_CAL_IMSIZE,
-                joinpolarizations=True,
-                multiscale = False,
-                splitpol = False,                
-                mfweight = False,
-                mask = mask_prefix +'-MFS-image.mask.fits',
-                automask = 5.0,
-                intervalsout = False,
-                autothreshold = 1.0,
-                localrms=False,
-                threshold = False,
-                nomodel  = True,
-                sourcelist = False,
-                absmem = absmem)
-            for call in imcall: 
-                syscall += prefix + call + '\n\n'
-            step['syscall'] = syscall
-            steps.append(step)
-
-
-            if cfg.WSC_MAX_CHANNELS < cfg.WSC_CAL_CHANNELSOUT:
-                k += 1
-                step = {}
-                step['step'] = n + k
-                step['comment'] = f'Homogenize {cal_name} image resolution across frequency channels'
-                step['dependency'] = n + k - 1
-                step['id'] = 'HOCAL' + (cal_name[-3:])
-                step['slurm_config'] = cfg.SLURM_WSCLEAN
-                step['pbs_config'] = cfg.PBS_WSCLEAN
-                prefix = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
-                syscall =  prefix + f'python3 {cfg.TOOLS}/fix_image_naming.py {cfg.WSC_CAL_CHANNELSOUT} {img_prefix}\n\n'
-                syscall +=  prefix + f'python3 {cfg.TOOLS}/homogenize_beams.py {img_prefix}'
-                step['syscall'] = syscall
-                steps.append(step)
 
    
     # ------------------------------------------------------------------------------
@@ -262,45 +182,79 @@ def main():
     f.write('#!/usr/bin/env bash\n')
     f.write('export SINGULARITY_BINDPATH='+cfg.BINDPATH+'\n')
 
-    id_list = []
+    if INFRASTRUCTURE == 'glam':
+        # Use Glamdring-specific submission script
+        f.write('set -euo pipefail\n\n')
+        
+        # First generate the individual job scripts
+        id_list = []
+        for step in steps:
+            step_id = step['id']
+            id_list.append(step_id)
+            if step['dependency'] is not None:
+                dependency = steps[step['dependency']]['id']
+            else:
+                dependency = None
+            syscall = step['syscall']
+            if 'glam_config' in step.keys():
+                glam_config = step['glam_config']
+            else:
+                glam_config = cfg.GLAM_STANDARD
+            
+            # Extract grouping parameter if present
+            grouping = step.get('grouping', None)
+            
+            # Generate the job scripts using job_handler
+            gen.job_handler(syscall = syscall,
+                            jobname = step_id,
+                            infrastructure = INFRASTRUCTURE,
+                            glam_config = glam_config,
+                            grouping = grouping)
+        
+        # Now write the submission commands
+        gen.write_glam_submission_script(f, steps)
+        
+    else:
+        # Original behavior for other infrastructures
+        id_list = []
 
-    for step in steps:
+        for step in steps:
 
-        step_id = step['id']
-        id_list.append(step_id)
-        if step['dependency'] is not None:
-            dependency = steps[step['dependency']]['id']
-        else:
-            dependency = None
-        syscall = step['syscall']
-        if 'slurm_config' in step.keys():
-            slurm_config = step['slurm_config']
-        else:
-            slurm_config = cfg.SLURM_DEFAULTS
-        if 'pbs_config' in step.keys():
-            pbs_config = step['pbs_config']
-        else:
-            pbs_config = cfg.PBS_DEFAULTS
-        comment = step['comment']
+            step_id = step['id']
+            id_list.append(step_id)
+            if step['dependency'] is not None:
+                dependency = steps[step['dependency']]['id']
+            else:
+                dependency = None
+            syscall = step['syscall']
+            if 'slurm_config' in step.keys():
+                slurm_config = step['slurm_config']
+            else:
+                slurm_config = cfg.SLURM_DEFAULTS
+            if 'pbs_config' in step.keys():
+                pbs_config = step['pbs_config']
+            else:
+                pbs_config = cfg.PBS_DEFAULTS
+            comment = step['comment']
 
-        run_command = gen.job_handler(syscall = syscall,
-                        jobname = step_id,
-                        infrastructure = INFRASTRUCTURE,
-                        dependency = dependency,
-                        slurm_config = slurm_config,
-                        pbs_config = pbs_config)
-
-
-        f.write('\n# '+comment+'\n')
-        f.write(run_command)
+            run_command = gen.job_handler(syscall = syscall,
+                            jobname = step_id,
+                            infrastructure = INFRASTRUCTURE,
+                            dependency = dependency,
+                            slurm_config = slurm_config,
+                            pbs_config = pbs_config)
 
 
-    if INFRASTRUCTURE == 'idia' or INFRASTRUCTURE == 'hippo':
-        kill = '\necho "scancel "$'+'" "$'.join(id_list)+' > '+kill_file+'\n'
-        f.write(kill)
-    elif INFRASTRUCTURE == 'chpc':
-        kill = '\necho "qdel "$'+'" "$'.join(id_list)+' > '+kill_file+'\n'
-        f.write(kill)
+            f.write('\n# '+comment+'\n')
+            f.write(run_command)
+
+
+        if INFRASTRUCTURE == 'idia' or INFRASTRUCTURE == 'hippo':
+            kill = '\necho "scancel "$'+'" "$'.join(id_list)+' > '+kill_file+'\n'
+            f.write(kill)
+        elif INFRASTRUCTURE == 'chpc':
+            kill = '\necho "qdel "$'+'" "$'.join(id_list)+' > '+kill_file+'\n'
+            f.write(kill)
     
     f.close()
 

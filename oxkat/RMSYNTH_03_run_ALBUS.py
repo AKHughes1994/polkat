@@ -76,11 +76,10 @@ def main():
         ra.append(casa_to_albus_pos(src_dir[0])[0])
         dec.append(casa_to_albus_pos(src_dir[0])[1])
 
-    # Iterate through sources and run ALBUS on the polarization calibrator or any target source
+    # Iterate through sources and run ALBUS on all fields
     for k in range(len(ra)):
-        if names[k] in project_info['target_names'] or names[k] == project_info['polang_name']:
-            syscall = f'python3 {cfg.TOOLS}/ALBUS_get_ionosphere.py -r "{ra[k]}" -d "{dec[k]}" -s "{start_times[k]}" -f "{finish_times[k]}" "{names[k]}"'
-            subprocess.run([syscall], shell=True)
+        syscall = f'python3 {cfg.TOOLS}/ALBUS_get_ionosphere.py -r "{ra[k]}" -d "{dec[k]}" -s "{start_times[k]}" -f "{finish_times[k]}" "{names[k]}"'
+        subprocess.run([syscall], shell=True)
 
 
 if __name__ == "__main__":
