@@ -74,6 +74,36 @@ def trim_mask(mask_path, imsize, output_path):
     return output_path
 
 
+def check_final_totals(myms, expected_total_nint, img_re):
+    """
+    Final sanity check, run once everything else is done (all imaging/renaming
+    finished, or nothing was left to do): confirm no '_scanNNNN'-tagged modelsub
+    images remain anywhere, then confirm the total number of distinct t-labels
+    actually present on disk matches the predicted total computed up front.
+    """
+    leftover_scan_images = sorted(glob.glob(cfg.INTERVALS + f'/img_{myms}_modelsub_scan*'))
+    if leftover_scan_images:
+        msg(f'WARNING: Something has gone wrong -- {len(leftover_scan_images)} un-renamed '
+            f"'_scanNNNN' modelsub image(s) still present after everything should be renamed:")
+        for image in leftover_scan_images:
+            msg(f'  {image}')
+
+    final_prefix = cfg.INTERVALS + f'/img_{myms}_modelsub'
+    final_t_labels = set()
+    for image in glob.glob(f'{final_prefix}-t*'):
+        match = img_re.search(image)
+        if match:
+            final_t_labels.add(match.group(1))
+    actual_total_nint = len(final_t_labels)
+
+    if actual_total_nint != expected_total_nint:
+        msg(f'WARNING: Something has gone wrong -- found {actual_total_nint} total t-interval(s) '
+            f'after renaming, expected {expected_total_nint}. Check for scans that failed to '
+            f'rename or produced the wrong total number of t values.')
+    else:
+        msg(f'Final check OK: {actual_total_nint} total t-interval(s) match prediction.')
+
+
 def get_total_ints(myms):
 
     tt = table(myms,readonly=True)
@@ -300,10 +330,13 @@ def main():
 
     if not processed_scans:
         msg('No scans have any un-renamed output to check/rename.')
+        check_final_totals(myms, expected_total_nint, img_re)
         return
 
     # A scan that silently dropped channels or intervals (e.g. a partial/OOM wsclean failure)
-    # still produces some images, so check the counts match before renaming anything.
+    # still produces some images, so check the counts match before renaming anything. A scan
+    # with zero t-labelled images found has nothing pending rename (e.g. only a stray leftover
+    # file matched the glob) -- that's not a failure, just skip it.
     msg('Validating channel and interval counts across scans pending rename')
     n_channels_by_scan = {}
     n_intervals_by_scan = {}
@@ -318,12 +351,22 @@ def main():
         n_channels_by_scan[scan_n] = len(channels_seen)
         n_intervals_by_scan[scan_n] = len(intervals_seen)
 
+    scans_pending_rename = [scan_n for scan_n in processed_scans if n_intervals_by_scan[scan_n] > 0]
+    for scan_n in processed_scans:
+        if n_intervals_by_scan[scan_n] == 0:
+            msg(f'Scan {scan_n:04d} has no t-labelled images pending rename, skipping')
+
+    if not scans_pending_rename:
+        msg('No scans have any images pending rename after filtering.')
+        check_final_totals(myms, expected_total_nint, img_re)
+        return
+
     # All scans image with the same chanout, so a successful scan's channel count should match
     # every other successful scan's -- use the most common value as the reference.
-    expected_channels = Counter(n_channels_by_scan.values()).most_common(1)[0][0]
+    expected_channels = Counter(n_channels_by_scan[scan_n] for scan_n in scans_pending_rename).most_common(1)[0][0]
 
     bad_scans = []
-    for scan_n in processed_scans:
+    for scan_n in scans_pending_rename:
         n_channels = n_channels_by_scan[scan_n]
         n_intervals = n_intervals_by_scan[scan_n]
         expected_nint = nint_arr[scan_n]
@@ -350,7 +393,7 @@ def main():
     # be a bettter way to do this but this'll work. Basic idea is to add the scan number to the
     # t-label; e.g., if scan 0 has 100 integrations: scan0001-t0000 becomes t100 (easier
     # indexing imo and avoids scan boundaries without the need to split MS files)
-    for scan_n in processed_scans:
+    for scan_n in scans_pending_rename:
         image_prefix = cfg.INTERVALS+f'/img_{myms}_modelsub_scan{scan_n:04d}'
         image_prefix_fix = image_prefix.replace(f'_scan{scan_n:04d}','') # remove scan string
         for image in scan_images[scan_n]:
@@ -397,24 +440,7 @@ def main():
     else:
         msg(f'Successfully renamed {total} images')
 
-    # Final sanity check: total number of distinct t-labels actually present after
-    # renaming should match the predicted total computed up front, regardless of
-    # whether this run did the imaging/renaming itself or it was already done in
-    # an earlier run.
-    final_prefix = cfg.INTERVALS + f'/img_{myms}_modelsub'
-    final_t_labels = set()
-    for image in glob.glob(f'{final_prefix}-t*'):
-        match = img_re.search(image)
-        if match:
-            final_t_labels.add(match.group(1))
-    actual_total_nint = len(final_t_labels)
-
-    if actual_total_nint != expected_total_nint:
-        msg(f'WARNING: Something has gone wrong -- found {actual_total_nint} total t-interval(s) '
-            f'after renaming, expected {expected_total_nint}. Check for scans that failed to '
-            f'rename or produced the wrong total number of t values.')
-    else:
-        msg(f'Final check OK: {actual_total_nint} total t-interval(s) match prediction.')
+    check_final_totals(myms, expected_total_nint, img_re)
 
 
 
