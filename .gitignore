@@ -1,0 +1,14 @@
+# Python bytecode cache
+__pycache__/
+*.py[cod]
+
+# CASA log/task-parameter artifacts
+casa-*.log
+*.last
+ipython-*.log
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS junk
+.DS_Store
