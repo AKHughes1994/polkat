@@ -917,7 +917,7 @@ def main():
             step['id'] = 'MKLPI'+code
             step['glam_config'] = cfg.GLAM_SMALL
             syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
-            syscall += f"python3 {cfg.TOOLS}/make_pol_images.py {img_dir} {filename_fieldname} true"
+            syscall += f"python3 {cfg.TOOLS}/make_pol_images.py {img_dir} {filename_fieldname} false"
             step['syscall'] = syscall
             steps.append(step)
             n += 1

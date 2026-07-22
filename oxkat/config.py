@@ -287,8 +287,8 @@ XF_CHANINT = 16             # Channels per polcal solution interval; e.g. 1024 c
 # Calibration and outlier thresholds
 XF_GLOBAL_SIGMA_CLIP = 10.0 # N-sigma threshold for global circular phase clip (gross outlier removal, wrap-safe)
 XF_POLY_ORDER        = 4    # Polynomial order for cos/sin(phase) baseline fit; set to 0 to disable
-XF_MAD_WINDOW        = None # Sliding circular MAD window size in channels; None = auto (ceil_odd(N_chan/5))
-XF_MAD_SIGMA_CLIP    = 5.0  # N-sigma threshold for sliding circular MAD clip (local, wrap-safe)
+XF_MAD_WINDOW        = None # Sliding circular MAD window size in channels; None = auto (ceil_odd(N_chan/10))
+XF_MAD_SIGMA_CLIP    = 3.5  # N-sigma threshold for sliding circular MAD clip (local, wrap-safe)
 XF_AVG_SCAN          = False # If True, flux-weighted circular average across scans after per-scan solve (increases SNR, loses scan-to-scan variation)
 XF_MAD_ITERATIVE = True  # Iterative poly-baseline + sliding circular MAD clip until convergence (refits baseline each pass); False = single pass only
 XF_MIN_SN = 5.0  # Minimum cross-hand S/N per channel; channels below this are flagged (0 = disabled)
@@ -570,7 +570,7 @@ WSC_CIRCULARBEAM = False # Force a circular (not elliptical) restoring beam (-ci
 # --- Channel strategy ---
 WSC_BLIND_CHANNELSOUT = 8     # Blind (shallow, no mask) image — used only to generate initial mask
 WSC_PCAL_CHANNELSOUT  = 128     # Final self-calibrated (pcalmask) image
-WSC_DMASK_CHANNELSOUT = 64  # Data-masked image (stage 1 selfcal model);
+WSC_DMASK_CHANNELSOUT = 128  # Data-masked image (stage 1 selfcal model);
                                                # set independently if a different channelisation is needed
 WSC_CAL_CHANNELSOUT   = WSC_PCAL_CHANNELSOUT    # Calibrator images (secondaries / primary)
 

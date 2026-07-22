@@ -14,17 +14,23 @@
 # Fields are ALWAYS handled separately through all flagging and statistics.
 # The only cross-field step is the final combineScanField circular average.
 #
+# All Xf tables are rebuilt from scratch on every run: pre-existing tables
+# are deleted before solving so flags never accumulate across runs.
+#
 # Post-processing pipeline per table:
 #   1. +/-180 deg phase degeneracy resolution against a reference phase.
 #   --- flagging steps (skipped for phasor-averaged tables; mad_only for
 #       combineScanField) ---
-#   2. Gross MAD pre-clip (per-field, XF_GROSS_CLIP sigma).
-#   3. Per-field flag: channels where cross-hand fraction < XF_MIN_CROSS_FRAC.
+#   2. Per-field, per-scan S/N threshold (FIRST — removes the deterministic
+#      arctan-divergent low-signal channels before any statistical clip):
+#      S/N basis is the cross-hand flux sqrt(U²+V²) (the actual Xf solve
+#      signal); field noise = median of per-window first-difference MADs
+#      pooled from all scans * 1.4826; channels where any scan has
+#      S/N < XF_MIN_SN are flagged.
+#   3. Gross MAD pre-clip (per-field, XF_GROSS_CLIP sigma).
+#   4. Per-field flag: channels where cross-hand fraction < XF_MIN_CROSS_FRAC.
 #      Fraction is computed per (field, scan); the per-field MAD flag mask is
 #      broadcast to all rows of that field.
-#   4. Per-field, per-scan S/N threshold: field noise = median(all per-window
-#      MADs from all scans of that field) * 1.4826; channels where any scan
-#      has S/N < XF_MIN_SN are flagged.
 #   5. Fine MAD clip (per-field polynomial baseline + sliding circular MAD).
 #      Also applied to combineScanField after the cross-field average.
 #   ---
@@ -37,6 +43,7 @@
 
 import sys
 import os
+import shutil
 import datetime
 import warnings
 import numpy as np
@@ -107,8 +114,8 @@ _parser.add_argument(
     type=float,
     default=XF_GLOBAL_SIGMA_CLIP,
     metavar='SIGMA',
-    help='Sigma threshold for the single-pass gross-outlier pre-clip (run before '
-         'fractional and S/N cuts; catches wildly wrong channels).')
+    help='Sigma threshold for the single-pass gross-outlier pre-clip (run after '
+         'the S/N cut, before the fractional cut; catches wildly wrong channels).')
 _parser.add_argument(
     '--xf-poly-order',
     type=int,
@@ -131,10 +138,10 @@ _parser.add_argument(
 _parser.add_argument(
     '--xf-field-mad-sigma',
     type=float,
-    default=3.0,
+    default=2.5,
     metavar='SIGMA',
     help='Sigma threshold for the final fine MAD clip applied to the '
-         'combineScanField table after cross-field averaging (default 3.0; '
+         'combineScanField table after cross-field averaging (default 2.5; '
          'tighter than the per-field clip because the averaged solution is '
          'smoother).')
 _parser.add_argument(
@@ -560,13 +567,39 @@ def flux_textfile_path(field_name, scan_num, outdir):
     return outdir.rstrip('/') + '/' + fname
 
 
+def flux_textfile_is_current(fpath):
+    """Return True if the flux textfile at fpath is in the current 7-column
+    IQUV format (freq, I, Q, U, V, crosshand_flux, crosshand_frac).
+
+    Older 4/5-column files put crosshand_flux in a different column, so they
+    must be regenerated rather than read — the cache check treats a
+    non-current file the same as a missing one.
+    """
+    if not os.path.exists(fpath):
+        return False
+    try:
+        with open(fpath, 'r') as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                return len(line.split()) >= 7
+    except OSError:
+        return False
+    return False
+
+
 def load_flux_textfile(fpath, nchan_xf):
     """Load cross-hand flux and fraction from an existing flux spectrum text file.
 
-    Reads the four-column text file written by save_flux_textfile and
-    returns the cross-hand flux and fraction columns binned to the Xf
-    table channel resolution.  Uses equal weights since original
-    per-channel weights are not stored; NaN entries are excluded.
+    Reads the seven-column text file written by save_flux_textfile
+    (freq_GHz, I_Jy, Q_Jy, U_Jy, V_Jy, crosshand_flux_Jy, crosshand_frac)
+    and returns the cross-hand flux and fraction binned to the Xf table
+    channel resolution.  Uses equal weights since original per-channel
+    weights are not stored; NaN entries are excluded.
+
+    Only current-format files should reach this function: the cache check
+    uses flux_textfile_is_current to route legacy files to regeneration.
 
     Parameters
     ----------
@@ -581,6 +614,8 @@ def load_flux_textfile(fpath, nchan_xf):
         Cross-hand flux binned to the Xf table resolution.
     cross_frac_xf : ndarray, shape (nchan_xf,)
         Cross-hand fraction (flux / I) binned to the Xf table resolution.
+    cross_flux_native : ndarray
+        Native-resolution cross-hand flux sqrt(U²+V²) — the S/N cut basis.
     """
     xflux = []
     xfrac = []
@@ -590,11 +625,11 @@ def load_flux_textfile(fpath, nchan_xf):
             if not line or line.startswith('#'):
                 continue
             parts = line.split()
-            if len(parts) < 3:
+            if len(parts) < 7:
                 continue
             try:
-                xflux.append(float(parts[2]))
-                xfrac.append(float(parts[3]) if len(parts) >= 4 else float('nan'))
+                xflux.append(float(parts[5]))
+                xfrac.append(float(parts[6]))
             except ValueError:
                 continue
 
@@ -610,13 +645,18 @@ def load_flux_textfile(fpath, nchan_xf):
 
 def save_flux_textfile(field_name, ra_rad, dec_rad, scan_num,
                        t_start_mjd, t_end_mjd,
-                       freq_ghz, I_chan, cross_flux_chan,
-                       outdir):
-    """Save per-channel total and cross-hand flux spectrum to a text file.
+                       freq_ghz, I_chan, Q_chan, U_chan, V_chan,
+                       cross_flux_chan, outdir):
+    """Save per-channel Stokes IQUV and cross-hand flux spectrum to a text file.
 
     One file is written per field-scan combination to `outdir`.  The
     header records the field name, J2000 direction, and scan time range
     in both MJD seconds and ISO 8601 (ISOT) format.
+
+    Columns: freq_GHz, I_Jy, Q_Jy, U_Jy, V_Jy, crosshand_flux_Jy,
+    crosshand_frac.  Stokes parameters are in the feed frame (extraction
+    uses parang=False), so crosshand_flux = sqrt(U²+V²) is the actual
+    per-channel signal available to the Xf solve.
 
     Parameters
     ----------
@@ -628,8 +668,8 @@ def save_flux_textfile(field_name, ra_rad, dec_rad, scan_num,
         Scan start/end in MJD seconds.
     freq_ghz : ndarray
         Channel frequencies in GHz.
-    I_chan : ndarray
-        Time-averaged Stokes I per channel (Jy).
+    I_chan, Q_chan, U_chan, V_chan : ndarray
+        Time-averaged Stokes spectra per channel (Jy, feed frame).
     cross_flux_chan : ndarray
         Time-averaged sqrt(U^2 + V^2) per channel (Jy).
     outdir : str
@@ -650,6 +690,9 @@ def save_flux_textfile(field_name, ra_rad, dec_rad, scan_num,
             cross_flux_chan / I_chan,
             np.nan)
 
+    def _v(arr, ch):
+        return arr[ch] if np.isfinite(arr[ch]) else float('nan')
+
     with open(fpath, 'w') as fh:
         fh.write('# Xf calibration flux spectrum\n')
         fh.write('# MS:                {}\n'.format(myms))
@@ -662,16 +705,18 @@ def save_flux_textfile(field_name, ra_rad, dec_rad, scan_num,
         fh.write('# Time end   (ISOT):  {}\n'.format(t_end_isot))
         fh.write('# XF_MIN_CROSS_FRAC threshold: {:.6f} ({:.4f}%)\n'.format(
             XF_MIN_CROSS_FRAC, XF_MIN_CROSS_FRAC * 100.0))
+        fh.write('# Stokes frame:       feed (parang=False)\n')
         fh.write('#\n')
-        fh.write('# {:>14s}  {:>14s}  {:>20s}  {:>20s}\n'.format(
-            'freq_GHz', 'I_Jy', 'crosshand_flux_Jy', 'crosshand_frac'))
+        fh.write('# {:>14s}  {:>14s}  {:>14s}  {:>14s}  {:>14s}  {:>20s}  {:>20s}\n'.format(
+            'freq_GHz', 'I_Jy', 'Q_Jy', 'U_Jy', 'V_Jy',
+            'crosshand_flux_Jy', 'crosshand_frac'))
 
         for ch in range(len(freq_ghz)):
-            i_val = I_chan[ch]          if np.isfinite(I_chan[ch])          else float('nan')
-            x_val = cross_flux_chan[ch] if np.isfinite(cross_flux_chan[ch]) else float('nan')
-            f_val = cross_frac_chan[ch] if np.isfinite(cross_frac_chan[ch]) else float('nan')
-            fh.write('  {:>16.8f}  {:>14.6f}  {:>20.6f}  {:>20.8f}\n'.format(
-                freq_ghz[ch], i_val, x_val, f_val))
+            fh.write('  {:>16.8f}  {:>14.6f}  {:>14.6f}  {:>14.6f}  {:>14.6f}  '
+                     '{:>20.6f}  {:>20.8f}\n'.format(
+                freq_ghz[ch],
+                _v(I_chan, ch), _v(Q_chan, ch), _v(U_chan, ch), _v(V_chan, ch),
+                _v(cross_flux_chan, ch), _v(cross_frac_chan, ch)))
 
     msg(f'    Saved flux spectrum: {fpath}')
 
@@ -923,9 +968,12 @@ def _flag_mad_clip(tab_path, verbose=True, sigma=None, single_pass=False):
                         circ_med_ph = _cand
                 circ_med = np.exp(1j * circ_med_ph)
 
+                # Floor the MAD at 0.05 deg rather than skipping ultra-smooth
+                # windows: a near-zero window MAD with a large channel offset
+                # is the *most* flagrant outlier case and must still be
+                # clipped, not exempted.
                 circ_mad   = np.median(np.abs(np.angle(win_sig * np.conj(circ_med))))
-                if circ_mad < 1e-10:
-                    continue
+                circ_mad   = max(circ_mad, np.deg2rad(0.05))
                 circ_stdev = 1.4826 * circ_mad
 
                 off_ch    = np.angle(signal[ch] * np.conj(circ_med))
@@ -988,7 +1036,7 @@ def _make_diagnostic_plot(tab_path, flag_polcal_snap, freq_ghz_xf,
                            poly_coeffs_by_field, frac_lookup,
                            plot_path, combine=False,
                            combine_xf_tab=None,
-                           native_qu_lookup=None, freq_ghz_native=None,
+                           native_xh_lookup=None, freq_ghz_native=None,
                            phase_ylim=None, sn_ylim=None,
                            field_combine=False):
     """Diagnostic PDF: three-panel plot.
@@ -999,7 +1047,7 @@ def _make_diagnostic_plot(tab_path, flag_polcal_snap, freq_ghz_xf,
     Middle panel — per-channel fractional cross-hand flux (sqrt(U²+V²)/I)
                    used for the flux-threshold flagging step, with the
                    XF_MIN_CROSS_FRAC threshold marked as a dashed line.
-    Bottom panel — S/N of native-resolution sqrt(Q²+U²), where the global
+    Bottom panel — S/N of native-resolution cross-hand flux sqrt(U²+V²), where the global
                    noise is estimated from the median windowed MAD across
                    the band (log y-scale).
     """
@@ -1086,7 +1134,7 @@ def _make_diagnostic_plot(tab_path, flag_polcal_snap, freq_ghz_xf,
     TICK_LW   = 1.5
 
     # Determine whether we can build the S/N panel
-    _have_sn_data = (native_qu_lookup is not None) and (freq_ghz_native is not None)
+    _have_sn_data = (native_xh_lookup is not None) and (freq_ghz_native is not None)
 
     if _have_sn_data:
         fig, (ax, ax_frac, ax_sn) = plt.subplots(
@@ -1285,7 +1333,7 @@ def _make_diagnostic_plot(tab_path, flag_polcal_snap, freq_ghz_xf,
     else:
         ax.tick_params(labelbottom=False)
 
-    # ---- Bottom panel: sqrt(Q²+U²) S/N binned to Xf grid ----
+    # ---- Bottom panel: cross-hand flux sqrt(U²+V²) S/N binned to Xf grid ----
     if ax_sn is not None and _have_sn_data:
         freq_nat   = np.asarray(freq_ghz_native, dtype=float)
         n_native_p = len(freq_nat)
@@ -1301,8 +1349,8 @@ def _make_diagnostic_plot(tab_path, flag_polcal_snap, freq_ghz_xf,
         for fn, fkeys in all_field_keys.items():
             all_mads = []
             for key in fkeys:
-                qu_k = (native_qu_lookup.get(fn, None) if (combine or field_combine)
-                        else native_qu_lookup.get(key, None))
+                qu_k = (native_xh_lookup.get(fn, None) if (combine or field_combine)
+                        else native_xh_lookup.get(key, None))
                 if qu_k is None:
                     continue
                 qu_k = np.asarray(qu_k, dtype=float)
@@ -1326,8 +1374,8 @@ def _make_diagnostic_plot(tab_path, flag_polcal_snap, freq_ghz_xf,
             colour   = _pf_colour[key]
             label    = f'{fn}: combineScan' if combine else f'{fn}: scan {sn}'
 
-            qu_arr = (native_qu_lookup.get(fn, None) if (combine or field_combine)
-                      else native_qu_lookup.get((fn, sn), None))
+            qu_arr = (native_xh_lookup.get(fn, None) if (combine or field_combine)
+                      else native_xh_lookup.get((fn, sn), None))
             if qu_arr is None:
                 continue
             qu_arr = np.asarray(qu_arr, dtype=float)
@@ -1377,7 +1425,7 @@ def _make_diagnostic_plot(tab_path, flag_polcal_snap, freq_ghz_xf,
             ax_sn.axhline(XF_MIN_SN, color='red', lw=1.5, ls='--',
                           label=f'S/N threshold ({XF_MIN_SN:.1f})')
         ax_sn.set_xlabel('Frequency (GHz)', fontsize=12, labelpad=8)
-        ax_sn.set_ylabel('S/N  [sqrt(Q²+U²) / noise]', fontsize=12, labelpad=8)
+        ax_sn.set_ylabel('S/N  [sqrt(U²+V²) / noise]', fontsize=12, labelpad=8)
         ax_sn.set_title('Cross-hand power S/N  (Xf grid)',
                         fontsize=12, pad=6)
         ax_sn.set_xlim(freq_x[0], freq_x[-1])
@@ -1407,20 +1455,26 @@ def _make_diagnostic_plot(tab_path, flag_polcal_snap, freq_ghz_xf,
     return phase_ylim_out, sn_ylim_out
 
 
-def _flag_sn_threshold(tab_path, scan_qu_map, freq_ghz_native):
-    """Flag Xf table channels where the binned cross-hand S/N < XF_MIN_SN.
+def _flag_sn_threshold(tab_path, scan_xh_map, freq_ghz_native):
+    """Flag Xf table channels where the binned CROSS-HAND flux S/N < XF_MIN_SN.
 
-    Noise is estimated per field by pooling ALL per-window MADs from every
+    The Xf solution is solved from the cross-hand visibilities XY/YX ~ U ± iV,
+    so the relevant per-channel signal is sqrt(U²+V²): where it nulls (RM
+    oscillation) or sinks into the noise, the solved phase arctan diverges.
+
+    Noise is estimated per field by pooling first-difference MADs from every
     window in every scan of that field, then taking the median × 1.4826.
-    S/N is then computed per (field, scan): binned scan QU / field noise.
-    Channels below XF_MIN_SN in any scan are flagged.  Only active when
-    XF_MIN_SN > 0.
+    First differences (MAD/sqrt(2)) high-pass the spectrum so the smooth RM
+    oscillation gradient within a window does not inflate the noise estimate.
+    S/N is then computed per (field, scan): binned scan cross-hand flux /
+    field noise.  Channels below XF_MIN_SN in any scan are flagged.  Only
+    active when XF_MIN_SN > 0.
     """
     if XF_MIN_SN <= 0.0:
         return
 
     msg()
-    msg(f'=== Flagging Xf table: cross-hand S/N < {XF_MIN_SN:.2f} ===')
+    msg(f'=== Flagging Xf table: cross-hand flux S/N < {XF_MIN_SN:.2f} ===')
 
     tb.open(tab_path, nomodify=False)
     tab_flag      = tb.getcol('FLAG')
@@ -1432,28 +1486,30 @@ def _flag_sn_threshold(tab_path, scan_qu_map, freq_ghz_native):
 
     win_size = max(3, nchan_native // 100)
 
-    # Step 1: per-field noise — pool every window MAD from every scan
+    # Step 1: per-field noise — pool first-difference window MADs from every scan
     field_noise_map = {}
     field_scans = {}
-    for (fn, sn), qu_arr in scan_qu_map.items():
+    for (fn, sn), xh_arr in scan_xh_map.items():
         field_scans.setdefault(fn, []).append(sn)
     for fn, scans in field_scans.items():
         all_mads = []
         for sn in scans:
-            qu_arr = np.asarray(scan_qu_map[(fn, sn)], dtype=float)
-            if len(qu_arr) != nchan_native:
+            xh_arr = np.asarray(scan_xh_map[(fn, sn)], dtype=float)
+            if len(xh_arr) != nchan_native:
                 continue
             for start in range(0, nchan_native, win_size):
-                window = qu_arr[start:start + win_size]
+                window = xh_arr[start:start + win_size]
                 valid  = window[np.isfinite(window)]
-                if len(valid) >= 3:
-                    all_mads.append(np.nanmedian(np.abs(valid - np.nanmedian(valid))))
+                if len(valid) >= 4:
+                    d = np.diff(valid)
+                    all_mads.append(
+                        np.nanmedian(np.abs(d - np.nanmedian(d))) / np.sqrt(2.0))
         if all_mads:
             noise = np.nanmedian(all_mads) * 1.4826
             if noise > 0.0:
                 field_noise_map[fn] = noise
                 msg(f'  Field "{fn}": noise = {noise:.4e}  '
-                    f'(pooled {len(all_mads)} windows from {len(scans)} scan(s))')
+                    f'(pooled {len(all_mads)} diff-MAD windows from {len(scans)} scan(s))')
 
     # Step 2: group table rows by (field, scan) when possible, else by field
     key_rows = {}
@@ -1476,13 +1532,13 @@ def _flag_sn_threshold(tab_path, scan_qu_map, freq_ghz_native):
             continue
         noise = field_noise_map[fn]
 
-        if sn is not None and (fn, sn) in scan_qu_map:
-            qu_arr = np.asarray(scan_qu_map[(fn, sn)], dtype=float)
+        if sn is not None and (fn, sn) in scan_xh_map:
+            qu_arr = np.asarray(scan_xh_map[(fn, sn)], dtype=float)
         else:
             # Fall back to field mean
-            arrs = [np.asarray(scan_qu_map[(fn, s)], dtype=float)
+            arrs = [np.asarray(scan_xh_map[(fn, s)], dtype=float)
                     for s in field_scans.get(fn, [])
-                    if (fn, s) in scan_qu_map]
+                    if (fn, s) in scan_xh_map]
             if not arrs:
                 continue
             with warnings.catch_warnings():
@@ -1517,8 +1573,8 @@ def _avg_perscan_to_combine(perscan_tab, combine_tab):
     """Overwrite combineScan CPARAM with a cross-hand flux weighted phasor average
     of per-scan solutions, renormalised to unit amplitude per channel.
 
-    Weight for each scan at each channel = binned cross-hand flux (sqrt(Q²+U²))
-    for that (field, scan) from scan_native_qu_map.  Higher-S/N scans contribute
+    Weight for each scan at each channel = binned cross-hand flux (sqrt(U²+V²))
+    for that (field, scan) from scan_native_xh_map.  Higher-S/N scans contribute
     more.  Channels flagged in ALL contributing scans remain flagged.
     """
     msg()
@@ -1543,7 +1599,7 @@ def _avg_perscan_to_combine(perscan_tab, combine_tab):
 
     # Pre-bin per-scan QU weights to the Xf channel grid
     scan_w_xf = {}
-    for (fn, sn), qu_nat in scan_native_qu_map.items():
+    for (fn, sn), qu_nat in scan_native_xh_map.items():
         qu_nat = np.asarray(qu_nat, dtype=float)
         w_nat  = np.where(np.isfinite(qu_nat), 1.0, 0.0)
         qu_xf, _ = bin_channels_weighted(qu_nat, w_nat, n_chan)
@@ -1599,15 +1655,15 @@ def _avg_perscan_to_combine(perscan_tab, combine_tab):
     msg('  combineScan CPARAM replaced with cross-hand flux weighted per-scan average.')
 
 
-def _avg_combine_fields_to_global(combine_tab, field_tab, field_qu_weights):
+def _avg_combine_fields_to_global(combine_tab, field_tab, field_xh_weights):
     """Build combineScanField: cross-hand flux weighted circular average across fields.
 
     For each antenna and channel, the phasor from each field row is weighted by
-    the mean cross-hand flux (sqrt(Q²+U²)) at that channel for that field.
+    the mean cross-hand flux (sqrt(U²+V²)) at that channel for that field.
     This gives brighter channels more influence on the combined solution.
     Channels flagged in every contributing field row remain flagged.
 
-    field_qu_weights: {field_name: 1-D array of length n_chan} — per-channel
+    field_xh_weights: {field_name: 1-D array of length n_chan} — per-channel
         cross-hand flux at Xf resolution, one entry per PA cal field.
     """
     import shutil
@@ -1633,7 +1689,7 @@ def _avg_combine_fields_to_global(combine_tab, field_tab, field_qu_weights):
     fid_to_weight = {}
     for fn, fid_tuple in field_info.items():
         fid = fid_tuple[0]
-        w   = field_qu_weights.get(fn)
+        w   = field_xh_weights.get(fn)
         if w is not None:
             w = np.asarray(w, dtype=float)
             w = np.where(np.isfinite(w) & (w > 0.0), w, 0.0)
@@ -1738,24 +1794,24 @@ def _flag_freq_ranges(tab_path, freq_ghz_xf):
 
 
 def _process_xftab(tab_path, label, frac_lookup, use_field_mean,
-                   field_frac_map, scan_qu_map,
+                   field_frac_map, scan_xh_map,
                    flag_polcal_snap, freq_ghz_xf, plot_path,
                    combine_xf_tab=None,
-                   native_qu_lookup=None, freq_ghz_native=None,
+                   native_xh_lookup=None, freq_ghz_native=None,
                    skip_flagging=False,
                    phase_ylim=None, sn_ylim=None,
                    mad_only=False,
                    fine_sigma=None):
     """Full post-polcal processing pipeline for one Xf table:
       1. Resolve +/-180 deg phase degeneracy
-      2. (skip if skip_flagging/mad_only) Gross MAD pre-clip (per-field)
-      3. (skip if skip_flagging/mad_only) Flag channels below cross-hand flux threshold
-      4. (skip if skip_flagging/mad_only) S/N threshold flagging (per-field)
+      2. (skip if skip_flagging/mad_only) S/N threshold flagging (per-field, per-scan)
+      3. (skip if skip_flagging/mad_only) Gross MAD pre-clip (per-field)
+      4. (skip if skip_flagging/mad_only) Flag channels below cross-hand flux threshold
       5. Fine MAD clip (per-field)  [skipped only if skip_flagging=True]
       6. Diagnostic plot
       7. Manual frequency flagging
 
-    scan_qu_map: {(field_name, scan_num): qu_array} — per-scan native-res QU arrays
+    scan_xh_map: {(field_name, scan_num): xh_array} — per-scan native-res cross-hand flux sqrt(U²+V²)
     field_frac_map: {field_name: frac_array}
 
     skip_flagging=True: only degeneracy + plot + freq flags (phasor-averaged tables)
@@ -1768,18 +1824,22 @@ def _process_xftab(tab_path, label, frac_lookup, use_field_mean,
     _resolve_degeneracy(tab_path)
 
     if not skip_flagging and not mad_only:
-        # 1. Gross outlier pass — catches wildly wrong channels before other cuts
+        # 1. S/N threshold (per-field, per-scan) — FIRST, so that the
+        #    deterministic low-signal channels (where the cross-hand phase
+        #    arctan diverges) are removed before any statistics-based clip
+        #    is computed.  This keeps the gross/fine MAD baselines and
+        #    window statistics free of the divergent points.
+        if XF_MIN_SN > 0.0:
+            _flag_sn_threshold(tab_path, scan_xh_map, freq_ghz_native)
+
+        # 2. Gross outlier pass — catches wildly wrong channels before other cuts
         _flag_mad_clip(tab_path, verbose=False, sigma=XF_GROSS_CLIP)
 
-        # 2. Fractional cross-hand flux threshold (per-field)
+        # 3. Fractional cross-hand flux threshold (per-field)
         msg()
         msg(f'=== Flagging Xf table [{label}]: cross-hand fraction < '
             f'{XF_MIN_CROSS_FRAC*100:.4f}% of Stokes I ===')
         _flag_flux_threshold(tab_path, field_frac_map)
-
-        # 3. S/N threshold (per-field, per-scan)
-        if XF_MIN_SN > 0.0:
-            _flag_sn_threshold(tab_path, scan_qu_map, freq_ghz_native)
 
     if not skip_flagging:
         # Fine MAD clip — single pass for combineScanField (all rows carry the
@@ -1796,7 +1856,7 @@ def _process_xftab(tab_path, label, frac_lookup, use_field_mean,
         poly_coeffs, frac_lookup,
         plot_path, combine=use_field_mean,
         combine_xf_tab=combine_xf_tab,
-        native_qu_lookup=native_qu_lookup,
+        native_xh_lookup=native_xh_lookup,
         freq_ghz_native=freq_ghz_native,
         phase_ylim=phase_ylim, sn_ylim=sn_ylim,
         field_combine=mad_only)
@@ -1845,30 +1905,20 @@ xftab_combine  = xf_prefix + '_combineScan.Xf'
 xftab_per      = xf_prefix + '_perScan.Xf'
 xftab_field    = xf_prefix + '_combineScanField.Xf'
 
-# Tables that will be produced (conditionally) in this run
-_expected_tabs = [xftab_combine]
-if do_per_scan:
-    _expected_tabs.append(xftab_per)
-if do_multi_field:
-    _expected_tabs.append(xftab_field)
-
-_tabs_exist = all(os.path.exists(t) for t in _expected_tabs)
-
+# Every run builds the Xf tables from scratch.  Tables are flagged and have
+# CPARAM modified in place by this script, so re-using an existing table
+# would accumulate flags across runs (flag creep) and invalidate the
+# post-polcal FLAG snapshots used in the diagnostic plots.  Any pre-existing
+# tables (including all three variants, whether or not produced this run)
+# are deleted here unconditionally.
 msg()
-msg('=== Xf table existence check ===')
-for _t in _expected_tabs:
-    msg(f'  {"[OK]" if os.path.exists(_t) else "[MISSING]"}  {_t}')
-
-if _tabs_exist:
-    msg()
-    msg('  All Xf tables already exist — skipping polcal solves.')
-    msg('  To force a complete reprocess, run:')
-    msg()
-    msg('    rm -rf ' + ' '.join(_expected_tabs))
-    msg()
-else:
-    msg()
-    msg('  One or more tables missing — running polcal solves.')
+msg('=== Removing any pre-existing Xf tables (fresh solve every run) ===')
+for _t in [xftab_combine, xftab_per, xftab_field]:
+    if os.path.exists(_t):
+        shutil.rmtree(_t)
+        msg(f'  [DELETED]  {_t}')
+    else:
+        msg(f'  [absent]   {_t}')
 
 
 # -----------------------------------------------------------------------
@@ -1897,24 +1947,23 @@ _polcal_kwargs = dict(
     append    = False,
 )
 
-if not _tabs_exist:
-    if do_per_scan:
-        msg()
-        msg('=== Solving Xf (perScan) ===')
-        polcal(caltable=xftab_per, combine='', **_polcal_kwargs)
-
-    # combineScan template: solved with combine='scan' to get the correct table
-    # structure/dimensions.  CPARAM is overwritten after per-scan flagging by
-    # _avg_perscan_to_combine (cross-hand flux weighted average of per-scan solutions).
-    # If only one scan exists, the per-scan solution IS the combine solution.
+if do_per_scan:
     msg()
-    msg('=== Solving Xf (combineScan template) ===')
-    polcal(caltable=xftab_combine, combine='scan', **_polcal_kwargs)
+    msg('=== Solving Xf (perScan) ===')
+    polcal(caltable=xftab_per, combine='', **_polcal_kwargs)
 
-    # combineScanField template is built from xftab_combine via copytree inside
-    # _avg_combine_fields_to_global — no separate polcal solve needed.
+# combineScan template: solved with combine='scan' to get the correct table
+# structure/dimensions.  CPARAM is overwritten after per-scan flagging by
+# _avg_perscan_to_combine (cross-hand flux weighted average of per-scan solutions).
+# If only one scan exists, the per-scan solution IS the combine solution.
+msg()
+msg('=== Solving Xf (combineScan template) ===')
+polcal(caltable=xftab_combine, combine='scan', **_polcal_kwargs)
 
-# Read FLAG snapshots from whichever tables now exist
+# combineScanField template is built from xftab_combine via copytree inside
+# _avg_combine_fields_to_global — no separate polcal solve needed.
+
+# Read FLAG snapshots from the freshly solved tables
 if do_per_scan:
     tb.open(xftab_per)
     flag_polcal_per = tb.getcol('FLAG').copy()
@@ -2014,9 +2063,12 @@ for fn, sn in all_field_scans:
     fpath = flux_textfile_path(fn, sn, RESULTS)
     if not os.path.exists(fpath):
         missing_files.append((fn, sn, fpath))
+    elif not flux_textfile_is_current(fpath):
+        msg(f'  Stale format (pre-IQUV columns), will regenerate: {fpath}')
+        missing_files.append((fn, sn, fpath))
 
 scan_xflux_map    = {}
-scan_native_qu_map = {}
+scan_native_xh_map = {}
 
 if not missing_files:
     msg(f'  All {len(all_field_scans)} flux spectrum file(s) found — '
@@ -2025,9 +2077,12 @@ if not missing_files:
     for fn, sn in all_field_scans:
         fpath = flux_textfile_path(fn, sn, RESULTS)
         msg(f'  Loading: {fpath}')
-        cross_flux_xf, cross_frac_xf, cross_flux_native_c = load_flux_textfile(fpath, nchan_xf)
-        scan_xflux_map[(fn, sn)]     = {'flux': cross_flux_xf, 'frac': cross_frac_xf}
-        scan_native_qu_map[(fn, sn)] = cross_flux_native_c   # sqrt(U²+V²) as proxy
+        cross_flux_xf, cross_frac_xf, cross_flux_native_c = \
+            load_flux_textfile(fpath, nchan_xf)
+        scan_xflux_map[(fn, sn)] = {'flux': cross_flux_xf, 'frac': cross_frac_xf}
+        # Column 3 (sqrt(U²+V²)) is the same quantity a fresh run uses for
+        # the S/N cut, so cached and fresh runs are identical by construction.
+        scan_native_xh_map[(fn, sn)] = cross_flux_native_c
     msg()
     msg(f'  Loaded cross-hand flux for {len(scan_xflux_map)} field-scan(s).')
 
@@ -2090,24 +2145,23 @@ else:
             msg(f'    Valid channels: {n_valid}  |  '
                 f'Below {XF_MIN_CROSS_FRAC*100:.4f}% threshold: {n_below} / {n_valid}')
 
+            # The S/N cut and bottom diagnostic panel use the CROSS-HAND flux
+            # sqrt(U²+V²): the Xf solution is solved from the cross-hand
+            # visibilities XY/YX ~ U ± iV, so this is the actual per-channel
+            # signal available to the solver, and its nulls are where the
+            # phase arctan diverges.
+            scan_native_xh_map[(field_name, scan_num)] = cross_flux_native
+
             save_flux_textfile(
                 field_name, ra_rad, dec_rad, scan_num,
                 t_start, t_end,
-                freq_ghz_native, I_chan, cross_flux_native,
-                RESULTS)
+                freq_ghz_native, I_chan, Q_chan, U_chan, V_chan,
+                cross_flux_native, RESULTS)
 
             cross_flux_xf, _ = bin_channels_weighted(cross_flux_native, weight_uv, nchan_xf)
             cross_frac_xf, _ = bin_channels_weighted(cross_frac_native, weight_uv, nchan_xf)
             scan_xflux_map[(field_name, scan_num)] = {'flux': cross_flux_xf,
                                                       'frac': cross_frac_xf}
-
-            # Native-resolution sqrt(Q²+U²) for S/N diagnostic panel
-            cross_qu_native = np.sqrt(
-                np.where(np.isfinite(Q_chan), Q_chan, 0.0)**2 +
-                np.where(np.isfinite(U_chan), U_chan, 0.0)**2)
-            qu_all_nan = (~np.isfinite(Q_chan)) & (~np.isfinite(U_chan))
-            cross_qu_native[qu_all_nan] = np.nan
-            scan_native_qu_map[(field_name, scan_num)] = cross_qu_native
 
 
 # -----------------------------------------------------------------------
@@ -2120,15 +2174,15 @@ combine_frac_map = _build_field_mean_frac(scan_xflux_map)
 #  Build combine native-QU map (nanmean across scans per field)
 # -----------------------------------------------------------------------
 
-combine_native_qu_map = {}
+combine_native_xh_map = {}
 for fn in field_info:
-    scans_qu = [scan_native_qu_map[(fn, sn)]
-                for (f2, sn) in scan_native_qu_map if f2 == fn]
+    scans_qu = [scan_native_xh_map[(fn, sn)]
+                for (f2, sn) in scan_native_xh_map if f2 == fn]
     if scans_qu:
         stacked = np.array(scans_qu)
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', RuntimeWarning)
-            combine_native_qu_map[fn] = np.nanmean(stacked, axis=0)
+            combine_native_xh_map[fn] = np.nanmean(stacked, axis=0)
 
 safe_ms_stem = myms.replace('/', '_').replace(' ', '_').rstrip('_')
 
@@ -2160,11 +2214,11 @@ def _run_process_combine(skip_flagging=False, phase_ylim=None, sn_ylim=None):
         frac_lookup       = combine_frac_map,
         use_field_mean    = True,
         field_frac_map    = combine_frac_map,
-        scan_qu_map       = scan_native_qu_map,
+        scan_xh_map       = scan_native_xh_map,
         flag_polcal_snap  = flag_polcal_combine,
         freq_ghz_xf       = freq_ghz_xf,
         plot_path         = xf_plot_dir + '/xf_phases_{}_combineScan.png'.format(safe_ms_stem),
-        native_qu_lookup  = combine_native_qu_map,
+        native_xh_lookup  = combine_native_xh_map,
         freq_ghz_native   = freq_ghz_native,
         skip_flagging     = skip_flagging,
         phase_ylim        = phase_ylim,
@@ -2182,12 +2236,12 @@ def _run_process_per():
         frac_lookup       = scan_xflux_map,      # per-scan for plot colours
         use_field_mean    = False,                # plot: label by scan
         field_frac_map    = combine_frac_map,     # per-field for flagging
-        scan_qu_map       = scan_native_qu_map,
+        scan_xh_map       = scan_native_xh_map,
         flag_polcal_snap  = flag_polcal_per,
         freq_ghz_xf       = freq_ghz_xf,
         plot_path         = xf_plot_dir + '/xf_phases_{}_perScan.png'.format(safe_ms_stem),
         combine_xf_tab    = xftab_combine,
-        native_qu_lookup  = scan_native_qu_map,  # per-scan for plot S/N panel
+        native_xh_lookup  = scan_native_xh_map,  # per-scan for plot S/N panel
         freq_ghz_native   = freq_ghz_native,
     )
 
@@ -2205,11 +2259,11 @@ def _run_process_field_combine(phase_ylim=None, sn_ylim=None):
         frac_lookup       = combine_frac_map,
         use_field_mean    = True,
         field_frac_map    = combine_frac_map,
-        scan_qu_map       = scan_native_qu_map,
+        scan_xh_map       = scan_native_xh_map,
         flag_polcal_snap  = flag_polcal_field,
         freq_ghz_xf       = freq_ghz_xf,
         plot_path         = xf_plot_dir + '/xf_phases_{}_combineScanField.png'.format(safe_ms_stem),
-        native_qu_lookup  = combine_native_qu_map,
+        native_xh_lookup  = combine_native_xh_map,
         freq_ghz_native   = freq_ghz_native,
         mad_only          = True,
         fine_sigma        = XF_FIELD_MAD_SIGMA,
@@ -2236,15 +2290,15 @@ else:
 if do_multi_field:
     # Build per-channel cross-hand flux weights (field-mean QU binned to Xf grid)
     _nchan_xf   = len(freq_ghz_xf)
-    _field_qu_w = {}
-    for _fn, _qu_nat in combine_native_qu_map.items():
+    _field_xh_w = {}
+    for _fn, _qu_nat in combine_native_xh_map.items():
         _qu_nat = np.asarray(_qu_nat, dtype=float)
         _w_nat  = np.where(np.isfinite(_qu_nat), 1.0, 0.0)
         _qu_xf, _ = bin_channels_weighted(_qu_nat, _w_nat, _nchan_xf)
-        _field_qu_w[_fn] = np.where(np.isfinite(_qu_xf) & (_qu_xf > 0.0),
+        _field_xh_w[_fn] = np.where(np.isfinite(_qu_xf) & (_qu_xf > 0.0),
                                      _qu_xf, 0.0)
     # Overwrite polcal template with cross-hand flux weighted cross-field average
-    _avg_combine_fields_to_global(xftab_combine, xftab_field, _field_qu_w)
+    _avg_combine_fields_to_global(xftab_combine, xftab_field, _field_xh_w)
     _run_process_field_combine(phase_ylim=_phase_ylim, sn_ylim=_sn_ylim)
 
 

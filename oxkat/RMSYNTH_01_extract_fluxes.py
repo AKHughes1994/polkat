@@ -492,7 +492,7 @@ def read_time_info(time_file, field_name, scan=None):
         msg(f"  Middle MJD: {time_data['middle_mjd']:.10f}")
         msg(f"  Duration: {time_data['duration_hours']:.4f} hours")
     else:
-        msg(f"WARNING: No time info found for source {source_name}")
+        msg(f"WARNING: No time info found for source {field_name}")
     
     return time_data
 
@@ -1037,9 +1037,23 @@ def extract_polarization_properties(src_name,
     # Plin = sqrt(Q^2+U^2) is preferred when a polarization angle calibrator is present
     # because V is not used in angle calibration and Plin has lower noise.
     # Ptot = sqrt(Q^2+U^2+V^2) is the more general total polarized intensity.
+    # If Ptot was requested but no Ptot images exist on disk (e.g. make_pol_images.py
+    # skipped Ptot because Stokes V was unavailable), fall back to Plin instead of
+    # failing downstream.
+    plin_fallback = False
+    if not use_plin and not glob.glob(f'{src_im_identifier}*-Ptot-*'):
+        if glob.glob(f'{src_im_identifier}*-Plin-*'):
+            msg('WARNING: Ptot requested but no Ptot images found on disk -- falling back to Plin')
+            use_plin = True
+            plin_fallback = True
+        else:
+            msg('WARNING: Neither Ptot nor Plin images found on disk for this source')
+
     pol_image_type    = 'Plin' if use_plin else 'Ptot'
     pol_image_exclude = '-Ptot-' if use_plin else '-Plin-'  # Filter out the non-selected type
-    if use_plin:
+    if plin_fallback:
+        msg(f'Polarization image type: Plin (linear only) -- fallback, no Ptot images on disk')
+    elif use_plin:
         msg(f'Polarization image type: Plin (linear only) -- polang_name is set, V excluded from P estimate')
     else:
         msg(f'Polarization image type: Ptot (total, including V)')
@@ -2024,9 +2038,11 @@ def main():
                 use_plin = use_plin)
             create_polang_raw_file(project_info, timed_name, output_dict, timestamp_prefix)
             plot_stokes_spectrum(output_dict, timed_name, timestamp_prefix)
-            for temp_file in glob.glob(f'check_pos_*_{timed_name}.txt'):
+            # Trailing '*' before .txt also catches the per-channel estimate/check_pos
+            # files from fit_channel, which append _{ch_num} after the name.
+            for temp_file in glob.glob(f'check_pos_*_{timed_name}*.txt'):
                 os.remove(temp_file)
-            for temp_file in glob.glob(f'estimate_*_{timed_name}.txt'):
+            for temp_file in glob.glob(f'estimate_*_{timed_name}*.txt'):
                 os.remove(temp_file)
     else:
         msg(f'No time-interval images found — using time-averaged (single-call) mode')
@@ -2047,9 +2063,11 @@ def main():
             use_plin = use_plin)
         create_polang_raw_file(project_info, source_name, output_dict, timestamp_prefix)
         plot_stokes_spectrum(output_dict, source_name, timestamp_prefix)
-        for temp_file in glob.glob(f'check_pos_*_{source_name}.txt'):
+        # Trailing '*' before .txt also catches the per-channel estimate/check_pos
+        # files from fit_channel, which append _{ch_num} after the name.
+        for temp_file in glob.glob(f'check_pos_*_{source_name}*.txt'):
             os.remove(temp_file)
-        for temp_file in glob.glob(f'estimate_*_{source_name}.txt'):
+        for temp_file in glob.glob(f'estimate_*_{source_name}*.txt'):
             os.remove(temp_file)
 
 
