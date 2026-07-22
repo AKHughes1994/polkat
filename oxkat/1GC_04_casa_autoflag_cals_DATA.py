@@ -9,6 +9,13 @@ RFLAG_FREQDEVSCALE = 5.0   # Flagging threshold (sigma) for freq-direction devia
 TFCROP_TIMECUTOFF = 4.0    # Flagging threshold (sigma) in the time direction
 TFCROP_FREQCUTOFF = 3.0    # Flagging threshold (sigma) in the freq direction
 
+# --- Extend flags across correlations (flagdata rflag/tfcrop 'extendflags' param) ---
+EXTEND_AUTO = False
+
+# --- Extend-mode parameters (flagdata mode='extend' growtime/growfreq, % already flagged) ---
+EXTEND_TIME = 80.0
+EXTEND_FREQ = 80.0
+
 exec(open('oxkat/config.py').read())
 exec(open('oxkat/casa_read_project_info.py').read())
 
@@ -30,6 +37,7 @@ flagdata(vis=myms,
     field=bpcal_name,
     timedevscale=RFLAG_TIMEDEVSCALE,
     freqdevscale=RFLAG_FREQDEVSCALE,
+    extendflags=EXTEND_AUTO,
     flagbackup=False)
 
 flagdata(vis=myms,
@@ -38,9 +46,10 @@ flagdata(vis=myms,
     field=bpcal_name,
     timecutoff=TFCROP_TIMECUTOFF,
     freqcutoff=TFCROP_FREQCUTOFF,
+    extendflags=EXTEND_AUTO,
     flagbackup=False)
 
-flagdata(vis=myms,mode='extend',growtime=90.0,growfreq=90.0,growaround=True,flagneartime=True,flagnearfreq=True,field=bpcal_name, flagbackup=False)
+flagdata(vis=myms,mode='extend',growtime=EXTEND_TIME,growfreq=EXTEND_FREQ,growaround=True,flagneartime=True,flagnearfreq=True,field=bpcal_name, flagbackup=False)
 
 # Flagging the polarisation angle calibrator data, if it exists
 if pacal_name != '' :
@@ -50,6 +59,7 @@ if pacal_name != '' :
         field=pacal_name,
         timedevscale=RFLAG_TIMEDEVSCALE,
         freqdevscale=RFLAG_FREQDEVSCALE,
+        extendflags=EXTEND_AUTO,
         flagbackup=False)
 
     flagdata(vis=myms,
@@ -58,9 +68,10 @@ if pacal_name != '' :
         field=pacal_name,
         timecutoff=TFCROP_TIMECUTOFF,
         freqcutoff=TFCROP_FREQCUTOFF,
+        extendflags=EXTEND_AUTO,
         flagbackup=False)
 
-    flagdata(vis=myms,mode='extend',growtime=90.0,growfreq=90.0,growaround=True,flagneartime=True,flagnearfreq=True,field=pacal_name, flagbackup=False)
+    flagdata(vis=myms,mode='extend',growtime=EXTEND_TIME,growfreq=EXTEND_FREQ,growaround=True,flagneartime=True,flagnearfreq=True,field=pacal_name, flagbackup=False)
 
 # For edge cases where a phase calibrator is either the primary or the polarisation angle calibrator, we need to ensure that we don't double flag it.
 pcal_names = [pcal for pcal in pcal_names if pcal != bpcal_name and pcal != pacal_name]
@@ -72,6 +83,7 @@ for pcal in pcal_names:
         field=pcal,
         timedevscale=RFLAG_TIMEDEVSCALE,
         freqdevscale=RFLAG_FREQDEVSCALE,
+        extendflags=EXTEND_AUTO,
         flagbackup=False)
 
     flagdata(vis=myms,
@@ -80,9 +92,10 @@ for pcal in pcal_names:
         field=pcal,
         timecutoff=TFCROP_TIMECUTOFF,
         freqcutoff=TFCROP_FREQCUTOFF,
+        extendflags=EXTEND_AUTO,
         flagbackup=False)
 
-    flagdata(vis=myms,mode='extend',growtime=90.0,growfreq=90.0,growaround=True,flagneartime=True,flagnearfreq=True,field=pcal, flagbackup=False)
+    flagdata(vis=myms,mode='extend',growtime=EXTEND_TIME,growfreq=EXTEND_FREQ,growaround=True,flagneartime=True,flagnearfreq=True,field=pcal, flagbackup=False)
 
 # Saving the flag state
 flagmanager(vis=myms,mode='save',versionname='autoflag_cals_data')

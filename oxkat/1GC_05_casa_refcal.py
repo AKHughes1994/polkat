@@ -1004,14 +1004,16 @@ if pacal_name == '':
     override_cross_table = []
     override_cross_field = []
     override_cross_interp = []
-    override_parang = False
+    override_parang_cal = False
+    override_parang_target = False
     if str(XF_OVERRIDE_TABLE) != '':
         print(f'  [XF] No polarization angle calibrator, but XF_OVERRIDE_TABLE is set -- '
               f'applying external Xf table to secondaries and targets only: {XF_OVERRIDE_TABLE}')
         override_cross_table = [XF_OVERRIDE_TABLE]
         override_cross_field = ['']
         override_cross_interp = ['nearest,linear']
-        override_parang = CAL_1GC_APPLYPARANG
+        override_parang_cal = CAL_1GC_APPLYPARANG_CAL
+        override_parang_target = CAL_1GC_APPLYPARANG
 
     # ------- Secondaries
 
@@ -1027,7 +1029,7 @@ if pacal_name == '':
         applycal(vis = myms,
             gaintable = [ktab, gptab, bptab, ftab, dftab] + override_cross_table,
             field = pcal,
-            parang = override_parang,
+            parang = override_parang_cal,
             gainfield = [pcal, pcal, bpcal_name, pcal, bpcal_name] + override_cross_field,
             interp = ['nearest','linear','linear','linear','linear'] + override_cross_interp,
             flagbackup=False)
@@ -1041,7 +1043,7 @@ if pacal_name == '':
         applycal(vis=myms,
                 gaintable = [ktab, gptab, bptab, ftab, dftab] + override_cross_table,
                 field=target,
-                parang=override_parang,
+                parang=override_parang_target,
                 gainfield = [related_pcal, related_pcal, bpcal_name, related_pcal, bpcal_name] + override_cross_field,
                 interp = ['nearest','linear','linear','linear','linear'] + override_cross_interp,
                 flagbackup=False)
@@ -1069,13 +1071,14 @@ if pacal_name == '':
 
     sys.exit('Ending Early! No polarization angle calibrator')
 
-# -------- Full polarization  # CAL_1GC_APPLYPARANG controls parang from here; above is XF-less path (no sky-frame rotation needed)
+# -------- Full polarization  # CAL_1GC_APPLYPARANG_CAL controls parang for PACAL/secondaries and
+# CAL_1GC_APPLYPARANG controls it for targets from here; above is XF-less path (no sky-frame rotation needed)
 
 # ------- PACAL
 
 applycal(vis = myms,
         field = pacal_name,
-        parang = CAL_1GC_APPLYPARANG,
+        parang = CAL_1GC_APPLYPARANG_CAL,
         gaintable = [ktab, gptab, bptab, ftab, dftab] + cross_table,
         gainfield = [pacal_name, pacal_name, bpcal_name, pacal_name, bpcal_name] + cross_field,
         interp = ['nearest','linear','linear','linear','linear'] + cross_interp,
@@ -1094,7 +1097,7 @@ for i in range(0,len(pcal_names)):
 
     applycal(vis = myms,
         field = pcal,
-        parang = CAL_1GC_APPLYPARANG,
+        parang = CAL_1GC_APPLYPARANG_CAL,
         gaintable = [ktab, gptab, bptab, ftab, dftab] + cross_table,
         gainfield = [pcal, pcal, bpcal_name, pcal, bpcal_name] + cross_field,
         interp = ['nearest','linear','linear','linear','linear'] + cross_interp,

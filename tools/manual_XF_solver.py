@@ -33,15 +33,19 @@ WORKFLOW:
     adopts the (RM, sign) pair minimising |EVPA − target|
 10. Population sign check: flip channels inconsistent with band-wide median
 11. 80% sanity check: force-flip scan if <80% of channels agree with target
-12. Global XF_GLOBAL_SIGMA_CLIP σ circular phase clip (wrap-safe)
-13. Polynomial baseline + sliding circular MAD clip (wrap-safe):
+12. Cross-hand SNR flagging (FIRST flagging step): channels where binned
+    sqrt(U²+V²)/noise < XF_MIN_SN are deterministic arctan-divergence
+    failures and are removed before any statistics-based clip; noise from
+    pooled first-difference window MADs (immune to RM oscillation gradient)
+13. Global XF_GLOBAL_SIGMA_CLIP σ circular phase clip (wrap-safe)
+14. Polynomial baseline + sliding circular MAD clip (wrap-safe):
       - Fit cos/sin(phase) vs normalised channel index (poly order XF_POLY_ORDER)
       - Subtract baseline phasor; flag channels where baseline-subtracted
         deviation > XF_MAD_SIGMA_CLIP σ × 1.4826 × local circular MAD
-        (window = XF_MAD_WINDOW channels)
-14. Optional Savitzky-Golay smoothing
-15. Write corrected gains back to xftab (FLAG column preserved from polcal)
-16. Interpolate xftab gains onto full MS channel grid for IQUV diagnostic
+        (window = XF_MAD_WINDOW channels, weighted by raw cross-hand flux)
+15. Optional Savitzky-Golay smoothing
+16. Write corrected gains back to xftab (FLAG column preserved from polcal)
+17. Interpolate xftab gains onto full MS channel grid for IQUV diagnostic
     correction and Stokes before/after plots
 
 DIAGNOSTIC OUTPUTS (all in GAINPLOTS/manualXF/):
@@ -783,7 +787,7 @@ def global_sigma_clip_gains(per_scan_gains, per_scan_flags, scan_numbers, sigma=
 
 
 def _bin_qu_native_to_xf(qu_native, n_xf):
-    """Bin a native-resolution QU array to n_xf channels by nanmean."""
+    """Bin a native-resolution cross-hand flux array to n_xf channels by nanmean."""
     nchan    = len(qu_native)
     bin_size = nchan / n_xf
     qu_xf    = np.full(n_xf, np.nan)
@@ -809,8 +813,9 @@ def poly_baseline_mad_clip(gains, flags, n_chan, poly_order, window, sigma,
         channel index on [−1, +1]. This is wrap-safe because cos/sin are
         continuous everywhere. Subtract the baseline phasor from each channel's
         gain to give baseline-subtracted residual phasors.
-        If weights are provided (log1p-compressed cross-hand flux per channel),
-        the polyfit is weighted so high-S/N channels anchor the baseline.
+        If weights are provided (RAW cross-hand flux sqrt(U²+V²) per channel;
+        this function applies the log1p compression internally), the polyfit
+        is weighted so high-S/N channels anchor the baseline.
 
     Step 2 — Sliding circular MAD:
         For each unflagged channel, gather the nearest unflagged neighbours
@@ -831,8 +836,9 @@ def poly_baseline_mad_clip(gains, flags, n_chan, poly_order, window, sigma,
         sigma      : float — MAD threshold (use XF_MAD_SIGMA_CLIP)
         iterative  : bool — refit and re-clip until convergence (use XF_MAD_ITERATIVE)
         max_iter   : int — maximum iterations
-        weights    : float array (nchan,) or None — per-channel polyfit weights,
-                     e.g. log1p(sqrt(Q²+U²) + 1e-8) on xftab frequency grid.
+        weights    : float array (nchan,) or None — per-channel polyfit weights:
+                     RAW cross-hand flux sqrt(U²+V²) on the xftab frequency grid
+                     (do NOT pre-compress; log1p is applied internally).
                      None = uniform weighting.
 
     Outputs:
@@ -848,8 +854,8 @@ def poly_baseline_mad_clip(gains, flags, n_chan, poly_order, window, sigma,
     p_cos = None
     p_sin = None
 
-    # log1p-compressed weights: sqrt(Q²+U²) is positive-definite so log1p is
-    # safe with a 1e-8 floor. No normalisation needed — polyfit only cares
+    # log1p-compressed weights: cross-hand flux sqrt(U²+V²) is positive-
+    # definite so log1p is safe with a 1e-8 floor. No normalisation needed — polyfit only cares
     # about relative weights, and log1p naturally compresses dynamic range
     # without setting an artificial floor.
     if weights is not None:
@@ -2166,22 +2172,19 @@ for scan_idx, scan in enumerate(scan_numbers):
 print(f"  Total channels flipped by population check: {_total_ch_flipped}")
 
 # ============================
-# Global 10σ Circular Phase Clip
+# Cross-Hand SNR Flagging  (FIRST flagging step)
 # ============================
+# The XF solution is solved from the cross-hand visibilities XY/YX ~ U ± iV,
+# so channels where sqrt(U²+V²) sinks toward the noise are deterministic
+# failures (0/0 arctan divergence).  Running this cut FIRST removes those
+# channels before any statistics-based clip is computed, keeping the global
+# clip's pooled MAD and the fine clip's window statistics free of divergent
+# points.
+
 # Work on copies so we can show resolved vs post-clipping in the diagnostic plot
 working_gains = {scan: resolved_gains_per_scan[scan].copy() for scan in scan_numbers}
 working_flags = {scan: raw_flags_per_scan[scan].copy() for scan in scan_numbers}
 
-print(f"\n=== Global {XF_GLOBAL_SIGMA_CLIP}σ Circular Phase Clip ===")
-working_flags, global_flagged_per_scan = global_sigma_clip_gains(
-    working_gains, working_flags, scan_numbers, sigma=float(XF_GLOBAL_SIGMA_CLIP))
-
-# Snapshot flags after global clip so SNR and MAD flags can be identified separately
-post_global_flags = {scan: working_flags[scan].copy() for scan in scan_numbers}
-
-# ============================
-# Cross-Hand SNR Flagging
-# ============================
 print(f"\n=== Cross-Hand SNR Flagging (threshold = {XF_MIN_SN}) ===")
 
 snr_flagged_per_scan = {scan: np.zeros(n_xf_chan, dtype=bool) for scan in scan_numbers}
@@ -2189,20 +2192,26 @@ snr_per_scan         = {scan: np.full(n_xf_chan, np.nan) for scan in scan_number
 
 if XF_MIN_SN > 0:
     # Estimate noise at native resolution — more data points and finer windows
-    # than operating on the XF-averaged grid.
-    win_size_nat = max(3, nchan // 100)
+    # than operating on the XF-averaged grid.  Uses first-difference MADs
+    # (MAD(diff)/sqrt(2)): differencing high-passes the spectrum so the smooth
+    # RM oscillation gradient within a window does not inflate the noise
+    # estimate (a plain deviation-from-median MAD counts that gradient as
+    # noise on the oscillating cross-hand spectrum).
+    win_size_nat = max(4, nchan // 100)
     all_mads = []
     for scan_idx, scan in enumerate(scan_numbers):
-        qu_nat = np.sqrt(U_scans[scan_idx]**2 + V_scans[scan_idx]**2)
+        xh_nat = np.sqrt(U_scans[scan_idx]**2 + V_scans[scan_idx]**2)
         for start in range(0, nchan, win_size_nat):
-            seg   = qu_nat[start:start + win_size_nat]
+            seg   = xh_nat[start:start + win_size_nat]
             valid = seg[np.isfinite(seg)]
-            if len(valid) >= 3:
-                all_mads.append(float(np.median(np.abs(valid - np.median(valid)))))
+            if len(valid) >= 4:
+                d = np.diff(valid)
+                all_mads.append(
+                    float(np.median(np.abs(d - np.median(d)))) / np.sqrt(2.0))
     if all_mads:
         noise = float(np.median(all_mads)) * 1.4826
         print(f"  Estimated noise: {noise:.4e} Jy "
-              f"(pooled {len(all_mads)} windows of {win_size_nat} native ch, "
+              f"(pooled {len(all_mads)} diff-MAD windows of {win_size_nat} native ch, "
               f"{n_scans} scan(s))")
     else:
         noise = 0.0
@@ -2210,9 +2219,9 @@ if XF_MIN_SN > 0:
 
     if noise > 0:
         for scan_idx, scan in enumerate(scan_numbers):
-            qu_nat = np.sqrt(U_scans[scan_idx]**2 + V_scans[scan_idx]**2)
-            qu_xf  = _bin_qu_native_to_xf(qu_nat, n_xf_chan)
-            snr    = np.where(np.isfinite(qu_xf), qu_xf / noise, np.nan)
+            xh_nat = np.sqrt(U_scans[scan_idx]**2 + V_scans[scan_idx]**2)
+            xh_xf  = _bin_qu_native_to_xf(xh_nat, n_xf_chan)
+            snr    = np.where(np.isfinite(xh_xf), xh_xf / noise, np.nan)
             # NaN any channel already flagged for any reason at this point
             already_flagged = raw_flags_per_scan[scan] | working_flags[scan]
             snr = np.where(already_flagged, np.nan, snr)
@@ -2238,21 +2247,35 @@ if XF_MIN_SN > 0:
 else:
     print("  XF_MIN_SN <= 0 — SNR flagging disabled")
 
-# Snapshot flags after SNR clip so MAD flags can be identified separately
+# Snapshot flags after SNR clip so global/MAD flags can be identified separately
 post_snr_flags = {scan: working_flags[scan].copy() for scan in scan_numbers}
+
+# ============================
+# Global 10σ Circular Phase Clip
+# ============================
+print(f"\n=== Global {XF_GLOBAL_SIGMA_CLIP}σ Circular Phase Clip ===")
+working_flags, global_flagged_per_scan = global_sigma_clip_gains(
+    working_gains, working_flags, scan_numbers, sigma=float(XF_GLOBAL_SIGMA_CLIP))
+
+# Snapshot flags after global clip so MAD flags can be identified separately
+post_global_flags = {scan: working_flags[scan].copy() for scan in scan_numbers}
 
 # ============================
 # Polynomial Baseline + Sliding Circular MAD Clip
 # ============================
 poly_order = int(XF_POLY_ORDER) if XF_POLY_ORDER and int(XF_POLY_ORDER) > 0 else 3
 import math
-_auto_window = math.ceil(n_xf_chan / 5)
+# With the SNR cut running first, divergent clusters are already removed by
+# the time the Hampel-style MAD clip runs, so a small local window (nchan/10)
+# is preferred: tighter window MAD, better locality near RFI gaps, and W=7-ish
+# still tolerates ~3 clustered outliers before median breakdown.
+_auto_window = max(3, int(round(n_xf_chan / 10.0)))
 if _auto_window % 2 == 0:
     _auto_window += 1
 mad_window = int(XF_MAD_WINDOW) if XF_MAD_WINDOW else _auto_window
 mad_sigma  = float(XF_MAD_SIGMA_CLIP) if XF_MAD_SIGMA_CLIP else 5.0
 print(f"  MAD window: {mad_window} channels "
-      f"({'user-specified' if XF_MAD_WINDOW else f'auto: ceil_odd(ceil({n_xf_chan}/5))'})")
+      f"({'user-specified' if XF_MAD_WINDOW else f'auto: nearest odd to {n_xf_chan}/10'})")
 
 iter_str = f"iterative, max {20} passes" if XF_MAD_ITERATIVE else "single pass"
 print(f"\n=== Polynomial Baseline + Sliding Circular MAD Clip "
@@ -2266,7 +2289,10 @@ for scan_idx, scan in enumerate(scan_numbers):
     print(f"\n  Scan {scan} ({n_before}/{n_xf_chan} unflagged channels):")
     U_w = U_xf_scans[scan_idx]
     V_w = V_xf_scans[scan_idx]
-    poly_weights = np.log1p(np.sqrt(U_w**2 + V_w**2) + 1e-8)
+    # Pass RAW cross-hand flux — poly_baseline_mad_clip applies the log1p
+    # compression internally (passing pre-compressed weights would double-
+    # compress them).
+    poly_weights = np.sqrt(U_w**2 + V_w**2)
     poly_weights = np.where(np.isfinite(poly_weights) & ~working_flags[scan],
                             poly_weights, 0.0)
     working_flags[scan], p_cos, p_sin, n_clipped = poly_baseline_mad_clip(
@@ -2274,8 +2300,8 @@ for scan_idx, scan in enumerate(scan_numbers):
         n_xf_chan, poly_order, mad_window, mad_sigma,
         iterative=bool(XF_MAD_ITERATIVE), weights=poly_weights)
     poly_coeffs_per_scan[scan]  = (p_cos, p_sin)
-    # Only channels newly flagged after the SNR step are counted as MAD-flagged
-    poly_flagged_per_scan[scan] = working_flags[scan] & ~post_snr_flags[scan]
+    # Only channels newly flagged after the SNR + global steps count as MAD-flagged
+    poly_flagged_per_scan[scan] = working_flags[scan] & ~post_global_flags[scan]
     n_after = int(np.sum(~working_flags[scan]))
     print(f"  Scan {scan}: {n_clipped} channels flagged "
           f"({n_after}/{n_xf_chan} remaining)")
@@ -2399,11 +2425,11 @@ print(f"\nSUCCESS: XF table populated: {xftab}")
 # ============================
 # When XF_AVG_SCAN=True, compute a flux-weighted circular phasor average across
 # all per-scan solutions and overwrite every row with the combined solution.
-# Weight per (scan, channel) = sqrt(Q²+U²) on the xftab frequency grid.
+# Weight per (scan, channel) = cross-hand flux sqrt(U²+V²) on the xftab frequency grid.
 if XF_AVG_SCAN and n_scans > 1:
     print("\n=== Cross-Scan Flux-Weighted Circular Average (XF_AVG_SCAN=True) ===")
 
-    # Build per-scan QU weights on the xftab frequency grid
+    # Build per-scan cross-hand flux weights on the xftab frequency grid
     scan_weights_xf = {}
     for scan_idx, scan in enumerate(scan_numbers):
         U_xf = U_xf_scans[scan_idx]

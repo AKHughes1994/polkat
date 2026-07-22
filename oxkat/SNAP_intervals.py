@@ -181,6 +181,14 @@ def main():
     for n in nint_arr:
         t_offset_arr.append(cum)
         cum += n
+    expected_total_nint = cum
+
+    # Predicted t-label range each scan will occupy after renaming, printed up front so
+    # it's clear what the final naming should look like before any imaging happens.
+    for scan_n, (nint, t0) in enumerate(zip(nint_arr, t_offset_arr)):
+        t_end = t0 + nint - 1
+        msg(f'Predicted: scan{scan_n:04d} -> {nint} interval(s) -> after renaming: t{t0:04d}-t{t_end:04d}')
+    msg(f'Predicted total: {expected_total_nint} interval(s) across {len(int_arr)} scan(s) -> t0000-t{expected_total_nint - 1:04d}')
 
     SNAP_SCANS_stripped = SNAP_SCANS.strip()
     if SNAP_SCANS_stripped == '-1':
@@ -232,6 +240,7 @@ def main():
                         interval1 = int1,
                         field='0',
                         mask = mask,
+                        chandeconvolution = 0,  # never do reduced-channel joint deconvolution for snapshots
                         automask = 6.0,
                         autothreshold = 1.0)
 
@@ -387,6 +396,25 @@ def main():
         msg(f'Successfully renamed {total} images ({len(imaging_failed_scans)} scan(s) skipped due to failures)')
     else:
         msg(f'Successfully renamed {total} images')
+
+    # Final sanity check: total number of distinct t-labels actually present after
+    # renaming should match the predicted total computed up front, regardless of
+    # whether this run did the imaging/renaming itself or it was already done in
+    # an earlier run.
+    final_prefix = cfg.INTERVALS + f'/img_{myms}_modelsub'
+    final_t_labels = set()
+    for image in glob.glob(f'{final_prefix}-t*'):
+        match = img_re.search(image)
+        if match:
+            final_t_labels.add(match.group(1))
+    actual_total_nint = len(final_t_labels)
+
+    if actual_total_nint != expected_total_nint:
+        msg(f'WARNING: Something has gone wrong -- found {actual_total_nint} total t-interval(s) '
+            f'after renaming, expected {expected_total_nint}. Check for scans that failed to '
+            f'rename or produced the wrong total number of t values.')
+    else:
+        msg(f'Final check OK: {actual_total_nint} total t-interval(s) match prediction.')
 
 
 

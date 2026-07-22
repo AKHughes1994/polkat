@@ -355,6 +355,12 @@ CAL_1GC_FILLGAPS = 8                 # Maximum channel gap over which to interpo
 # only as the final step to rotate into the sky frame.
 CAL_1GC_APPLYPARANG = True
 
+# If True, parallactic-angle correction is applied via applycal to all calibrators
+# except BPCAL (i.e. the polarization angle calibrator and secondary phase
+# calibrators) -- independent of CAL_1GC_APPLYPARANG, which controls this for
+# targets. BPCAL itself is never affected (always parang=False in 1GC_05).
+CAL_1GC_APPLYPARANG_CAL = True
+
 # Band specific options
 CAL_1GC_BL_MODE = 'freq' # options are 'freq' to flag specific frequencies the 'uvrange' baselin
                          # 'aggressive' to the uvrange baseline on all frequencis,

@@ -37,7 +37,16 @@
 #   (sibling of the RMclean.json above, before RM-CLEAN; carries keys that
 #    RMclean.json does not)
 #       freq0_Hz                               -- central frequency used for the RM fit
-#       Ifreq0                                  -- Stokes I at freq0
+#       Ifreq0                                  -- Stokes I at freq0 (Jy)
+#
+#   RESULTS/img_<target_ms>_pcalmask_component<N>_rmsynth_FDFmodel.dat
+#   (rmclean1d's clean-component model spectrum: phi_radm2, cc.real, cc.imag
+#    columns, one row per Faraday-depth sample -- written whenever rmclean1d
+#    is run with -S, see RMSYNTH_02_run_rmsynth.py)
+#       Used by calc_fdf_moments() to manually compute the 1st moment of the
+#       clean-component FDF (RM-Tools doesn't save this anywhere) and the 2nd
+#       moment, printed alongside RM-Tools' own mom2CCFDF (from RMclean.json)
+#       as a cross-check.
 #
 #   RESULTS/img_*_diagnostic_rmsynth_RMclean.json / _RMsynth.json
 #       Same keys as above, but for the polarization-angle calibrator's own
@@ -53,6 +62,7 @@ import json
 import os.path as o
 import sys
 
+import numpy as np
 from astropy.coordinates import SkyCoord
 from astropy import units as u
 
@@ -83,14 +93,50 @@ def representative_frac_pol(rmclean, rmsynth):
     return amp / ifreq0 * 100.0
 
 
-def write_rmsynth_block(line, rmclean, rmsynth, include_snr=True):
+def calc_fdf_moments(fdfmodel_path):
+    """
+    Manually compute the 1st and 2nd moments of the Faraday dispersion
+    function's clean-component spectrum, from the phi/cc.real/cc.imag columns
+    in {prefix}_FDFmodel.dat (written by rmclean1d -S). RM-Tools computes the
+    1st moment internally (as an intermediate for its own 2nd-moment calc,
+    RMutils/util_misc.py:calc_mom2_FDF) but never saves it, hence recomputing
+    both here -- treating each clean component's amplitude |CC_i| as a weight
+    over Faraday depth phi_i, same construction as an intensity-weighted mean/
+    dispersion in spectral-line moment analysis:
+
+        K    = sum(|CC_i|)
+        phi1 = sum(phi_i * |CC_i|) / K                        -- 1st moment
+        phi2 = sqrt(sum((phi_i - phi1)^2 * |CC_i|) / K)       -- 2nd moment
+
+    Returns (phi1, phi2), or (None, None) if the file is missing or empty.
+    """
+    if not o.isfile(fdfmodel_path):
+        return None, None
+
+    phi, cc_real, cc_imag = np.loadtxt(fdfmodel_path, unpack=True)
+    amp = np.sqrt(cc_real**2 + cc_imag**2)
+    K = np.sum(amp)
+    if K == 0:
+        return None, None
+
+    phi1 = np.sum(phi * amp) / K
+    phi2 = np.sqrt(np.sum((phi - phi1)**2 * amp) / K)
+    return float(phi1), float(phi2)
+
+
+def write_rmsynth_block(line, rmclean, rmsynth, fdfmodel_path=None, include_snr=True):
     line('RM (rad/m^2)', fmt(rmclean.get('phiPeakPIfit_rm2'), rmclean.get('dPhiObserved_rm2')))
     line('Polarization angle (deg)', fmt(rmclean.get('polAngleFit_deg'), rmclean.get('dPolAngleFitObserved_deg')))
     if include_snr:
         line('SNR of rmsynth', fmt(rmclean.get('snrPIfit')))
     line('Central frequency for rmsynth (GHz)', fmt(hz_to_ghz(rmsynth.get('freq0_Hz'))))
-    line('Stokes I at freq0', fmt(rmsynth.get('Ifreq0')))
+    line('Stokes I at freq0 (Jy)', fmt(rmsynth.get('Ifreq0')))
     line('Pol. fraction, representative (AMP_eff/I0, %)', fmt(representative_frac_pol(rmclean, rmsynth)))
+
+    phi1, phi2_manual = calc_fdf_moments(fdfmodel_path) if fdfmodel_path else (None, None)
+    line('FDF clean components, 1st moment (rad/m^2)', fmt(phi1))
+    line('FDF clean components, 2nd moment -- manual (rad/m^2)', fmt(phi2_manual))
+    line('FDF clean components, 2nd moment -- RMclean.json mom2CCFDF (rad/m^2)', fmt(rmclean.get('mom2CCFDF')))
 
 
 def main():
@@ -134,6 +180,7 @@ def main():
             if o.isfile(rmsynth_path):
                 with open(rmsynth_path) as f:
                     rmsynth = json.load(f)
+            fdfmodel_path = rmclean_path.replace('_RMclean.json', '_FDFmodel.dat')
 
             comp_mfs = mfs.get(component, {})
 
@@ -164,7 +211,7 @@ def main():
             line('Exposure time (s)', fmt(comp_mfs.get("time_dt", [None])[0]))
             line('Central frequency (GHz)', fmt(comp_mfs.get("freq_GHz", [None])[0]))
             line('Pol. fraction, calculated (%)', fmt(comp_mfs.get("LP_frac", [None])[0], comp_mfs.get("LP_frac_err", [None])[0]))
-            write_rmsynth_block(line, rmclean, rmsynth)
+            write_rmsynth_block(line, rmclean, rmsynth, fdfmodel_path=fdfmodel_path)
             line('Position (deg)', f'{fmt(ra_deg)}, {fmt(dec_deg)}')
             line('Position (hmsdms)', hmsdms if hmsdms is not None else 'N/A')
 
@@ -179,9 +226,11 @@ def main():
             if o.isfile(diag_rmsynth_path):
                 with open(diag_rmsynth_path) as f:
                     diag_rmsynth = json.load(f)
+            diag_fdfmodel_path = diag_rmclean_path.replace('_RMclean.json', '_FDFmodel.dat')
 
             out.write('\n--- polarization-angle calibrator diagnostic ---\n')
-            write_rmsynth_block(line, diag_rmclean, diag_rmsynth, include_snr=False)
+            write_rmsynth_block(line, diag_rmclean, diag_rmsynth,
+                                 fdfmodel_path=diag_fdfmodel_path, include_snr=False)
 
     print(gen.col('Single Target Summary')+f'Wrote {out_path}')
 
