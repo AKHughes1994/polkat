@@ -33,6 +33,10 @@ def stamp():
 DEBUG_PRINT_FLAGS = False
 BASED_FLAGGER = False
 
+# Extend flags across correlations (flagdata rflag/tfcrop 'extendflags' param) --
+# applied to calibrators only, not targets.
+EXTEND_AUTO = False
+
 gapfill = CAL_1GC_FILLGAPS
 myuvrange = CAL_1GC_UVRANGE 
 myspw = CAL_1GC_FREQRANGE
@@ -237,8 +241,8 @@ bandpass(vis=myms,
     interp=['nearest', 'linear'],
     gaintable=[ktab0, gptab0])
 
-flagdata(vis=bptab0, mode='tfcrop', datacolumn='CPARAM', flagbackup=False)
-flagdata(vis=bptab0, mode='rflag', datacolumn='CPARAM', flagbackup=False)
+flagdata(vis=bptab0, mode='tfcrop', datacolumn='CPARAM', extendflags=EXTEND_AUTO, flagbackup=False)
+flagdata(vis=bptab0, mode='rflag', datacolumn='CPARAM', extendflags=EXTEND_AUTO, flagbackup=False)
 # DEBUGGING: summarize flags
 if DEBUG_PRINT_FLAGS:
     print('DEBUG: PRINTING FLAGS')
@@ -302,14 +306,16 @@ if DEBUG_PRINT_FLAGS:
 flagdata(vis=myms,
     mode='rflag',
     datacolumn='residual',
-    field=bpcal_name, 
-    flagbackup=False) 
+    field=bpcal_name,
+    extendflags=EXTEND_AUTO,
+    flagbackup=False)
 
 flagdata(vis=myms,
     mode='tfcrop',
     datacolumn='residual',
     field=bpcal_name,
-    flagbackup=False) 
+    extendflags=EXTEND_AUTO,
+    flagbackup=False)
 # DEBUGGING: summarize flags
 if DEBUG_PRINT_FLAGS:
     print('DEBUG: PRINTING FLAGS')
@@ -392,8 +398,8 @@ bandpass(vis=myms,
     gainfield=[bpcal_name, bpcal_name],
     interp=['nearest', 'linear'])
 
-flagdata(vis=bptab, mode='tfcrop', datacolumn='CPARAM', flagbackup=False)
-flagdata(vis=bptab, mode='rflag', datacolumn='CPARAM', flagbackup=False)
+flagdata(vis=bptab, mode='tfcrop', datacolumn='CPARAM', extendflags=EXTEND_AUTO, flagbackup=False)
+flagdata(vis=bptab, mode='rflag', datacolumn='CPARAM', extendflags=EXTEND_AUTO, flagbackup=False)
 # DEBUGGING: summarize flags
 if DEBUG_PRINT_FLAGS:
     print('DEBUG: PRINTING FLAGS')
@@ -572,14 +578,16 @@ if pacal_name != '':
     flagdata(vis=myms,
         mode='rflag',
         datacolumn='corrected',
-        field=pacal_name, 
-        flagbackup=False) 
+        field=pacal_name,
+        extendflags=EXTEND_AUTO,
+        flagbackup=False)
 
     flagdata(vis=myms,
         mode='tfcrop',
         datacolumn='corrected',
         field=pacal_name,
-        flagbackup=False) 
+        extendflags=EXTEND_AUTO,
+        flagbackup=False)
     # DEBUGGING: summarize flags
     if DEBUG_PRINT_FLAGS:
         print('DEBUG: PRINTING FLAGS')
@@ -628,13 +636,15 @@ for i in range(0,len(pcal_names)):
         mode='rflag',
         datacolumn='corrected',
         field=pcal,
-        flagbackup=False) 
+        extendflags=EXTEND_AUTO,
+        flagbackup=False)
 
     flagdata(vis=myms,
         mode='tfcrop',
         datacolumn='corrected',
         field=pcal,
-        flagbackup=False) 
+        extendflags=EXTEND_AUTO,
+        flagbackup=False)
     # DEBUGGING: summarize flags
     if DEBUG_PRINT_FLAGS:
         print('DEBUG: PRINTING FLAGS')
