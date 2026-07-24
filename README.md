@@ -24,6 +24,8 @@ If you make use of this software, please cite:
 
 The default `config.py` is now tuned for X-KAT observations, where preserving spectral fidelity across the band is the priority. Short baselines are now excluded via an **image-plane** UV cut (`WSC_BASELINE_CUT = True`, `WSC_BASELINE_CUTLENGTH = '750m'` by default, `WSC_TAPERMASK = True`) rather than by flagging the data. This addresses the same short-baseline artefacts that motivate `CAL_1GC_BL_MODE`, but without discarding any visibilities from the MS — the cut is only applied at imaging/deconvolution time, so you can always re-image the same MS with the full baseline range afterward (e.g. by setting `WSC_BASELINE_CUT = False`) to search for extended structure.
 
+# **IF YOU WANT THE FULL ARRAY / EXTENDED STRUCTURE, MAKE SURE TO SET `WSC_BASELINE_CUT = False`, OR RUN A SEPARATE IMAGING PASS WITHOUT THE CUT AFTER 2GC / YOUR DESIRED SELF-CALIBRATION — OTHERWISE SHORT BASELINES ARE SILENTLY EXCLUDED BY DEFAULT.**
+
 ---
 
 #### Update: Default Channels-Out Increased to 64; Joint-Polarization Cleaning Removed
