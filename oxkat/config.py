@@ -634,7 +634,7 @@ WSC_LOCALRMS_BLIND      = True   # Use a local RMS map for masking in the blind 
 # --- Masking: first self-calibration pass (two-stage workflow only) ---
 # Restricts cleaning to high-significance pixels before any amplitude self-calibration.
 # Has no effect in the standard single-round 2GC workflow.
-WSC_SHALLOWMASK = 10.0  # Auto-mask threshold (sigma) for the first deconvolution pass;
+WSC_SHALLOWMASK = 20.0  # Auto-mask threshold (sigma) for the first deconvolution pass;
                          # calibrators use 2× this value
 
 # --- Model modification before predict (two-stage self-calibration only) ---
@@ -806,7 +806,7 @@ MAKEMASK_DILATION = 3
 BREIZORRO_THRESH = 6.0
 BREIZORRO_BOXSIZE = 50
 BREIZORRO_FILLHOLES = True
-BREIZORRO_DILATION = 3
+BREIZORRO_DILATION = 1
 
 # ------------------------------------------------------------------------
 #

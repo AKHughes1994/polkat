@@ -68,11 +68,9 @@ gptab = GAINTABLES+'/cal_1GC_'+myms+'.Gp'
 gtab = GAINTABLES+'/cal_1GC_'+myms+'.G'
 ftab = GAINTABLES+'/cal_1GC_'+myms+'.F'
 dftab  = GAINTABLES+'/cal_1GC_'+myms+'.Df'
-dftab_original = dftab
 
 kcross  = GAINTABLES+'/cal_1GC_'+myms+'.KCROSS'
 xftab  = GAINTABLES+'/cal_1GC_'+myms+'.Xf'
-dftab6 = GAINTABLES+'/cal_1GC_'+myms+'.Df6'
 
 # Restore the auto_cal flag version
 flagmanager(vis=myms,
@@ -773,25 +771,23 @@ if pacal_name != '':
         
         # Setup combine parameter
         combine_param = 'scan' if XF_AVG_SCAN else ''
-        kcross_spw = '*:1.0~1.65GHz' if band == 'L' else ''
-
-        # ------- KCROSS (polcal; apply K, Gp, B, Ga)
+        
+        # ------- KCROSS (polcal; apply K, Gp, B, Ga, Df from polcal/primary)
         # Always solve KCROSS (cheap computation), skip flag only controls application
         print(f"  Solving for KCROSS (cross-hand delay) {'[will NOT be applied]' if XF_SKIP_KCROSS else '[will be applied]'}")
         gaincal(vis = myms,
             field = pacal_name,
-            spw = kcross_spw,
             caltable = kcross,
             refant = str(ref_ant),
             solint = 'inf',
             combine = combine_param,
             gaintype='KCROSS',
             parang = True,
-            gaintable=[ktab, gptab, bptab, gtab],
-            gainfield=[pacal_name, pacal_name, bpcal_name, pacal_name],
-            interp = ['linear','linear','linear','linear'],
+            gaintable=[ktab, gptab, bptab, gtab, dftab],
+            gainfield=[pacal_name, pacal_name, bpcal_name, pacal_name, bpcal_name],
+            interp = ['linear','linear','linear','linear','linear'],
             append = False)
-
+        
         # If skipping KCROSS, immediately move it to bad name and never use it
         if XF_SKIP_KCROSS:
             bad_kcross = kcross.replace('.KCROSS', '_bad.KCROSS')
@@ -799,30 +795,8 @@ if pacal_name != '':
             if os.path.isdir(bad_kcross):
                 shutil.rmtree(bad_kcross)
             shutil.move(kcross, bad_kcross)
-        else:
-            # ------- Re-solve Df (primary; apply K, Gp, B, Ga, KCROSS) into a separate table
-            # CASA enforces the apply order KCROSS -> Df -> Xf, and these tables do not
-            # commute, so Df must be re-solved now that KCROSS exists -- otherwise the
-            # original (KCROSS-free) Df would be incoherent with the applied KCROSS/Xf terms.
-            print(f"  Re-solving Df (leakage) with KCROSS included: {dftab6}")
-            polcal(vis=myms,
-                field=bpcal_name,
-                uvrange=primary_uvrange_use,
-                caltable=dftab6,
-                refant=str(ref_ant),
-                solint='inf',
-                poltype='Df',
-                combine='scan',
-                gaintable=[ktab, gptab, bptab, gtab, kcross],
-                gainfield=[bpcal_name, bpcal_name, bpcal_name, bpcal_name, pacal_name],
-                interp=['nearest', 'linear', 'linear', 'linear', 'linear'])
 
-            flagdata(vis=dftab6, mode='clip', clipminmax=[0.0,0.1], flagbackup=False, datacolumn='CPARAM')
-
-            # Active Df is now the KCROSS-informed table
-            dftab = dftab6
-
-        # -------- Xf (polcal; apply Bp, Df, Gp, G, K, [KCROSS] (polcal))
+        # -------- Xf (polcal; apply Bp, Df (primary), Gp, G, K, [KCROSS] (polcal))
         # Build gaintable list based on skip flag
         if XF_SKIP_KCROSS:
             print("  Solving for Xf (cross-hand phase) WITHOUT KCROSS")
@@ -872,21 +846,16 @@ if pacal_name != '':
             scan_gains = np.nanmedian(gains[0, :, scan_mask].T, axis=-1)
             scan_flags = np.nanmedian(flags[0, :, scan_mask].T, axis=-1).astype(bool)
             scan_gains = scan_gains[~scan_flags]
-
-            if len(scan_gains) < 2:
-                manual_XF_per_scan[scan] = True
-                print(f"Scan {scan}: fewer than 2 unflagged channels, continuous = False")
-                continue
-
+            
             # Check continuity
             phases = np.angle(scan_gains)
             phase_diffs = np.diff(phases)
             phase_diffs = np.arctan2(np.sin(phase_diffs), np.cos(phase_diffs))
             max_jump = np.max(np.abs(np.degrees(phase_diffs)))
-
+            
             is_continuous = max_jump < XF_AUTO_ANG_JUMP
             manual_XF_per_scan[scan] = not is_continuous
-
+            
             print(f"Scan {scan}: max jump = {max_jump:.2f}°, continuous = {is_continuous}")
 
         # Determine which scans are continuous
@@ -926,35 +895,17 @@ if pacal_name != '':
                 gaincal(vis = myms,
                     field = pacal_name,
                     scan = ','.join(map(str, continuous_scans)),
-                    spw = kcross_spw,
                     caltable = kcross,
                     refant = str(ref_ant),
                     solint = 'inf',
                     combine = combine_param,
                     gaintype='KCROSS',
                     parang = True,
-                    gaintable=[ktab, gptab, bptab, gtab],
-                    gainfield=[pacal_name, pacal_name, bpcal_name, pacal_name],
-                    interp = ['linear','linear','linear','linear'],
+                    gaintable=[ktab, gptab, bptab, gtab, dftab],
+                    gainfield=[pacal_name, pacal_name, bpcal_name, pacal_name, bpcal_name],
+                    interp = ['linear','linear','linear','linear','linear'],
                     append = False)
-
-                # dftab already points at dftab6 from the first KCROSS-informed solve
-                # above -- overwrite it again with the continuous-scans-only KCROSS.
-                print(f"  Re-solving Df (leakage) with KCROSS included, overwriting: {dftab}")
-                polcal(vis=myms,
-                    field=bpcal_name,
-                    uvrange=primary_uvrange_use,
-                    caltable=dftab,
-                    refant=str(ref_ant),
-                    solint='inf',
-                    poltype='Df',
-                    combine='scan',
-                    gaintable=[ktab, gptab, bptab, gtab, kcross],
-                    gainfield=[bpcal_name, bpcal_name, bpcal_name, bpcal_name, pacal_name],
-                    interp=['nearest', 'linear', 'linear', 'linear', 'linear'])
-
-                flagdata(vis=dftab, mode='clip', clipminmax=[0.0,0.1], flagbackup=False, datacolumn='CPARAM')
-
+            
             # Remake Xf table with only continuous scans
             print(f"  Remaking Xf table using only continuous scans: {continuous_scans}")
             polcal(vis = myms,
@@ -989,11 +940,7 @@ if pacal_name != '':
                 if os.path.isdir(bad_kcross):
                     shutil.rmtree(bad_kcross)
                 shutil.move(kcross, bad_kcross)
-
-                # KCROSS is abandoned -- revert to the original (KCROSS-free) Df table
-                print(f"  Reverting Df to original table (KCROSS abandoned): {dftab_original}")
-                dftab = dftab_original
-
+            
             # Fall back to manual solver (can handle both single and multiple scans)
             print(f"  Falling back to manual XF solver ({len(unique_scans)} scan(s))")
             manual_XF = True
@@ -1016,9 +963,8 @@ if pacal_name != '':
         print(f'  [XF] Overriding active Xf table with external: {XF_OVERRIDE_TABLE}')
         xftab        = XF_OVERRIDE_TABLE
         cross_table  = [xftab]
-        cross_field  = ['']
-        cross_interp = ['nearest,linear']
-        dftab        = dftab_original
+        cross_field  = [pacal_name]
+        cross_interp = ['linear']
         print(f'  [XF] KCROSS removed from gain tables; cross_table = {cross_table}')
 
     # --- Optional: resolve the +/-180 deg degeneracy to a reference phase ---
@@ -1051,7 +997,7 @@ if pacal_name != '':
 # ------- BPCAL
 
 applycal(vis = myms,
-    gaintable = [ktab, gptab, bptab, ftab, dftab_original],
+    gaintable = [ktab, gptab, bptab, ftab, dftab],
     field = bpcal_name,
     parang = False,
     gainfield = [bpcal_name, bpcal_name, bpcal_name, bpcal_name, bpcal_name],

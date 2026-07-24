@@ -272,7 +272,12 @@ def main():
                         mask = mask,
                         chandeconvolution = 0,  # never do reduced-channel joint deconvolution for snapshots
                         automask = 6.0,
-                        autothreshold = 1.0)
+                        autothreshold = 1.0,
+                        # Match the uvlimit choices used for the 2GC final self-calibrated
+                        # image (WSCMA step), which always applies the UV cut regardless of
+                        tukeytaper = cfg.WSC_TUKEYTAPER,
+                        minuvl = cfg.WSC_MINUVL,
+                        maxuvl = cfg.WSC_MAXUVL)
 
         wsclean_failed = False
         for syscall in imcall:

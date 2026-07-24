@@ -218,7 +218,7 @@ def process_one(modelsub_image, model_images, truncate_model, modelsub_shape, cr
         # racing on the same PSF (shared across Stokes for a given interval)
         restored_psf = psf_image.replace('modelsub', 'restored')
         if not os.path.exists(restored_psf):
-            subprocess.run([f'cp {psf_image} {restored_psf}'], shell=True)
+            subprocess.run([f'cp -n {psf_image} {restored_psf}'], shell=True)
 
         if truncate_model:
             # Write tmp file next to the model but with a worker-unique name
