@@ -52,6 +52,7 @@ def main():
 
     PYTHON3_CONTAINER = gen.get_container(CONTAINER_PATH,cfg.PYTHON3_PATTERN,USE_SINGULARITY)
     ALBUS_CONTAINER = gen.get_container(CONTAINER_PATH,cfg.ALBUS_PATTERN,USE_SINGULARITY)
+    SPINIFEX_CONTAINER = gen.get_container(CONTAINER_PATH,cfg.SPINIFEX_PATTERN,USE_SINGULARITY)
     CASA_CONTAINER = gen.get_container(CONTAINER_PATH,cfg.CASA_PATTERN,USE_SINGULARITY)
     TRICOLOUR_CONTAINER = gen.get_container(CONTAINER_PATH,cfg.TRICOLOUR_PATTERN,USE_SINGULARITY)
 
@@ -110,16 +111,29 @@ def main():
         steps.append(step)
         step_i += 1
 
-        step = {}
-        step['step'] = step_i
-        step['comment'] = 'Run ALBUS on all of the Targets + Polarization Calibrators'
-        step['dependency'] = step_i - 1
-        step['slurm_config'] = cfg.SLURM_RM
-        step['id'] = 'ALBUS'+code
-        syscall = CONTAINER_RUNNER+ALBUS_CONTAINER+' ' if USE_SINGULARITY else ''
-        syscall += 'python3 '+cfg.OXKAT+'/RMSYNTH_03_run_ALBUS.py'
-        step['syscall'] = syscall
-        steps.append(step)
+    step = {}
+    step['step'] = step_i
+    step['comment'] = 'Run SPINIFEX on all sources'
+    step['dependency'] = step_i - 1
+    step['slurm_config'] = cfg.SLURM_RM
+    step['id'] = 'SPFEX'+code
+    syscall = CONTAINER_RUNNER+SPINIFEX_CONTAINER+' ' if USE_SINGULARITY else ''
+    syscall += 'python-spinifex '+cfg.OXKAT+'/RMSYNTH_03_run_SPINIFEX.py'
+    step['syscall'] = syscall
+    steps.append(step)
+    step_i += 1
+
+    # step = {}
+    # step['step'] = step_i
+    # step['comment'] = 'Run ALBUS on all extracted sources'
+    # step['dependency'] = step_i - 1
+    # step['slurm_config'] = cfg.SLURM_RM
+    # step['id'] = 'ALBUS'+code
+    # syscall = CONTAINER_RUNNER+ALBUS_CONTAINER+' ' if USE_SINGULARITY else ''
+    # syscall += 'python3 '+cfg.OXKAT+'/RMSYNTH_03_run_ALBUS.py'
+    # step['syscall'] = syscall
+    # steps.append(step)
+    # step_i += 1
 
 
     # ------------------------------------------------------------------------------

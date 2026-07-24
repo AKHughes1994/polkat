@@ -111,15 +111,19 @@ if __name__ == '__main__':
                 sys.exit()
 
         # Inputs
-        model_prefix = sys.argv[-3]
-        target_prefix = sys.argv[-2]
-        pol = sys.argv[-1]
+        mfs_only = '--mfs-only' in sys.argv
+        args = [a for a in sys.argv[1:] if not a.startswith('--')]
+        model_prefix = args[0]
+        target_prefix = args[1]
+        pol = args[2]
        
         # Convolution parameters 
         cropsize = 51 # Size of convolving kernel in pixels 
 
         # Get the array of modelsub images and restoring model iamges
         modelsub_images = sorted(glob.glob(f'{target_prefix}*image.fits'))
+        if mfs_only:
+            modelsub_images = [im for im in modelsub_images if '-MFS-' in im]
         model_images = sorted(glob.glob(f'{model_prefix}*-model.fits'))
 
         # Check to see if the model has different dimension than the snapshot imaging

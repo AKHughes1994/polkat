@@ -1,3 +1,4 @@
+> **DEPRECATED:** `polkat_QC_selfcal` is no longer the default branch. Following a large merge of changes from `dev`, `main` is now the default branch going forward. This branch is preserved as-is for posterity (e.g. reproducing older results) but is no longer actively maintained — new users should use `main` instead.
 
 If you make use of this software, please cite:
 

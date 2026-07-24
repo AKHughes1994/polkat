@@ -29,10 +29,21 @@ def stamp():
 
 # ------- Parameters
 
+DEBUG_PRINT_FLAGS = False
 
 gapfill = CAL_1GC_FILLGAPS
 myuvrange = CAL_1GC_UVRANGE 
 myspw = CAL_1GC_FREQRANGE
+
+# Optional: Override uvrange for primary calibrator only (leave as '' to use myuvrange)
+# primary_uvrange = '>1000m'
+primary_uvrange = ''
+
+# Use primary_uvrange if set, otherwise use myuvrange
+if primary_uvrange != '':
+    primary_uvrange_use = primary_uvrange
+else:
+    primary_uvrange_use = myuvrange
 
 
 # ------- Setup names
@@ -43,15 +54,12 @@ tt = stamp()
 # Calibrator tables
 ktab0 = GAINTABLES+'/cal_1GC_'+myms+'.K0'
 bptab0 = GAINTABLES+'/cal_1GC_'+myms+'.B0'
-gptab0 = GAINTABLES+'/cal_1GC_'+myms+'.Gp0'
-gatab0 = GAINTABLES+'/cal_1GC_'+myms+'.Ga0'
-ftab0 = GAINTABLES+'/cal_1GC_'+myms+'.F0'
+gtab0 = GAINTABLES+'/cal_1GC_'+myms+'.G0'
 dftab0  = GAINTABLES+'/cal_1GC_'+myms+'.Df0'
 
 ktab = GAINTABLES+'/cal_1GC_'+myms+'.K'
 bptab = GAINTABLES+'/cal_1GC_'+myms+'.B'
-gptab = GAINTABLES+'/cal_1GC_'+myms+'.Gp'
-gatab = GAINTABLES+'/cal_1GC_'+myms+'.Ga'
+gtab = GAINTABLES+'/cal_1GC_'+myms+'.G'
 ftab = GAINTABLES+'/cal_1GC_'+myms+'.F'
 dftab  = GAINTABLES+'/cal_1GC_'+myms+'.Df'
 
@@ -64,10 +72,6 @@ flagmanager(vis=myms,
         versionname='autoflag_cals_data')
 
 # Remove ftabs if they exist to prevent code from breaking
-if os.path.isdir(ftab0):
-    print(f"Removing: {ftab0}")
-    shutil.rmtree(ftab0)
-
 if os.path.isdir(ftab):
     print(f"Removing: {ftab}")
     shutil.rmtree(ftab)
@@ -169,39 +173,21 @@ for i in range(0,len(pcal_names)):
 
 gaincal(vis=myms,
     field=bpcal_name,
-    #uvrange=myuvrange,
-    #spw=myspw,
     caltable=ktab0,
-    refant = str(ref_ant),
-    gaintype = 'K',
-    solint = 'inf')
+    uvrange=primary_uvrange_use,
+    spw=myspw,
+    refant=str(ref_ant),
+    gaintype='K',
+    solint='inf')
 
 
-# ------- Gp0 (primary; apply K0)
-
-
-gaincal(vis=myms,
-    field=bpcal_name,
-    uvrange=myuvrange,
-    caltable=gptab0,
-    refant = str(ref_ant),
-    gaintype='G',
-    solint='inf',
-    calmode='p',
-    minsnr=5,
-    gainfield=[bpcal_name],
-    interp = ['linear'],
-    gaintable=[ktab0])
-
-
-# ------- B0 (primary; apply K0, Gp0)
-
+# ------- B0 (primary; apply K0)
 
 bandpass(vis=myms,
-    field=bpcal_name, 
-    uvrange=myuvrange,
+    field=bpcal_name,
+    uvrange=primary_uvrange_use,
     caltable=bptab0,
-    refant = str(ref_ant),
+    refant=str(ref_ant),
     solint='inf',
     combine='',
     solnorm=False,
@@ -209,60 +195,68 @@ bandpass(vis=myms,
     minsnr=3.0,
     bandtype='B',
     fillgaps=gapfill,
-    gainfield=[bpcal_name,bpcal_name],
-    interp = ['linear','linear'],
-    gaintable=[ktab0,gptab0])
+    gainfield=[bpcal_name],
+    interp=['nearest'],
+    gaintable=[ktab0])
 
+flagdata(vis=bptab0, mode='tfcrop', datacolumn='CPARAM', flagbackup=False)
+flagdata(vis=bptab0, mode='rflag', datacolumn='CPARAM', flagbackup=False)
+# DEBUGGING: summarize flags
+if DEBUG_PRINT_FLAGS:
+    print('DEBUG: PRINTING FLAGS')
+    flagdata(myms, mode='summary')
 
-flagdata(vis=bptab0,mode='tfcrop',datacolumn='CPARAM', flagbackup=False)
-flagdata(vis=bptab0,mode='rflag',datacolumn='CPARAM', flagbackup=False)
-
-# ------- Ga0 (primary; apply K0, Gp0, BP0) -- Type T
-
+# ------- G0 (primary; apply K0, B0) -- Type T, amp+phase
 
 gaincal(vis=myms,
     field=bpcal_name,
-    uvrange=myuvrange,
-    spw = myspw,
-    caltable=gatab0,
-    refant = str(ref_ant),
+    uvrange=primary_uvrange_use,
+    spw=myspw,
+    caltable=gtab0,
+    refant=str(ref_ant),
     gaintype='T',
     solint='inf',
-    calmode='a',
+    calmode='ap',
     minsnr=3,
-    gainfield=[bpcal_name,bpcal_name, bpcal_name],
-    interp = ['linear','linear', 'linear'],
-    gaintable=[ktab0,gptab0, bptab0])
+    gainfield=[bpcal_name, bpcal_name],
+    interp=['nearest', 'linear'],
+    gaintable=[ktab0, bptab0])
 
 
-# -------- Solve for Df0 (apply K0, Gp0, Bp0, Ga0)
+# -------- Solve for Df0 (apply K0, B0, G0)
 
-polcal(vis = myms,
-    field = bpcal_name,
-    uvrange = myuvrange,
-    caltable = dftab0,
-    refant = str(ref_ant),
-    solint = 'inf',
+polcal(vis=myms,
+    field=bpcal_name,
+    uvrange=primary_uvrange_use,
+    caltable=dftab0,
+    refant=str(ref_ant),
+    solint='inf',
     poltype='Df',
-    combine = 'scan',
-    gaintable=[ktab0,gptab0, bptab0,gatab0],
-    gainfield=[bpcal_name,bpcal_name,bpcal_name, bpcal_name],
-    interp = ['linear','linear','linear','linear'],
-    append = False)
+    combine='scan',
+    gaintable=[ktab0, bptab0, gtab0],
+    gainfield=[bpcal_name, bpcal_name, bpcal_name],
+    interp=['nearest', 'linear', 'linear'],
+    append=False)
 
-flagdata(vis=dftab0,mode='clip', clipminmax=[0.0,0.1], flagbackup=False, datacolumn='CPARAM')
+flagdata(vis=dftab0, mode='clip', clipminmax=[0.0,0.1], flagbackup=False, datacolumn='CPARAM')
+# DEBUGGING: summarize flags
+if DEBUG_PRINT_FLAGS:
+    print('DEBUG: PRINTING FLAGS')
+    flagdata(myms, mode='summary')
 
-# ------- Correct primary data with K0,B0,Gp0,gatab0,dftab0
-
+# ------- Correct primary data with K0, B0, G0, Df0
 
 applycal(vis=myms,
-    gaintable=[ktab0,gptab0,bptab0, gatab0, dftab0],
-    #applymode='calflagstrict',
+    gaintable=[ktab0, bptab0, gtab0, dftab0],
     field=bpcal_name,
-    #calwt=False,
     parang=True,
-    gainfield=[bpcal_name,bpcal_name,bpcal_name, bpcal_name, bpcal_name],
-    interp = ['linear','linear','linear', 'linear', 'linear'], flagbackup=False)
+    gainfield=[bpcal_name, bpcal_name, bpcal_name, bpcal_name],
+    interp=['nearest', 'linear', 'linear', 'linear'],
+    flagbackup=False)
+# DEBUGGING: summarize flags
+if DEBUG_PRINT_FLAGS:
+    print('DEBUG: PRINTING FLAGS')
+    flagdata(myms, mode='summary')
 
 
 # ------- Flag primary on CORRECTED_DATA - MODEL_DATA
@@ -270,14 +264,18 @@ applycal(vis=myms,
 flagdata(vis=myms,
     mode='rflag',
     datacolumn='residual',
-    field=bpcal_name, 
-    flagbackup=False) 
+    field=bpcal_name,
+    flagbackup=False)
 
 flagdata(vis=myms,
     mode='tfcrop',
     datacolumn='residual',
     field=bpcal_name,
-    flagbackup=False) 
+    flagbackup=False)
+# DEBUGGING: summarize flags
+if DEBUG_PRINT_FLAGS:
+    print('DEBUG: PRINTING FLAGS')
+    flagdata(myms, mode='summary')
 
 flagmanager(vis=myms,
         mode='delete',
@@ -295,45 +293,25 @@ flagmanager(vis=myms,
 # ---------------------------------------------------------------------------------------- #
 
 
-# ------- K (primary; apply B0, Gp0, Ga0, Df0)
-
+# ------- K (primary; no prior calibration)
 
 gaincal(vis=myms,
     field=bpcal_name,
     caltable=ktab,
-    refant = str(ref_ant),
-    gaintype = 'K',
-    solint = 'inf',
-    gaintable=[bptab0,gptab0, gatab0, dftab0],
-    gainfield=[bpcal_name, bpcal_name, bpcal_name, bpcal_name],
-    interp=['linear','linear', 'linear', 'linear'])
+    uvrange=primary_uvrange_use,
+    spw=myspw,
+    refant=str(ref_ant),
+    gaintype='K',
+    solint='inf')
 
 
-# ------- Gp (primary; apply K,B0, Ga0, Df0)
-
-
-gaincal(vis=myms,
-    field=bpcal_name,
-    uvrange=myuvrange,
-    caltable=gptab,
-    gaintype='G',
-    refant = str(ref_ant),
-    solint='inf',
-    calmode='p',
-    minsnr=5,
-    gaintable=[bptab0,ktab, gatab0, dftab0],
-    gainfield=[bpcal_name, bpcal_name, bpcal_name, bpcal_name],
-    interp=['linear','linear', 'linear', 'linear'])
-
-
-# ------- B (primary; apply K, Gp, Ga0, Df0)
-
+# ------- B (primary; apply K)
 
 bandpass(vis=myms,
     field=bpcal_name,
-    uvrange=myuvrange,
+    uvrange=primary_uvrange_use,
     caltable=bptab,
-    refant = str(ref_ant),
+    refant=str(ref_ant),
     solint='inf',
     combine='',
     solnorm=False,
@@ -341,46 +319,53 @@ bandpass(vis=myms,
     minsnr=3.0,
     bandtype='B',
     fillgaps=gapfill,
-    gaintable=[ktab, gptab, gatab0, dftab0],
-    gainfield=[bpcal_name, bpcal_name, bpcal_name, bpcal_name],
-    interp=['linear','linear', 'linear', 'linear'])
+    gaintable=[ktab],
+    gainfield=[bpcal_name],
+    interp=['nearest'])
 
+flagdata(vis=bptab, mode='tfcrop', datacolumn='CPARAM', flagbackup=False)
+flagdata(vis=bptab, mode='rflag', datacolumn='CPARAM', flagbackup=False)
+# DEBUGGING: summarize flags
+if DEBUG_PRINT_FLAGS:
+    print('DEBUG: PRINTING FLAGS')
+    flagdata(myms, mode='summary')
 
-flagdata(vis=bptab,mode='tfcrop',datacolumn='CPARAM' , flagbackup=False)
-flagdata(vis=bptab,mode='rflag',datacolumn='CPARAM' , flagbackup=False)
-
-# -------- Ga (primary; apply K, Gp, BP, Df0) -- Gaintype 'T'
+# -------- G (primary; apply K, B) -- Type T, amp+phase
 
 gaincal(vis=myms,
     field=bpcal_name,
-    uvrange=myuvrange,
-    spw = myspw,
-    caltable=gatab,
-    refant = str(ref_ant),
+    uvrange=primary_uvrange_use,
+    spw=myspw,
+    caltable=gtab,
+    refant=str(ref_ant),
     gaintype='T',
     solint='inf',
-    calmode='a',
+    calmode='ap',
     minsnr=3,
-    gaintable=[ktab, gptab, bptab, dftab0],
-    gainfield=[bpcal_name, bpcal_name, bpcal_name, bpcal_name],
-    interp=['linear','linear', 'linear', 'linear'])
+    gaintable=[ktab, bptab],
+    gainfield=[bpcal_name, bpcal_name],
+    interp=['nearest', 'linear'])
 
 
-# -------- Solve for Df (primary; apply K, Gp, BP, Ga)
+# -------- Solve for Df (primary; apply K, B, G)
 
-polcal(vis = myms,
-    field = bpcal_name,
-    uvrange = myuvrange,
-    caltable = dftab,
-    refant = str(ref_ant),
-    solint = 'inf',
+polcal(vis=myms,
+    field=bpcal_name,
+    uvrange=primary_uvrange_use,
+    caltable=dftab,
+    refant=str(ref_ant),
+    solint='inf',
     poltype='Df',
-    combine = 'scan',
-    gaintable=[ktab, gptab, bptab, gatab],
-    gainfield=[bpcal_name, bpcal_name, bpcal_name, bpcal_name],
-    interp=['linear','linear', 'linear', 'linear'])
+    combine='scan',
+    gaintable=[ktab, bptab, gtab],
+    gainfield=[bpcal_name, bpcal_name, bpcal_name],
+    interp=['nearest', 'linear', 'linear'])
 
 flagdata(vis=dftab, mode='clip', clipminmax=[0.0,0.1], flagbackup=False, datacolumn='CPARAM')
+# DEBUGGING: summarize flags
+if DEBUG_PRINT_FLAGS:
+    print('DEBUG: PRINTING FLAGS')
+    flagdata(myms, mode='summary')
 
 
 # -------------------------------------------------------------------------------------------------------- #
@@ -391,57 +376,36 @@ flagdata(vis=dftab, mode='clip', clipminmax=[0.0,0.1], flagbackup=False, datacol
 
 if pacal_name != '':
 
-    # ------- Gp0 (polcal; apply Bp, Df, K (primary))
+    # ------- G0 (polcal; apply B, Df, K from primary) -- Type T, amp+phase
 
-
-    gaincal(vis = myms,
+    gaincal(vis=myms,
         field=pacal_name,
         uvrange=myuvrange,
-        # spw = myspw,
-        caltable=gptab0,
-        refant = str(ref_ant),
-        gaintype='G',
+        spw=myspw,
+        caltable=gtab0,
+        refant=str(ref_ant),
+        gaintype='T',
         solint='inf',
-        calmode='p',
+        calmode='ap',
         minsnr=3,
         gaintable=[ktab, bptab, dftab],
         gainfield=[bpcal_name, bpcal_name, bpcal_name],
         interp=['linear', 'linear', 'linear'],
         append=True)
 
+    # ------- K0 (polcal; apply B, Df from primary, G0 from polcal)
 
-    # ------- Ga0 (polcal; apply Bp, Df, K (primary) Gp0 (polcal))
-
-
-    gaincal(vis = myms,
+    gaincal(vis=myms,
         field=pacal_name,
+        caltable=ktab0,
         uvrange=myuvrange,
-        spw = myspw,
-        caltable=gatab0,
-        refant = str(ref_ant),
-        gaintype='T',
+        spw=myspw,
+        refant=str(ref_ant),
+        gaintype='K',
         solint='inf',
-        calmode='a',
-        minsnr=3,
-        gaintable=[ktab, gptab0, bptab, dftab],
-        gainfield=[bpcal_name, pacal_name, bpcal_name, bpcal_name],
-        interp=['linear', 'linear', 'linear', 'linear'],
-        append=True)
-
-    # ------- K0 (polcal; apply Bp, Df (primary), Gp0, Ga0 (polcal))
-
-
-    gaincal(vis= myms,
-        field = pacal_name,
-        #   uvrange = myuvrange,
-        #   spw=myspw,
-        caltable = ktab0,
-        refant = str(ref_ant),
-        gaintype = 'K',
-        solint='inf',
-        gaintable=[gptab0, gatab0, bptab, dftab],
-        gainfield=[pacal_name,pacal_name, bpcal_name, bpcal_name],
-        interp=['linear', 'linear', 'linear', 'linear'],
+        gaintable=[bptab, dftab, gtab0],
+        gainfield=[bpcal_name, bpcal_name, pacal_name],
+        interp=['linear', 'linear', 'linear'],
         append=True)
 
 # ----- Loop over secondaries
@@ -455,96 +419,68 @@ for i in range(0,len(pcal_names)):
         # If so, skip to the next iteration as it is already in the working tables
         continue
 
-    # ------- Gp0 (pcal; apply Bp, Df, K (primary))
+    # ------- G0 (pcal; apply B, Df, K from primary) -- Type T, amp+phase
 
-    gaincal(vis = myms,
+    gaincal(vis=myms,
         field=pcal,
         uvrange=myuvrange,
-        # spw = myspw,
-        caltable=gptab0,
-        refant = str(ref_ant),
-        gaintype='G',
+        spw=myspw,
+        caltable=gtab0,
+        refant=str(ref_ant),
+        gaintype='T',
         solint='inf',
-        calmode='p',
+        calmode='ap',
         minsnr=3,
         gaintable=[ktab, bptab, dftab],
         gainfield=[bpcal_name, bpcal_name, bpcal_name],
+        interp=['nearest', 'linear', 'linear'],
+        append=True)
+
+    # ------- K0 (pcal; apply B, Df from primary, G0 from pcal)
+
+    gaincal(vis=myms,
+        field=pcal,
+        caltable=ktab0,
+        uvrange=myuvrange,
+        spw=myspw,
+        refant=str(ref_ant),
+        gaintype='K',
+        solint='inf',
+        gaintable=[bptab, dftab, gtab0],
+        gainfield=[bpcal_name, bpcal_name, pcal],
         interp=['linear', 'linear', 'linear'],
         append=True)
-
-
-    # ------- Ga0 (pcal; apply Bp, Df, K (primary) Gp0 (pcal))
-
-    gaincal(vis = myms,
-        field=pcal,
-        uvrange=myuvrange,
-        spw = myspw,
-        caltable=gatab0,
-        refant = str(ref_ant),
-        gaintype='T',
-        solint='inf',
-        calmode='a',
-        minsnr=3,
-        gaintable=[ktab, gptab0, bptab, dftab],
-        gainfield=[bpcal_name, pcal, bpcal_name, bpcal_name],
-        interp=['linear', 'linear', 'linear', 'linear'],
-        append=True)
-
-    # ------- K0 (pcal; apply Bp, Df (primary), Gp0, Ga0 (pcal))
-
-
-    gaincal(vis= myms,
-        field = pcal,
-        #   uvrange = myuvrange,
-        #   spw=myspw,
-        caltable = ktab0,
-        refant = str(ref_ant),
-        gaintype = 'K',
-        solint='inf',
-        gaintable=[gptab0, gatab0, bptab, dftab],
-        gainfield=[pcal,pcal, bpcal_name, bpcal_name],
-        interp=['linear', 'linear', 'linear', 'linear'],
-        append=True)
-
-# --- Apply fluxscaling to Ga0 but only if there are calibration fields other than the primary
-if len([pcal for pcal in pcal_names if pcal != bpcal_name]) > 0 or pacal_name != '':
-    
-    # --- Apply fluxscaling to Ga0
-    fluxscale(vis=myms,
-        caltable = gatab0,
-        fluxtable = ftab0,
-        reference = bpcal_name,
-        append = False,
-        transfer = '')
-
-# If there is no need to apply flux scaling, we can set ftab0 to gatab0 as the only calibrator is the primary    
-else:
-    ftab0 = gatab0
 
 if pacal_name != '':
-    # -------- Applycal (polcal; Bp, Df (primary), Ga0, K0, Gp0 (polcal)) and Flag
+    # -------- Applycal (polcal; B, Df from primary, K0, G0 from polcal) and Flag
     
     applycal(vis=myms,
-        gaintable=[ktab0,gptab0, ftab0, bptab, dftab],
-        #applymode='calflagstrict',
+        gaintable=[ktab0, bptab, gtab0, dftab],
         field=pacal_name,
-        #calwt=False,
         parang=True,
-        gainfield=[pacal_name, pacal_name, pacal_name, bpcal_name, bpcal_name],
-        interp = ['linear','linear','linear', 'linear', 'linear'], 
+        gainfield=[pacal_name, bpcal_name, pacal_name, bpcal_name],
+        interp=['nearest', 'linear', 'linear', 'linear'],
         flagbackup=False)
+    # DEBUGGING: summarize flags
+    if DEBUG_PRINT_FLAGS:
+        print('DEBUG: PRINTING FLAGS')
+        flagdata(myms, mode='summary')
 
     flagdata(vis=myms,
         mode='rflag',
         datacolumn='corrected',
-        field=pacal_name, 
-        flagbackup=False) 
+        field=pacal_name,
+        flagbackup=False)
 
     flagdata(vis=myms,
         mode='tfcrop',
         datacolumn='corrected',
         field=pacal_name,
-        flagbackup=False) 
+        flagbackup=False)
+    # DEBUGGING: summarize flags
+    if DEBUG_PRINT_FLAGS:
+        print('DEBUG: PRINTING FLAGS')
+        flagdata(myms, mode='summary')
 
 
 # ----- Loop over secondaries
@@ -558,29 +494,35 @@ for i in range(0,len(pcal_names)):
         # If so, skip to the next iteration as it is already in the working tables
         continue
 
-    # -------- Applycal (pcal; Bp, Df (primary), Ga0, K0, Gp0 (polcal)) and Flag
+    # -------- Applycal (pcal; B, Df from primary, K0, G0 from pcal) and Flag
 
     applycal(vis=myms,
-        gaintable=[ktab0,gptab0, ftab0, bptab, dftab],
-        #applymode='calflagstrict',
+        gaintable=[ktab0, bptab, gtab0, dftab],
         field=pcal,
-        #calwt=False,
         parang=True,
-        gainfield=[pcal, pcal, pcal, bpcal_name, bpcal_name],
-        interp = ['linear','linear','linear', 'linear', 'linear'], 
+        gainfield=[pcal, bpcal_name, pcal, bpcal_name],
+        interp=['nearest', 'linear', 'linear', 'linear'],
         flagbackup=False)
+    # DEBUGGING: summarize flags
+    if DEBUG_PRINT_FLAGS:
+        print('DEBUG: PRINTING FLAGS')
+        flagdata(myms, mode='summary')
 
     flagdata(vis=myms,
         mode='rflag',
         datacolumn='corrected',
         field=pcal,
-        flagbackup=False) 
+        flagbackup=False)
 
     flagdata(vis=myms,
         mode='tfcrop',
         datacolumn='corrected',
         field=pcal,
-        flagbackup=False) 
+        flagbackup=False)
+    # DEBUGGING: summarize flags
+    if DEBUG_PRINT_FLAGS:
+        print('DEBUG: PRINTING FLAGS')
+        flagdata(myms, mode='summary')
 
 # -------------------------------------------------------------------------------------------------------- #
 # -------------------------------------------------------------------------------------------------------- #
@@ -590,56 +532,36 @@ for i in range(0,len(pcal_names)):
 
 if pacal_name != '':   
  
-    # ------- Gp (polcal; apply Bp, Df, K (primary))
+    # ------- G (polcal; apply B, Df, K from primary) -- Type T, amp+phase
 
-
-    gaincal(vis = myms,
+    gaincal(vis=myms,
         field=pacal_name,
         uvrange=myuvrange,
-        # spw = myspw,
-        caltable=gptab,
-        refant = str(ref_ant),
-        gaintype='G',
+        spw=myspw,
+        caltable=gtab,
+        refant=str(ref_ant),
+        gaintype='T',
         solint='inf',
-        calmode='p',
+        calmode='ap',
         minsnr=3,
         gaintable=[ktab, bptab, dftab],
         gainfield=[bpcal_name, bpcal_name, bpcal_name],
-        interp=['linear', 'linear', 'linear'],
+        interp=['nearest', 'linear', 'linear'],
         append=True)
 
-
-    # ------- Ga (polcal; apply Bp, Df, K (primary) Gp (polcal))
-
-
-    gaincal(vis = myms,
-        field=pacal_name,
-        uvrange=myuvrange,
-        spw = myspw,
-        caltable=gatab,
-        refant = str(ref_ant),
-        gaintype='T',
-        solint='inf',
-        calmode='a',
-        minsnr=3,
-        gaintable=[ktab, gptab, bptab, dftab],
-        gainfield=[bpcal_name, pacal_name, bpcal_name, bpcal_name],
-        interp=['linear', 'linear', 'linear', 'linear'],
-        append=True)
-
-    # ------- K (polcal; apply Bp, Df (primary), Gp, Ga (polcal))
+    # ------- K (polcal; apply B, Df from primary, G from polcal)
     
-    gaincal(vis= myms,
-        field = pacal_name,
-        #   uvrange = myuvrange,
-        #   spw=myspw,
-        caltable = ktab,
-        refant = str(ref_ant),
-        gaintype = 'K',
+    gaincal(vis=myms,
+        field=pacal_name,
+        caltable=ktab,
+        uvrange=myuvrange,
+        spw=myspw,
+        refant=str(ref_ant),
+        gaintype='K',
         solint='inf',
-        gaintable=[gptab, gatab, bptab, dftab],
-        gainfield=[pacal_name,pacal_name, bpcal_name, bpcal_name],
-        interp=['linear', 'linear', 'linear', 'linear'],
+        gaintable=[bptab, dftab, gtab],
+        gainfield=[bpcal_name, bpcal_name, pacal_name],
+        interp=['linear', 'linear', 'linear'],
         append=True)
 
             
@@ -652,71 +574,52 @@ for i in range(0,len(pcal_names)):
         # If so, skip to the next iteration as it is already in the working tables
         continue
 
-    # ------- Gp0 (pcal; apply Bp, Df, K (primary))
+    # ------- G (pcal; apply B, Df, K from primary) -- Type T, amp+phase
 
-    gaincal(vis = myms,
+    gaincal(vis=myms,
         field=pcal,
         uvrange=myuvrange,
-        # spw = myspw,
-        caltable=gptab,
-        refant = str(ref_ant),
-        gaintype='G',
+        spw=myspw,
+        caltable=gtab,
+        refant=str(ref_ant),
+        gaintype='T',
         solint='inf',
-        calmode='p',
+        calmode='ap',
         minsnr=3,
         gaintable=[ktab, bptab, dftab],
         gainfield=[bpcal_name, bpcal_name, bpcal_name],
+        interp=['nearest', 'linear', 'linear'],
+        append=True)
+
+    # ------- K (pcal; apply B, Df from primary, G from pcal)
+
+    gaincal(vis=myms,
+        field=pcal,
+        caltable=ktab,
+        uvrange=myuvrange,
+        spw=myspw,
+        refant=str(ref_ant),
+        gaintype='K',
+        solint='inf',
+        gaintable=[bptab, dftab, gtab],
+        gainfield=[bpcal_name, bpcal_name, pcal],
         interp=['linear', 'linear', 'linear'],
         append=True)
 
-
-    # ------- Ga (pcal; apply Bp, Df, K (primary) Gp (pcal))
-
-    gaincal(vis = myms,
-        field=pcal,
-        uvrange=myuvrange,
-        spw = myspw,
-        caltable=gatab,
-        refant = str(ref_ant),
-        gaintype='T',
-        solint='inf',
-        calmode='a',
-        minsnr=3,
-        gaintable=[ktab, gptab, bptab, dftab],
-        gainfield=[bpcal_name, pcal, bpcal_name, bpcal_name],
-        interp=['linear', 'linear', 'linear', 'linear'],
-        append=True)
-
-    # ------- K (pcal; apply Bp, Df (primary), Gp, Ga (pcal))
-
-
-    gaincal(vis= myms,
-        field = pcal,
-        #   uvrange = myuvrange,
-        #   spw=myspw,
-        caltable = ktab,
-        refant = str(ref_ant),
-        gaintype = 'K',
-        solint='inf',
-        gaintable=[gptab, gatab, bptab, dftab],
-        gainfield=[pcal, pcal, bpcal_name, bpcal_name],
-        interp=['linear', 'linear', 'linear', 'linear'],
-        append=True)
-
-# --- Apply fluxscaling to Ga but only if there are calibration fields other than the primary
+# --- Apply fluxscaling to G but only if there are calibration fields other than the primary
 if len([pcal for pcal in pcal_names if pcal != bpcal_name]) > 0 or pacal_name != '':
     
-    # --- Apply fluxscaling to Ga
+    # --- Apply fluxscaling to G
     fluxscale(vis=myms,
-        caltable = gatab,
-        fluxtable = ftab,
-        reference = bpcal_name,
-        append = False,
-        transfer = '')
+        caltable=gtab,
+        fluxtable=ftab,
+        reference=bpcal_name,
+        append=False,
+        transfer='')
 
-# If there is no need to apply flux scaling, we can set ftab0 to gatab0 as the only calibrator is the primary    
+# If there is no need to apply flux scaling, we can set ftab to gtab as the only calibrator is the primary    
 else:
-    ftab = gatab
+    ftab = gtab
 
 # -------------------------------------------------------------------------------------------------------- #
 # -------------------------------------------------------------------------------------------------------- #
@@ -741,27 +644,54 @@ if pacal_name != '':
         XF_MODE = 'auto'
 
     manual_XF = False
+    
+    # Force manual mode for UIHF band
+    if band == 'UIHF':
+        print("UIHF band detected, forcing manual XF mode")
+        manual_XF = True
+        XF_MODE = 'manual'
+    
     if XF_MODE == 'casa' or XF_MODE == 'auto':
 
-        print(f"Cross-hand phase mode if {XF_MODE}; solving CASA based solutions")
+        print(f"Cross-hand phase mode is {XF_MODE}; solving CASA based solutions")
         
-        # ------- KCROSS (polcal; apply Bp, Df (primary), Ga, K, Gp (polcal))
+        # Setup combine parameter
+        combine_param = 'scan' if XF_AVG_SCAN else ''
+        
+        # ------- KCROSS (polcal; apply B, Df from primary, G, K from polcal)
+        # Always solve KCROSS (cheap computation), skip flag only controls application
+        print(f"  Solving for KCROSS (cross-hand delay) {'[will NOT be applied]' if XF_SKIP_KCROSS else '[will be applied]'}")
         gaincal(vis = myms,
             field = pacal_name,
-        #    uvrange = myuvrange,
             caltable = kcross,
-            #   spw=myspw,
             refant = str(ref_ant),
             solint = 'inf',
+            combine = combine_param,
             gaintype='KCROSS',
             parang = True,
-            gaintable=[ktab,gptab,bptab,gatab,dftab],
-            gainfield=[pacal_name, pacal_name,bpcal_name, pacal_name, bpcal_name],
-            interp = ['linear','linear','linear','linear','linear'],
+            gaintable=[ktab, bptab, gtab, dftab],
+            gainfield=[pacal_name, bpcal_name, pacal_name, bpcal_name],
+            interp = ['linear','linear','linear','linear'],
             append = False)
+        
+        # If skipping KCROSS, immediately move it to bad name and never use it
+        if XF_SKIP_KCROSS:
+            bad_kcross = kcross.replace('.KCROSS', '_bad.KCROSS')
+            print(f"  Moving KCROSS to: {bad_kcross} (will not be used)")
+            if os.path.isdir(bad_kcross):
+                shutil.rmtree(bad_kcross)
+            shutil.move(kcross, bad_kcross)
 
-        # -------- Xf (polcal; apply Bp, Df (primary), Ga, Gp, K, KCROSS (polcal))
-
+        # -------- Xf (polcal; apply Bp, Df (primary), Ga, Gp, K, [KCROSS] (polcal))
+        # Build gaintable list based on skip flagdani katseye twerking
+        if XF_SKIP_KCROSS:
+            print("  Solving for Xf (cross-hand phase) WITHOUT KCROSS")
+        else:
+            print("  Solving for Xf (cross-hand phase) with KCROSS")
+        xf_gaintable = [ktab, bptab, gtab, dftab] + ([] if XF_SKIP_KCROSS else [kcross])
+        xf_gainfield = [pacal_name, bpcal_name, pacal_name, bpcal_name] + ([] if XF_SKIP_KCROSS else [pacal_name])
+        xf_interp = ['linear','linear','linear','linear'] + ([] if XF_SKIP_KCROSS else ['linear'])
+        
         polcal(vis = myms,
             field = pacal_name,
             uvrange = myuvrange,
@@ -769,16 +699,16 @@ if pacal_name != '':
             refant = str(ref_ant),
             solint = f'inf,{XF_CHANINT}ch',
             poltype='Xf',
-            combine = '',
-            gaintable=[ktab,gptab,bptab,gatab,dftab, kcross],
-            gainfield=[pacal_name,pacal_name,bpcal_name, pacal_name, bpcal_name, pacal_name],
-            interp = ['linear','linear','linear','linear','linear', 'linear'],
+            combine = combine_param,
+            gaintable=xf_gaintable,
+            gainfield=xf_gainfield,
+            interp=xf_interp,
             append = False)
 
-        # Cross hand calibration tables
-        cross_table = [kcross, xftab]
-        cross_field = [pacal_name, pacal_name]
-        cross_interp = ['linear', 'linear']
+        # Cross hand calibration tables for applycal
+        cross_table = [xftab] if XF_SKIP_KCROSS else [kcross, xftab]
+        cross_field = [pacal_name] if XF_SKIP_KCROSS else [pacal_name, pacal_name]
+        cross_interp = ['linear'] if XF_SKIP_KCROSS else ['linear', 'linear']
 
         # Always check if the cross-hand phase is continuous per scan
         # Get the cross-hand phase            
@@ -830,28 +760,35 @@ if pacal_name != '':
             print(f"✓ {len(continuous_scans)} scan(s) are phase continuous: {continuous_scans}")
             print(f"✗ {len(discontinuous_scans)} scan(s) failed continuity check: {discontinuous_scans}")
             
-            # Move bad tables
-            bad_kcross = kcross.replace('.KCROSS', '_bad.KCROSS')
+            # Move bad Xf table
             bad_xftab = xftab.replace('.Xf', '_bad.Xf')
-            print(f"  Moving original KCROSS table to: {bad_kcross}")
-            shutil.move(kcross, bad_kcross)
             print(f"  Moving original Xf table to: {bad_xftab}")
             shutil.move(xftab, bad_xftab)
             
-            # Remake KCROSS with only continuous scans
-            print(f"  Remaking KCROSS table using only continuous scans: {continuous_scans}")
-            gaincal(vis = myms,
-                field = pacal_name,
-                scan = ','.join(map(str, continuous_scans)),
-                caltable = kcross,
-                refant = str(ref_ant),
-                solint = 'inf',
-                gaintype='KCROSS',
-                parang = True,
-                gaintable=[ktab,gptab,bptab,gatab,dftab],
-                gainfield=[pacal_name, pacal_name,bpcal_name, pacal_name, bpcal_name],
-                interp = ['linear','linear','linear','linear','linear'],
-                append = False)
+            # Only handle KCROSS if it's being used (not already moved to _bad)
+            if not XF_SKIP_KCROSS:
+                # Move bad KCROSS table
+                bad_kcross = kcross.replace('.KCROSS', '_bad.KCROSS')
+                print(f"  Moving original KCROSS table to: {bad_kcross}")
+                if os.path.isdir(bad_kcross):
+                    shutil.rmtree(bad_kcross)
+                shutil.move(kcross, bad_kcross)
+                
+                # Remake KCROSS with only continuous scans
+                print(f"  Remaking KCROSS table using only continuous scans: {continuous_scans}")
+                gaincal(vis = myms,
+                    field = pacal_name,
+                    scan = ','.join(map(str, continuous_scans)),
+                    caltable = kcross,
+                    refant = str(ref_ant),
+                    solint = 'inf',
+                    combine = combine_param,
+                    gaintype='KCROSS',
+                    parang = True,
+                    gaintable=[ktab, bptab, gtab, dftab],
+                    gainfield=[pacal_name, bpcal_name, pacal_name, bpcal_name],
+                    interp = ['linear','linear','linear','linear'],
+                    append = False)
             
             # Remake Xf table with only continuous scans
             print(f"  Remaking Xf table using only continuous scans: {continuous_scans}")
@@ -863,39 +800,36 @@ if pacal_name != '':
                 refant = str(ref_ant),
                 solint = f'inf,{XF_CHANINT}ch',
                 poltype='Xf',
-                combine = '',
-                gaintable=[ktab,gptab,bptab,gatab,dftab, kcross],
-                gainfield=[pacal_name,pacal_name,bpcal_name, pacal_name, bpcal_name, pacal_name],
-                interp = ['linear','linear','linear','linear','linear', 'linear'],
+                combine = combine_param,
+                gaintable=xf_gaintable,
+                gainfield=xf_gainfield,
+                interp=xf_interp,
                 append = False)
             
         else:
             # Case 3: No scans are continuous
             print(f"✗ None of the {len(unique_scans)} scan(s) are phase continuous")
             
-            # Move bad tables
-            bad_kcross = kcross.replace('.KCROSS', '_bad.KCROSS')
+            # Move bad Xf table
             bad_xftab = xftab.replace('.Xf', '_bad.Xf')
-            print(f"  Moving original KCROSS table to: {bad_kcross}")
-            shutil.move(kcross, bad_kcross)
             print(f"  Moving original Xf table to: {bad_xftab}")
             shutil.move(xftab, bad_xftab)
             
-            if len(unique_scans) == 1:
-                # Single scan - can use manual solver
-                print("  Single scan detected - falling back to manual XF solver")
-                manual_XF = True
-            else:
-                # Multiple scans - cannot handle
-                print("\nERROR: Cannot currently handle multiple cross-hand phase scans in a single MS.")
-                print("       Cross-hand phase is stable over week timescales, so unless this is a")
-                print("       week-long MS file, one scan should be sufficient.")
-                print(f"       Please split out an MS file with only one XF scan and re-run.")
-                sys.exit(1)
+            # Only move KCROSS if it's being used (not already moved to _bad)
+            if not XF_SKIP_KCROSS:
+                bad_kcross = kcross.replace('.KCROSS', '_bad.KCROSS')
+                print(f"  Moving original KCROSS table to: {bad_kcross}")
+                if os.path.isdir(bad_kcross):
+                    shutil.rmtree(bad_kcross)
+                shutil.move(kcross, bad_kcross)
+            
+            # Fall back to manual solver (can handle both single and multiple scans)
+            print(f"  Falling back to manual XF solver ({len(unique_scans)} scan(s))")
+            manual_XF = True
 
         print("="*60)
 
-    if XF_MODE == 'manual' or manual_XF or band == 'UHF':
+    if XF_MODE == 'manual' or manual_XF:
         print(f"Cross-hand phase mode is {XF_MODE} (or auto detected a large phase jump? {manual_XF}); solving manual solutions")
         exec(open('tools/manual_XF_solver.py').read())
 
@@ -914,13 +848,11 @@ if pacal_name != '':
 # ------- BPCAL
 
 applycal(vis = myms,
-    gaintable = [ktab,gptab,bptab,ftab,dftab],
- #  sapplymode='calflagstrict',
+    gaintable = [ktab, bptab, ftab, dftab],
     field = bpcal_name,
-    #calwt = False,
     parang = True,
-    gainfield = [bpcal_name,bpcal_name, bpcal_name, bpcal_name, bpcal_name],
-    interp = ['linear','linear','linear','linear','linear'],
+    gainfield = [bpcal_name, bpcal_name, bpcal_name, bpcal_name],
+    interp = ['nearest','linear','linear','linear'],
     flagbackup=False)
 
 
@@ -940,13 +872,11 @@ if pacal_name == '':
             continue
     
         applycal(vis = myms,
-            gaintable = [ktab,gptab,bptab,ftab,dftab],
-            # applymode='calflagstrict',
+            gaintable = [ktab, bptab, ftab, dftab],
             field = pcal,
-            #calwt = False,
             parang = False,
-            gainfield = [pcal,pcal, bpcal_name, pcal, bpcal_name],
-            interp = ['linear','linear','linear','linear','linear'],
+            gainfield = [pcal, bpcal_name, pcal, bpcal_name],
+            interp = ['nearest','linear','linear','linear'],
             flagbackup=False)
 
     # ------- Targets 
@@ -956,13 +886,11 @@ if pacal_name == '':
         related_pcal = target_cal_map[i]
 
         applycal(vis=myms,
-                #applymode='calflagstrict',
-                gaintable = [ktab,gptab,bptab,ftab,dftab],
+                gaintable = [ktab, bptab, ftab, dftab],
                 field=target,
-                #calwt=False,
                 parang=False,
-                gainfield = [related_pcal, related_pcal, bpcal_name, related_pcal, bpcal_name],
-                interp = ['linear','linear','linear','linear','linear'],
+                gainfield = [related_pcal, bpcal_name, related_pcal, bpcal_name],
+                interp = ['nearest','linear','linear','linear'],
                 flagbackup=False)
 
         # Flag target
@@ -993,13 +921,11 @@ if pacal_name == '':
 # ------- PACAL
 
 applycal(vis = myms,
- #       applymode='calflagstrict',
         field = pacal_name,
-        #calwt = False,
         parang = True,
-        gaintable = [ktab,gptab,bptab,ftab,dftab] + cross_table,
-        gainfield = [pacal_name,pacal_name, bpcal_name, pacal_name, bpcal_name] + cross_field,
-        interp = ['linear','linear','linear','linear','linear'] + cross_interp,
+        gaintable = [ktab, bptab, ftab, dftab] + cross_table,
+        gainfield = [pacal_name, bpcal_name, pacal_name, bpcal_name] + cross_field,
+        interp = ['nearest','linear','linear','linear'] + cross_interp,
         flagbackup=False)
 
 # ------- Secondaries
@@ -1014,13 +940,11 @@ for i in range(0,len(pcal_names)):
         continue
 
     applycal(vis = myms,
-        # applymode='calflagstrict',
         field = pcal,
-        #calwt = False,
         parang = True,
-        gaintable = [ktab,gptab,bptab,ftab,dftab] + cross_table,
-        gainfield = [pcal,pcal, bpcal_name, pcal, bpcal_name] + cross_field,
-        interp = ['linear','linear','linear','linear','linear'] + cross_interp,
+        gaintable = [ktab, bptab, ftab, dftab] + cross_table,
+        gainfield = [pcal, bpcal_name, pcal, bpcal_name] + cross_field,
+        interp = ['nearest','linear','linear','linear'] + cross_interp,
         flagbackup=False)
 
 # ------- Targets 
@@ -1030,13 +954,11 @@ for i in range(0,len(targets)):
     related_pcal = target_cal_map[i]
 
     applycal(vis=myms,
-                #applymode='calflagstrict',
                 field=target,
-                #calwt=False,
                 parang=True,
-                gaintable = [ktab,gptab,bptab,ftab,dftab] + cross_table,
-                gainfield = [related_pcal, related_pcal, bpcal_name, related_pcal, bpcal_name] + cross_field,
-                interp = ['linear','linear','linear','linear','linear'] + cross_interp,
+                gaintable = [ktab, bptab, ftab, dftab] + cross_table,
+                gainfield = [related_pcal, bpcal_name, related_pcal, bpcal_name] + cross_field,
+                interp = ['nearest','linear','linear','linear'] + cross_interp,
                 flagbackup=False)
 
     # Flag target

@@ -69,40 +69,81 @@ def get_refant(master_ms,field_id):
 
     mylogger = logging.getLogger(__name__) 
 
+    # Get list of all antenna names in the MS
     ant_names = get_antnames(master_ms)
     main_tab = table(master_ms,ack='False')
     
+    # Get the pool of candidate reference antennas from config
     ref_pool = cfg.CAL_1GC_REF_POOL
     
+    # Initialize lists to store flag percentages and antenna indices
     pc_list = []
     idx_list = []
+    ant_name_list = []  # Track antenna names for m060 check
 
     main_tab = table(master_ms,ack=False)
     field_id = int(field_id)
+    
+    # Loop through each antenna in the reference pool
     for i in range(0,len(ref_pool)):
         ant = ref_pool[i]
+        # Check if this antenna exists in the MS
         if ant in ant_names:
+            # Get the antenna index in the MS
             idx = ant_names.index(ant)
+            # Query for all baselines involving this antenna for the specific field
             mytaql = 'ANTENNA1=={idx} || ANTENNA2=={idx} && FIELD_ID=={field_id}'.format(**locals())
             sub_tab = main_tab.query(query=mytaql)
+            # Get the FLAG column to calculate flag percentage
             flags = sub_tab.getcol('FLAG')
             vals,counts = numpy.unique(flags,return_counts=True)
+            # Calculate flag percentage based on unique flag values
             if len(vals) == 1 and vals == True:
-                flag_pc = 100.0
+                flag_pc = 100.0  # All data flagged
             elif len(vals) == 1 and vals == False:
-                flag_pc = 0.0
+                flag_pc = 0.0  # No data flagged
             else:
+                # counts[1] is True flags, counts[0] is False (unflagged)
                 flag_pc = 100.*round(float(counts[1])/float(numpy.sum(counts)),8)
+            # Only include antennas with less than 80% flagged data
             if flag_pc < 80.0:
                 pc_list.append(flag_pc)
                 idx_list.append(str(idx))
+                ant_name_list.append(ant)
             mylogger.info('Antenna '+str(idx)+':'+ant+' is '+str(round(flag_pc,2))+chr(37)+' flagged')
+    
+    # Convert lists to numpy arrays for easier manipulation
     pc_list = numpy.array(pc_list)
     idx_list = numpy.array(idx_list)
+    ant_name_list = numpy.array(ant_name_list)
 
+    # Find the antenna with the minimum flag percentage
     ref_idx = idx_list[numpy.where(pc_list==(numpy.min(pc_list)))][0]
 
+    # Sort antennas by flag percentage (ascending order)
     ranked_list = [x for _,x in sorted(zip(pc_list,idx_list))]
+    
+    # Check if m060 is in the list and should be prioritized
+    if 'm060' in ant_name_list:
+        # Get m060's index in our lists
+        m060_pos = numpy.where(ant_name_list == 'm060')[0][0]
+        m060_flag_pc = pc_list[m060_pos]
+        m060_idx = idx_list[m060_pos]
+        
+        # Calculate median and standard deviation of flag percentages
+        median_flag_pc = numpy.median(pc_list)
+        std_flag_pc = numpy.std(pc_list)
+        
+        # Check if m060's flag fraction is within one standard deviation of median
+        if abs(m060_flag_pc - median_flag_pc) <= std_flag_pc:
+            # Remove m060 from its current position in ranked list
+            if m060_idx in ranked_list:
+                ranked_list.remove(m060_idx)
+            # Place m060 at the front of the list
+            ranked_list.insert(0, m060_idx)
+            mylogger.info('m060 flag percentage ('+str(round(m060_flag_pc,2))+'%) is within 1-sigma of median ('+str(round(median_flag_pc,2))+'%), placing at front of list')
+    
+    # Convert list to comma-separated string
     ranked_list = ','.join(ranked_list)
 
     return ranked_list
