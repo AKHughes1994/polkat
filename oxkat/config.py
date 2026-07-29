@@ -57,7 +57,7 @@ USE_SINGULARITY = True
 BIND = ''
 BINDPATH = '$PWD,'+CWD+','+BIND
 
-IDIA_CONTAINER_PATH = ['/idia/software/containers/',HOME+'/containers/', CWD, HOME]
+IDIA_CONTAINER_PATH = ['/idia/software/containers/',HOME+'/containers/', CWD, HOME, '/software/astro/containers/polkat/']
 CHPC_CONTAINER_PATH = [HOME+'/containers/']
 HIPPO_CONTAINER_PATH = None
 NODE_CONTAINER_PATH = [HOME+'/containers/', CWD]

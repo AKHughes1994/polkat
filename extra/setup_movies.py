@@ -40,7 +40,7 @@ def main():
 
         step = {}
         step['step'] = k
-        step['comment'] = 'Making movie for images in {interval}'
+        step['comment'] = f'Making movie for images in {interval}'
         step['dependency'] = None if k == 0 else k-1
         step['id'] = 'MKMOV'+ str(k)
         syscall = CONTAINER_RUNNER+POLKAT_CONTAINER+' ' if USE_SINGULARITY else ''
