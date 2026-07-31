@@ -1908,7 +1908,7 @@ def plot_light_curve(output_dictionary, src_name, prefix_arr):
 def main():
     
     # Load in the rmsynthesis data
-    with open(cfg.DATA + '/rmsynth/rmsynth_info.json', 'r') as j:
+    with open(cfg.RMSYN_INFO_FILE, 'r') as j:
         rmsynth_info = json.load(j)
 
     # Check to see if there is a Polarization angle calibrator -- pol_flag = Trye means that you do have

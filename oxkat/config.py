@@ -634,7 +634,7 @@ WSC_LOCALRMS_BLIND      = True   # Use a local RMS map for masking in the blind 
 # --- Masking: first self-calibration pass (two-stage workflow only) ---
 # Restricts cleaning to high-significance pixels before any amplitude self-calibration.
 # Has no effect in the standard single-round 2GC workflow.
-WSC_SHALLOWMASK = 20.0  # Auto-mask threshold (sigma) for the first deconvolution pass;
+WSC_SHALLOWMASK = 30.0  # Auto-mask threshold (sigma) for the first deconvolution pass;
                          # calibrators use 2× this value
 
 # --- Model modification before predict (two-stage self-calibration only) ---
@@ -945,6 +945,10 @@ KMS_COVQ = 0.05
 #
 
 # --- Extraction (RMSYNTH_01_extract_fluxes.py) ---
+
+RMSYN_INFO_FILE           = DATA + '/rmsynth/rmsynth_info.json'  # Source list + fit config consumed
+                                    # by the RMSYNTH extraction scripts. Change this to point at a
+                                    # different info file without moving/renaming your dataset copy.
 
 RMSYN_OVERWRITE           = True    # Re-run fitting even when the output JSON already exists.
                                     # Set False to skip to plotting only.

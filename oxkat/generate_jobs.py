@@ -828,6 +828,13 @@ def generate_syscall_wsclean(mslist,
         #   0       : disabled — no changes to QU or IV, local-rms not added
         #   'auto'  : QU gets local-rms; IV auto-mask floored at 3.0, auto-threshold floored at 1.0
         #   float   : QU gets local-rms; IV auto-mask multiplied by scale, auto-threshold floored at 1.0
+        # NOTE: the IV floor/scale only takes effect if automask/autothreshold were
+        # actually set (truthy) in config. If disabled (False/0/None), the base
+        # syscall never contains a '-auto-mask'/'-auto-threshold' flag to begin
+        # with (see the `if automask:` / `if autothreshold:` guards where the
+        # syscall is first built), so there is nothing for .replace() below to
+        # substitute — the IV pass ends up with no auto-mask/auto-threshold flag
+        # at all, same as the base/QU case, regardless of qu_automask_scale.
         try:
             _scale = float(qu_automask_scale)
             _qu_disabled = (_scale == 0)
@@ -857,11 +864,15 @@ def generate_syscall_wsclean(mslist,
                     _iv_automask = max(automask, 3.0) if automask else 3.0
                 else:
                     _iv_automask = round(automask * _scale, 1) if automask else automask
+                # Only substitute if automask was set: with no base automask there
+                # is no '-auto-mask {automask} ' substring in iv_syscall to replace,
+                # so the computed floor/scale above is a no-op in that case.
                 if automask and _iv_automask != automask:
                     iv_syscall = iv_syscall.replace(
                         f'-auto-mask {automask} ',
                         f'-auto-mask {_iv_automask} ')
                 _iv_autothreshold = max(autothreshold, 1.0) if autothreshold else 1.0
+                # Same reasoning as above: no-op unless autothreshold was set.
                 if autothreshold and _iv_autothreshold != autothreshold:
                     iv_syscall = iv_syscall.replace(
                         f'-auto-threshold {autothreshold} ',

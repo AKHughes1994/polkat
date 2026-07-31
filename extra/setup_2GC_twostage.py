@@ -300,7 +300,7 @@ def main():
                     datacol = 'DATA',
                     mask = mask,
                     chanout = cfg.WSC_DMASK_CHANNELSOUT,
-                    intervalsout = False,
+                    #intervalsout = False,
                     tukeytaper=tukeytaper,
                     minuvl = minuvl,
                     maxuvl = maxuvl,
@@ -599,6 +599,7 @@ def main():
                     datacol = 'CORRECTED_DATA',
                     mask = mask,
                     chanout = cfg.WSC_PCAL_CHANNELSOUT,
+                    #intervalsout = False,
                     nomodel=True,
                     sourcelist = False,
                     absmem = absmem)

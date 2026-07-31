@@ -79,7 +79,47 @@ def main():
     pol = 'I'
     if cfg.SNAP_POL == True:
         pol = 'IQUV'
-    
+
+    # ------------------------------------------------------------------------------
+    #
+    # Resolve, per target, the MS that SNAP_split_sources.py will split from.
+    # Priority order: stage2 MS (two-stage selfcal) -> project target MS
+    # (1GC_08 split) -> working MS, as a last resort. Resolved here (at setup
+    # time, on disk) rather than inside SNAP_split_sources.py, so a target
+    # with no usable MS is caught before any jobs are generated for it.
+    #
+    # ------------------------------------------------------------------------------
+
+    raw_target_names = project_info['target_names']
+    target_ms_files  = project_info['target_ms']
+
+    def resolve_split_source_ms(targetname):
+        if targetname in raw_target_names:
+            project_target_ms = target_ms_files[raw_target_names.index(targetname)]
+            stage2_ms = project_target_ms.replace('.ms', '_stage2.ms')
+        else:
+            project_target_ms = None
+            stage2_ms = None
+
+        if stage2_ms and o.isdir(stage2_ms):
+            return stage2_ms
+        elif project_target_ms and o.isdir(project_target_ms):
+            return project_target_ms
+        elif o.isdir(myms):
+            return myms
+        else:
+            return None
+
+    target_source_ms = {}
+    for targetname in target_names:
+        if targetname in project_info['working_names']:
+            target_source_ms[targetname] = resolve_split_source_ms(targetname)
+            if target_source_ms[targetname] is None:
+                gen.print_spacer()
+                print(gen.col('ERROR')+f'No MS found to split for target "{targetname}" '
+                      f'(checked stage2 MS, project target MS, and working MS {myms}). '
+                      f'Remove it from SNAP_FIELDS or locate/restore its MS before re-running SNAP.py.')
+
     # ------------------------------------------------------------------------------
     #
     # SNAP recipe definition
@@ -91,12 +131,12 @@ def main():
 
     # Initialize workflow by sequentially spliting
     steps = []
-    kill_file = SCRIPTS+'/kill_snap_split_jobs.sh'    
+    kill_file = SCRIPTS+'/kill_snap_split_jobs.sh'
     n = 0
     last_split_code = None  # will be set after at least one successful split step
 
     for tt in range(0,len(target_names)):
-        
+
         targetname   = target_names[tt]
 
         if targetname not in project_info['working_names']:
@@ -105,7 +145,19 @@ def main():
             print(gen.col('Snap Target')+targetname)
             print('Target not in MS file, skipping')
 
+        elif target_source_ms[targetname] is None:
+
+            gen.print_spacer()
+            print(gen.col('Snap Target')+targetname)
+            print(gen.col('ERROR')+'No valid source MS (see above), skipping')
+
         else:
+
+            source_ms = target_source_ms[targetname]
+
+            gen.print_spacer()
+            print(gen.col('Snap Target')+targetname)
+            print(gen.col('Measurement Set')+source_ms)
 
             # Logistics
             code = gen.get_target_code(targetname)
@@ -119,12 +171,12 @@ def main():
             step['dependency'] = dependency
             step['id'] = 'SNPTS'+code
             syscall = CONTAINER_RUNNER + CASA_CONTAINER+' ' if USE_SINGULARITY else ''
-            syscall += gen.generate_syscall_casa(casascript=cfg.OXKAT+f'/SNAP_split_sources.py {targetname}')
+            syscall += gen.generate_syscall_casa(casascript=cfg.OXKAT+f'/SNAP_split_sources.py {targetname} {source_ms}')
             step['syscall'] = syscall
             steps.append(step)
             n += 1
             last_split_code = 'SNPTS' + code # Save this as a variable to set dependencies for imaging
-        
+
     target_steps.append((steps,kill_file,'Split MS Files'))
 
     
@@ -139,11 +191,17 @@ def main():
             print(gen.col('Target')+targetname)
             print(gen.col('MS')+'not found, skipping')
 
+        elif target_source_ms[targetname] is None:
+
+            gen.print_spacer()
+            print(gen.col('Target')+targetname)
+            print(gen.col('ERROR')+'No valid source MS (see above), skipping')
+
         else:
 
             # Logistics
             code = gen.get_target_code(targetname)
-            steps = []        
+            steps = []
             filename_targetname = gen.scrub_target_name(targetname)
 
             # Target-specific kill file
