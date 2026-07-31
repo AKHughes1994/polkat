@@ -210,11 +210,6 @@ def main():
             # Specify target ms name
             target_ms = myms.replace('.ms', f'_{targetname}_snapshot.ms')
 
-            gen.print_spacer()
-            print(gen.col('Target')+targetname)
-            print(gen.col('Measurement Set')+myms)
-            print(gen.col('Code')+code)
-
             n = 0 # Start counting
 
             # If model image(s) have been specified use it to predict [DEFAULT assumes 2GC pcalmask]
