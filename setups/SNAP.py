@@ -5,6 +5,7 @@
 import glob
 import json
 import os.path as o
+import re
 import sys
 sys.path.append(o.abspath(o.join(o.dirname(sys.modules[__name__].__file__), "..")))
 
@@ -214,7 +215,27 @@ def main():
 
             # If model image(s) have been specified use it to predict [DEFAULT assumes 2GC pcalmask]
             model_image_prefix = IMAGES + '/img_' + target_ms.replace('_snapshot','') + '_' + cfg.SNAP_MODELIDENTIFIER
-            if cfg.SNAP_MODELIDENTIFIER != '' and glob.glob(model_image_prefix + '*model.fits' ) != [] and cfg.WSC_PCAL_CHANNELSOUT == cfg.SNAP_CHANNELSOUT:
+            existing_model_files = glob.glob(model_image_prefix + '*model.fits')
+            # Snapshot predict needs a single, time-independent sky model. If the
+            # existing model was produced with -intervals-out it will carry
+            # per-timestep naming (e.g. "-t0000-"), so it can't be reused as-is.
+            existing_model_is_time_resolved = any(re.search(r'-t\d+-', f) for f in existing_model_files)
+
+            if cfg.SNAP_MODELIDENTIFIER == '' or existing_model_files == []:
+                model_outcome = 'No identifier found — performing time-averaged imaging'
+            elif existing_model_is_time_resolved:
+                model_outcome = f'Identifier found ({cfg.SNAP_MODELIDENTIFIER}), failed checks (time-resolved model) — performing time-averaged imaging'
+            elif cfg.WSC_PCAL_CHANNELSOUT != cfg.SNAP_CHANNELSOUT:
+                model_outcome = f'Identifier found ({cfg.SNAP_MODELIDENTIFIER}), failed checks (channel mismatch) — performing time-averaged imaging'
+            else:
+                model_outcome = f'Identifier found ({cfg.SNAP_MODELIDENTIFIER}), passed checks — skipping time-averaged imaging'
+
+            gen.print_spacer()
+            print(gen.col(targetname)+model_outcome)
+
+            if (cfg.SNAP_MODELIDENTIFIER != '' and existing_model_files != []
+                    and not existing_model_is_time_resolved
+                    and cfg.WSC_PCAL_CHANNELSOUT == cfg.SNAP_CHANNELSOUT):
                 pass
 
             # Say (for example) you *accidentally* removed pcalmask model, then this is necessary
@@ -303,6 +324,7 @@ def main():
                     chanout = cfg.SNAP_CHANNELSOUT,
                     field= '0',
                     pol = pol,
+                    intervalsout = False,
                     mfweight = False,
                     nomodel = True,
                     sourcelist = False,
@@ -344,6 +366,7 @@ def main():
                 imgname = model_image_prefix,
                 field = '0',
                 pol = predict_pol,
+                intervalsout = False,
                 chanout = cfg.SNAP_CHANNELSOUT,
                 absmem = absmem)
             step['syscall'] = syscall
