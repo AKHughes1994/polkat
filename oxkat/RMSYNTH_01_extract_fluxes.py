@@ -1,13 +1,9 @@
 # andrew.hughes@physics.ox.ac.uk
 # fraser.cowie@physics.ox.ac.uk
 
-# Modular-CASA version: imfit/imstat/imhead/table are plain imports from
-# casatasks/casatools rather than casashell-injected globals, so this runs
-# under a normal `python3` interpreter (not `casa -c`) as long as that
-# interpreter has casatasks/casatools installed. This also means astropy is
-# available, so estimate_memory_per_worker_bytes reads FITS headers directly
-# instead of going through imhead. See RMSYNTH_01_extract_fluxes.py for the
-# casashell version this was derived from.
+# Modular-CASA version: imfit/imstat/imhead/table are plain imports, not
+# casashell-injected globals, so this runs under a normal python3 interpreter
+# (not `casa -c`) as long as casatasks/casatools are installed.
 
 import glob
 import os
@@ -68,6 +64,27 @@ def _mjd_to_isot(mjd):
     return (_epoch + datetime.timedelta(days=mjd)).isoformat()
 
 
+def _apply_label(path, src_name, label):
+    """
+    Substitute `label` for `src_name` in the filename component of `path`
+    only -- never in directory segments.
+
+    A plain path.replace(src_name, label) across the *whole* path is unsafe:
+    if src_name also happens to appear in a directory segment (image_directory,
+    CWD, etc.) that occurrence gets silently corrupted too. In particular, if
+    this runs before an image_directory -> 'RESULTS' relocation, the corrupted
+    directory segment no longer matches image_directory verbatim, that
+    relocation silently no-ops, and the file is written under the original
+    image directory instead of RESULTS -- with no error, just a "missing"
+    output file. Always relocate to RESULTS (or otherwise fix up directories)
+    using the untouched path *before* calling this.
+    """
+    if label == src_name:
+        return path
+    dirname, basename = os.path.split(path)
+    return os.path.join(dirname, basename.replace(src_name, label))
+
+
 def msg(txt):
     stamp = time.strftime(' %Y-%m-%d %H:%M:%S | ')
     print(stamp+txt, flush=True)
@@ -92,12 +109,9 @@ def _proc_rss_mb(pid):
 
 def log_memory_usage(label=''):
     """Log main-process + CHAN-fitting pool worker memory (RSS): per-worker
-    avg/min/max (to catch one runaway worker among many healthy ones) and the
-    change since the previous call (to make steady growth across timesteps --
-    e.g. from a leak in casacore's table/image caching inside long-lived
-    worker processes -- visible without having to manually diff log lines).
-    Prefers psutil when available; falls back to reading /proc directly
-    (multiprocessing.active_children() for worker PIDs) if it isn't."""
+    avg/min/max, and the delta since the last call so steady growth (e.g. a
+    casacore table/image cache leak) shows up without diffing log lines.
+    Prefers psutil; falls back to /proc if it isn't installed."""
     try:
         import psutil
         proc = psutil.Process()
@@ -191,28 +205,23 @@ def estimate_memory_per_worker_bytes(image, casa_worker_floor_mb=350):
     return chosen_bytes
 
 
-# Assumed per-worker memory growth rate (MB/prefix) for sizing the pool
-# recycle interval (see compute_max_workers), with margin above the typical
-# rate caused by casacore's table/image caching not fully releasing between
-# imfit/imstat calls in a long-lived worker process. Linear scaling only --
-# interval is clamped to [MIN,MAX] so it never gets absurdly small (constant
-# recycling overhead) or absurdly large (no protection against the growth).
+# Assumed per-worker memory growth rate (MB/prefix), used by compute_max_workers
+# to size the pool recycle interval. Clamped to [MIN,MAX] so it's never too
+# small (constant recycling overhead) or too large (no protection against leaks).
 ASSUMED_WORKER_GROWTH_MB_PER_PREFIX = 5.0
 MIN_POOL_RECYCLE_INTERVAL = 10
 MAX_POOL_RECYCLE_INTERVAL = 200
 
 
 def compute_max_workers(sample_images, n_jobs):
-    """sample_images is used only to estimate per-worker memory (a handful of
-    representative images is enough -- they're all roughly the same size).
-    n_jobs is the actual number of parallel work units (e.g. channel groups),
-    which is what should cap the worker count -- NOT len(sample_images).
+    """sample_images is only used to estimate per-worker memory (a few
+    representative images is enough). n_jobs (e.g. channel groups) caps the
+    worker count, not len(sample_images).
 
-    Returns (workers, recycle_interval). recycle_interval scales linearly
-    with how much memory headroom each worker has (available/workers, minus
-    the baseline per-worker footprint) divided by the assumed growth rate --
-    more cores means less memory per worker (smaller interval, recycle more
-    often); less available memory means less headroom (smaller interval too)."""
+    Returns (workers, recycle_interval): recycle_interval scales with the
+    memory headroom left per worker once its baseline footprint is
+    subtracted, divided by the assumed growth rate -- more workers or less
+    memory both mean less headroom, so a smaller interval."""
     available  = get_available_memory_bytes()
     per_worker = max(estimate_memory_per_worker_bytes(im) for im in sample_images)
     mem_cap    = max(1, int(available // per_worker))
@@ -249,11 +258,8 @@ def compute_max_workers(sample_images, n_jobs):
         f'= {projected_used / 1024**3:.2f} GB of {available / 1024**3:.2f} GB available '
         f'({100.0 * projected_used / available:.0f}%)')
 
-    # Recycle interval: linear in the memory headroom left per worker once
-    # the baseline per_worker footprint is subtracted out. Logged step by
-    # step (not just the final number) so it's clear which input is driving
-    # the result -- e.g. a small interval because memory is tight vs. because
-    # there are many workers each getting a small slice of it.
+    # Logged step by step (not just the final number) so it's clear whether a
+    # small interval is from tight memory or from many workers splitting it.
     mem_per_worker_budget = available / workers
     headroom_bytes        = max(0.0, mem_per_worker_budget - per_worker)
     growth_bytes_per_pfx  = ASSUMED_WORKER_GROWTH_MB_PER_PREFIX * 1024 ** 2
@@ -371,15 +377,12 @@ def get_imfit_values(fname, image, xpix, ypix):
         r = 5 * bmaj
         src_region = f'circle[[{x}pix,{y}pix],{r}arcsec]'
 
-    # For multi-components (this won't work if there are components that are VERY far from eachother largely because it will just time out)
+    # For multi-component fits (times out if components are very far apart)
     else:
-        # Define an array of coordinates [[x1,y1], [x2,y2], etc.])
-        point_array =  np.array([xpix, ypix]).T
+        point_array = np.array([xpix, ypix]).T
+        max_dist = np.amax(cdist(point_array, point_array)) * pixel_asec
 
-        # Get maximum distance between points
-        max_dist = np.amax(cdist(point_array,point_array)) * pixel_asec
-    
-        # Take either twice the maximum distance or 10 times the bmaj axis as the bounding region radius
+        # Bounding region radius: twice the max separation, or 5*bmaj, whichever is bigger
         x = xpix[0]
         y = ypix[0]
         r = np.amax((5 * bmaj, 2.0 * max_dist))
@@ -414,14 +417,13 @@ def calculate_P0(flux_P, rms_Q, rms_U, rms_V, pol_flag, Aq = 0.8):
         else:
             flux_P0 = flux_P
 
-    # If there is no polarization angle calibrator
+    # No polarization angle calibrator: no reference for this case, so go
+    # conservative -- adopt the max of Q/U/V as the noise, and always de-bias
+    # (Monte Carlo experiments put the bias correction factor at 2 for
+    # P^2 = Q^2 + U^2 + V^2).
     else:
-        
-        # This doesn't have studies that I can find (Last Update: Mar 27, 2024) -- Going conservative until I do this properly
-        rms_P = np.amax([rms_Q, rms_U, rms_V]) # adopt maximum
-        
-        # Always de-bias - from my own Mote Carlo experiments it seems like the bias correction becomes a factor of 2 for P^2 = Q^2 + U^2 + V^2  
-        flux_P0 =  (flux_P ** 2 - 2.0 * rms_P ** 2) ** (0.5)
+        rms_P = np.amax([rms_Q, rms_U, rms_V])
+        flux_P0 = (flux_P ** 2 - 2.0 * rms_P ** 2) ** 0.5
 
     return flux_P0, rms_P
 
@@ -480,26 +482,19 @@ def check_position(fname, image, xpix, ypix, snr_thresh=5.0, P_image=False,
                    fix_additional_comps=False, manual_rms_region=False,
                    src_name='src', force_fix_all=False):
     '''
-    Decide whether each source component's sky position should be fitted freely
-    or held fixed in the subsequent imfit call, then write the estimate file.
+    Decide per component whether to fit position freely or fix it, then write
+    the imfit estimate file.
 
-    Decision logic (applied per component):
-      - force_fix_all=True            --> ALL components fixed ('xyabp'), no S/N check.
-                                          Used e.g. for Stokes V when FORCE_FIX_STOKES_V=True.
-      - Secondary components (k>0) when fix_additional_comps=True --> always fixed ('xyabp').
-        These are faint ejecta or secondary lobes where the position is unreliable
-        in non-Stokes-I images; fixing them to the Stokes I location prevents
-        noise-driven wandering from contaminating the flux measurement.
-      - Primary component (k=0), S/N >= snr_thresh  --> free position ('abp')
-      - Primary component (k=0), S/N <  snr_thresh  --> fixed position ('xyabp')
+    Decision logic:
+      - force_fix_all=True                          --> all fixed ('xyabp'), no S/N check
+      - k>0 component and fix_additional_comps=True  --> always fixed ('xyabp')
+                                                          (faint ejecta/lobes: position is
+                                                          unreliable off Stokes I, so anchor it)
+      - k=0, S/N >= snr_thresh                       --> free ('abp')
+      - k=0, S/N <  snr_thresh                       --> fixed ('xyabp')
 
-    For polarization (P) images the noise is non-Gaussian (Rice distribution),
-    so the RMS check is performed on the corresponding Q and U images instead,
-    using the larger of the two as a conservative estimate of the local noise.
-
-    A unique temporary check file is written per component and Stokes parameter
-    (keyed on fname and component index) to prevent file collisions when multiple
-    Stokes passes are running in quick succession.
+    P images have non-Gaussian (Rice) noise, so the S/N check uses the larger
+    of rms_Q/rms_U instead of measuring P directly.
 
     Parameters
     ----------
@@ -532,12 +527,10 @@ def check_position(fname, image, xpix, ypix, snr_thresh=5.0, P_image=False,
 
     for k, (x, y) in enumerate(zip(xpix, ypix)):
 
-        # --- Temporary check file: unique per component and source name to
-        #     avoid overwriting files from concurrent Stokes passes ----------
+        # Unique per component/source name so concurrent Stokes passes don't clobber each other
         check_file = f'check_pos_{os.path.basename(fname)}_{k}.txt'
         with open(check_file, 'w') as f:
-            # Seed imfit with zero amplitude and fixed position; we only want
-            # the peak flux value at this pixel, not a real fit result
+            # Zero amplitude, fixed position -- just want the peak flux at this pixel
             f.write(f'0.0,{x},{y},{bmaj}arcsec,{bmin}arcsec,{bpa}deg, xyabp')
 
         # Fit region: circle of radius 2*BMAJ centred on the trial position
@@ -545,9 +538,7 @@ def check_position(fname, image, xpix, ypix, snr_thresh=5.0, P_image=False,
         test_flux = abs(imfit(image, region=region,
                               estimates=check_file)['results']['component0']['peak']['value'])
 
-        # --- Determine the local noise (RMS) --------------------------------
-        # For P images (Rice-distributed noise) use the larger of rms_Q and rms_U
-        # as a conservative Gaussian-equivalent noise estimate
+        # P images have Rice-distributed noise -- use the larger of rms_Q/rms_U instead
         rms = get_imstat_values(image, x, y, manual_rms_region=manual_rms_region)[3]
         if P_image:
             image_Q = image.replace('-Plin-', '-Q-').replace('-Ptot-', '-Q-')
@@ -558,10 +549,7 @@ def check_position(fname, image, xpix, ypix, snr_thresh=5.0, P_image=False,
 
         snr = test_flux / rms
 
-        # --- Decide fix/free and log the outcome ----------------------------
         if force_fix_all:
-            # Bypass S/N check entirely -- fix every component unconditionally.
-            # Used for Stokes V when FORCE_FIX_STOKES_V=True.
             fix_var.append('xyabp')
             msg(f'  Component {k}: FIXED (force_fix_all=True) '
                 f'| S/N = {snr:.1f} | {os.path.basename(image)}')
@@ -589,12 +577,9 @@ def check_position(fname, image, xpix, ypix, snr_thresh=5.0, P_image=False,
 
 def make_estimate(fname, image, xpix, ypix, fix_var):
     '''
-    Write a CASA imfit estimate file for one or more source components.
-
-    Each line in the estimate file seeds imfit with a starting position and
-    beam-sized Gaussian, with a flag string controlling which parameters are
-    free ('abp' = fit amplitude, beam axes, PA only; 'xyabp' = also fix x/y
-    position).
+    Write a CASA imfit estimate file: one line per component, seeding imfit
+    with a starting position and beam-sized Gaussian. fix_var controls which
+    parameters are free ('abp' = amplitude/axes/PA only; 'xyabp' = also fixes x/y).
 
     Inputs:
         fname   -- output estimate file path
@@ -622,17 +607,13 @@ def make_estimate(fname, image, xpix, ypix, fix_var):
 def check_fit_offset_and_refix(imfit_result, image, ref_xpix, ref_ypix, bmaj,
                                src_name, stokes_label, manual_rms_region=False, tag=''):
     '''
-    After an imfit call, verify that each fitted component has not drifted
-    unreasonably far from its reference position (normally the Stokes I result).
-
-    If any component has moved more than 1/3 of the beam BMAJ from the
-    reference, the entire fit is re-run with ALL positions fixed.  This
-    conservative approach avoids the risk of one wandering component
-    contaminating the fluxes of nearby components.
-
-    The 1/3 BMAJ threshold is physically motivated: genuine sub-beam offsets
-    between Stokes parameters are expected to be small fractions of the beam,
-    so anything larger almost certainly reflects a noise-driven imfit excursion.
+    Check each fitted component hasn't drifted more than 1/3 beam BMAJ from
+    its reference position (normally the Stokes I result); genuine sub-beam
+    offsets between Stokes parameters should be much smaller than that, so
+    anything larger is almost certainly a noise-driven imfit excursion. If
+    any component exceeds it, the whole image is re-fit with all positions
+    fixed to the reference, so one wandering component can't contaminate the
+    others' fluxes.
 
     Parameters
     ----------
@@ -657,8 +638,7 @@ def check_fit_offset_and_refix(imfit_result, image, ref_xpix, ref_ypix, bmaj,
     was_refitted : bool  -- True if at least one component exceeded the threshold
     '''
 
-    # Convert BMAJ from arcsec to pixels so the distance threshold is physically meaningful.
-    # CDELT2 is stored in radians; convert to arcsec.
+    # CDELT2 is in radians -- convert to arcsec, then BMAJ to pixels
     cell_rad    = abs(imhead(image, mode='get', hdkey='CDELT2')['value'])
     cell_arcsec = np.degrees(cell_rad) * 3600.0
     bmaj_pixels = bmaj / cell_arcsec
@@ -668,8 +648,7 @@ def check_fit_offset_and_refix(imfit_result, image, ref_xpix, ref_ypix, bmaj,
     threshold_pixels   = threshold_fraction * bmaj_pixels
     threshold_arcsec   = threshold_fraction * bmaj
 
-    # Filter to component keys only -- imfit results also contain 'nelements'
-    # (an integer) and other metadata keys that must be excluded here.
+    # imfit results also contain non-component metadata keys ('nelements' etc.) -- exclude them
     components = [key for key in imfit_result['results'].keys() if 'component' in key]
     any_exceeded = False
 
@@ -694,9 +673,8 @@ def check_fit_offset_and_refix(imfit_result, image, ref_xpix, ref_ypix, bmaj,
                 f'< 1/3 BMAJ ({threshold_arcsec:.2f}")')
 
     if any_exceeded:
-        # Fix all components to their reference positions and refit.
-        # Using a unique filename avoids overwriting estimate files from other
-        # Stokes parameters that may still be in use.
+        # Refit with all positions fixed to reference. Filename is unique per
+        # Stokes param so it doesn't clobber another still-in-use estimate file.
         fixed_est = f'estimate_fixed_{stokes_label}_{src_name}{tag}.txt'
         fix_var   = ['xyabp'] * len(ref_xpix)
         make_estimate(fixed_est, image, ref_xpix, ref_ypix, fix_var)
@@ -708,18 +686,13 @@ def check_fit_offset_and_refix(imfit_result, image, ref_xpix, ref_ypix, bmaj,
 
 def cleanup_estimate_files(src_name):
     '''
-    Remove the temporary imfit estimate files and check_position scratch files
-    written for src_name (estimate_I/P/Q/U/V_*, estimate_fixed_*, check_pos_*).
+    Remove the temporary estimate/check_position scratch files written for
+    src_name (estimate_I/P/Q/U/V_*, estimate_fixed_*, check_pos_*).
 
-    Called once per prefix/timestep, at the end of each iteration of the
-    per-prefix loop in extract_polarization_properties: for a non-time-resolved
-    run there is only one prefix, so this runs exactly once at the very end;
-    for a time-resolved run it runs after every timestep, which matters
-    because the CHAN-fit worker files are tagged per-channel-per-timestep
-    (estimate_I_{src_name}_{k}_{chan_idx}.txt etc.) to avoid collisions between
-    concurrently running workers, so left uncleaned they'd otherwise
-    accumulate one file per channel per Stokes per timestep across a run that
-    can have hundreds of timesteps.
+    Called once per prefix/timestep. CHAN-fit worker files are uniquely
+    tagged per channel per timestep to avoid collisions between concurrent
+    workers, so without this they'd pile up -- one file per channel per
+    Stokes per timestep, across a run that can have hundreds of timesteps.
     '''
     patterns = [f'estimate_*{src_name}*.txt', f'check_pos_*{src_name}*.txt']
     removed = 0
@@ -737,10 +710,9 @@ def cleanup_estimate_files(src_name):
 def fit_channel_group(job):
     '''
     Fit Stokes I(/P/Q/U/V) for one channel-image group of one prefix/timestep.
-    Runs the same fitting sequence as the old serial CHAN loop body, but is
-    fully self-contained (no output_dictionary access) so it can run inside a
-    parallel worker: all MFS reference positions/metadata come in via `job`,
-    and results go out as a plain dict rather than being appended in place.
+    Self-contained (no output_dictionary access) so it can run inside a
+    parallel worker: everything comes in via `job`, results go out as a plain
+    dict.
 
     `job` keys: chan_idx, CHAN_images, components, MFS_I_ra_pix, MFS_I_dec_pix,
     MFS_P_ra_pix, MFS_P_dec_pix, only_intensity, pol_flag, fix_additional_comps,
@@ -903,12 +875,9 @@ def fit_channel_group(job):
 
 def fit_channel_group_batch(jobs):
     '''
-    Pool entry point: runs in a freshly spawned worker process. imfit/imstat/
-    imhead/tb are plain top-level imports (see top of file), and
-    multiprocessing's spawn context re-executes this module's top-level code
-    in every child process same as any other Python module, so those names
-    resolve normally with no extra binding needed here.
-    Processes its whole assigned chunk of channel-groups in one call.
+    Pool entry point: processes one whole chunk of channel-groups in a
+    spawned worker process. imfit/imstat/imhead/tb (top-level imports) resolve
+    normally there since spawn re-executes the module's top-level code.
     '''
     return [fit_channel_group(job) for job in jobs]
 
@@ -1025,15 +994,16 @@ def _try_get_ms_timing(src_name, n_intervals):
 
 def extract_polarization_properties(src_name,
     src_im_identifier,
-    src_im_suffix, 
-    src_ra, 
-    src_dec, 
+    src_im_suffix,
+    src_ra,
+    src_dec,
     src_ulims,
-    pol_flag, 
-    manual_rms_region, 
+    pol_flag,
+    manual_rms_region,
     image_directory,
     image_identifier,
-    fix_additional_comps = False):
+    fix_additional_comps = False,
+    out_label = ''):
 
     '''
     Core extraction routine: fit Stokes I, Q, U, V (and polarized intensity P)
@@ -1054,7 +1024,9 @@ def extract_polarization_properties(src_name,
 
     Parameters
     ----------
-    src_name            -- source name string (used in output filenames)
+    src_name            -- source name string; drives image discovery (glob pattern
+                           matching, MS lookup for timing) and is the default for
+                           output filenames/titles when out_label is not set
     src_im_identifier   -- glob pattern identifying the image set, constructed
                            from rmsynth_info.json fields
     src_im_suffix       -- FITS suffix, e.g. 'image.fits' or
@@ -1074,6 +1046,14 @@ def extract_polarization_properties(src_name,
     fix_additional_comps-- if True, secondary components (k>0) have their positions
                            frozen in all non-Stokes-I images; recommended for faint
                            partially unresolved jet ejecta
+    out_label           -- optional display/output name override (rmsynth_info.json
+                           'label' field). Empty string (default) means "use
+                           src_name" -- current behaviour, unchanged. When set, it
+                           replaces src_name in output_dictionary['name'], the
+                           output JSON filename, and every plot filename/title
+                           produced for this source. src_name itself keeps doing
+                           image discovery and MS timing lookups either way, so
+                           out_label never affects which input files are found.
 
     Returns
     -------
@@ -1099,9 +1079,17 @@ def extract_polarization_properties(src_name,
     msg(f'{"="*70}')
     msg('')
 
+    # Display/output name: out_label overrides src_name for everything written
+    # out below (JSON filename+contents, plot filenames+titles). src_name keeps
+    # doing image discovery/MS-timing lookups untouched -- see out_label in the
+    # docstring above.
+    label = out_label if out_label else src_name
+    if label != src_name:
+        msg(f'  Output label     : "{label}" (overrides source name "{src_name}" in output filenames)')
+
     # Initialize the output dictionary.  'MFS' holds one entry per time
     # interval; 'CHAN' holds per-frequency-channel data for RM synthesis.
-    output_dictionary = {'name': src_name}
+    output_dictionary = {'name': label}
     output_dictionary['MFS']  = {}
     output_dictionary['CHAN'] = {}
 
@@ -1152,20 +1140,12 @@ def extract_polarization_properties(src_name,
         _mfs_images_by_prefix.setdefault(_f.split('-MFS')[0], []).append(_f)
     msg(f'Cached MFS images for {len(_mfs_images_by_prefix)} prefix(es) from one directory scan.')
 
-    # One broad glob for CHAN images across ALL prefixes at once (same pattern
-    # shape as the MFS lookup above), then partition in memory by prefix --
-    # this is deliberately NOT "learn the suffix set from prefix 0 and reuse,"
-    # because channel counts can genuinely vary per timestep (e.g. different
-    # flagging per snapshot); each prefix gets its own real glob result, just
-    # sourced from one filesystem scan instead of one scan per prefix.
-    #
-    # The [!MFS] bracket exclusion isn't reused here on purpose: with a
-    # wildcarded identifier spanning every prefix, fnmatch's '*' can backtrack
-    # and swallow '-MFS' into an earlier wildcard, letting a stray later
-    # character satisfy [!MFS] and falsely match an MFS image (e.g.
-    # '...-MFS-I-image.fits' can match '*-[!MFS]*-image.fits' by absorbing
-    # '-MFS' into the first '*' and matching [!MFS] against 'I'). A plain
-    # substring check on '-MFS-' after the fact has no such ambiguity.
+    # One glob for CHAN images across all prefixes, partitioned in memory by
+    # prefix -- channel counts vary per timestep (flagging differs per
+    # snapshot), so each prefix needs its own real result, not a suffix set
+    # learned from prefix 0. Filtered by a '-MFS-' substring check rather than
+    # a [!MFS] glob bracket, since fnmatch's '*' backtracking can defeat that
+    # bracket and falsely match an MFS image.
     _all_chan_glob = glob.glob(f'{src_im_identifier}*-{src_im_suffix}')
     _chan_images_by_prefix = {}
     for _f in _all_chan_glob:
@@ -1215,7 +1195,17 @@ def extract_polarization_properties(src_name,
             json_basename = _last_prefix.split(f'{_split_id}-t')[0] + _split_id
         else:
             json_basename = _last_prefix
-        json_path = '{}_polarization.json'.format(json_basename).replace(image_directory, 'RESULTS')
+        # Relocate into RESULTS/ first, while json_basename is still the
+        # untouched on-disk path -- image_directory is only guaranteed to
+        # appear verbatim in *that*. Applying the label swap first would risk
+        # corrupting a directory segment that happens to contain src_name too
+        # (e.g. image_directory or CWD named after the source), which then
+        # silently breaks this relocation and writes the file under the
+        # original image directory instead of RESULTS. See _apply_label().
+        json_basename = json_basename.replace(image_directory, 'RESULTS')
+        # Now the label override, restricted to the filename component only.
+        json_basename = _apply_label(json_basename, src_name, label)
+        json_path = '{}_polarization.json'.format(json_basename)
     else:
         json_path = None
 
@@ -1229,20 +1219,12 @@ def extract_polarization_properties(src_name,
 
         if is_time_resolved:
             for component in components:
-                mfs_I_arr = np.array(output_dictionary['MFS'][component]['I_flux_mJy'])
-                mfs_rms_arr = np.array(output_dictionary['MFS'][component]['I_rms_mJy'])
-                mfs_snr_arr = np.where(mfs_rms_arr > 0, mfs_I_arr / mfs_rms_arr, 0.0)
-                det_mask = mfs_snr_arr >= SPEC_PLOT_SNR_THRESH
-                n_det = int(np.sum(det_mask))
-                msg(f'  {component}: {n_det}/{len(det_mask)} epochs with MFS S/N >= {SPEC_PLOT_SNR_THRESH} -- plotting spectra')
-                for k in np.where(det_mask)[0]:
-                    plot_stokes_spectrum(output_dictionary, src_name, prefix_arr[k],
-                                        component, int(k), save_plot=True)
-            plot_light_curve(output_dictionary, src_name, prefix_arr)
+                _plot_detected_spectra(output_dictionary, src_name, prefix_arr, component, label)
+            plot_light_curve(output_dictionary, src_name, prefix_arr, label=label)
         else:
             for component in components:
                 plot_stokes_spectrum(output_dictionary, src_name, prefix_arr[0],
-                                    component, 0, save_plot=True)
+                                    component, 0, save_plot=True, label=label)
         return 0
 
     # Persistent pool for CHAN-image fitting, created lazily on first use (once
@@ -1829,6 +1811,7 @@ def extract_polarization_properties(src_name,
                     np.array(output_dictionary['CHAN'][component]['U_rms_mJy'][k])   / 1e3])
 
                 rmsynth_fname = '{}_{}_rmsynth.txt'.format(prefix, component).replace(image_directory, 'RESULTS')
+                rmsynth_fname = _apply_label(rmsynth_fname, src_name, label)
                 np.savetxt(rmsynth_fname, rmsynth_arr.T)
                 msg(f'  RM synthesis file written: {rmsynth_fname}')
 
@@ -1840,14 +1823,9 @@ def extract_polarization_properties(src_name,
         # is preserved even if a plotting call crashes.
         for component in components:
             plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k,
-                                save_plot=False)
+                                save_plot=False, label=label)
 
-        # Clean up this prefix/timestep's estimate + check_position scratch
-        # files. Runs once per loop iteration -- for a non-time-resolved run
-        # (single prefix) that's just once overall; for a time-resolved run
-        # it runs after every timestep, since each timestep's CHAN-fit workers
-        # write their own uniquely-tagged estimate files that would otherwise
-        # accumulate for the whole run.
+        # Remove this timestep's estimate/check_position scratch files
         cleanup_estimate_files(src_name)
         log_memory_usage(label=f'prefix {k+1}/{len(prefix_arr)} ({os.path.basename(prefix)}) done --')
 
@@ -1884,28 +1862,45 @@ def extract_polarization_properties(src_name,
     if is_time_resolved:
         # Plot IQUV spectrum for all epochs meeting the MFS S/N threshold
         for component in components:
-            mfs_I_arr = np.array(output_dictionary['MFS'][component]['I_flux_mJy'])
-            mfs_rms_arr = np.array(output_dictionary['MFS'][component]['I_rms_mJy'])
-            mfs_snr_arr = np.where(mfs_rms_arr > 0, mfs_I_arr / mfs_rms_arr, 0.0)
-            det_mask = mfs_snr_arr >= SPEC_PLOT_SNR_THRESH
-            n_det = int(np.sum(det_mask))
-            msg(f'  {component}: {n_det}/{len(det_mask)} epochs with MFS S/N >= {SPEC_PLOT_SNR_THRESH} -- plotting spectra')
-            for k in np.where(det_mask)[0]:
-                plot_stokes_spectrum(output_dictionary, src_name, prefix_arr[k],
-                                    component, int(k), save_plot=True)
+            _plot_detected_spectra(output_dictionary, src_name, prefix_arr, component, label)
 
         # Plot MFS light curve across all epochs
-        plot_light_curve(output_dictionary, src_name, prefix_arr)
+        plot_light_curve(output_dictionary, src_name, prefix_arr, label=label)
     else:
         # Single-epoch: plot spectrum for each component
         for component in components:
             plot_stokes_spectrum(output_dictionary, src_name, prefix_arr[0],
-                                component, 0, save_plot=True)
+                                component, 0, save_plot=True, label=label)
 
     return 0
 
+
+def _plot_detected_spectra(output_dictionary, src_name, prefix_arr, component, label):
+    '''
+    Plot the IQUV spectrum for every time-resolved epoch of `component` whose
+    MFS Stokes I S/N clears SPEC_PLOT_SNR_THRESH, and log a line per epoch
+    either way, so it's visible from the log alone -- not just by checking
+    which files landed on disk -- whether each epoch's spectrum plot was
+    saved or skipped for being sub-threshold.
+    '''
+    mfs_I_arr   = np.array(output_dictionary['MFS'][component]['I_flux_mJy'])
+    mfs_rms_arr = np.array(output_dictionary['MFS'][component]['I_rms_mJy'])
+    mfs_snr_arr = np.where(mfs_rms_arr > 0, mfs_I_arr / mfs_rms_arr, 0.0)
+    det_mask    = mfs_snr_arr >= SPEC_PLOT_SNR_THRESH
+    n_det       = int(np.sum(det_mask))
+    msg(f'  {component}: {n_det}/{len(det_mask)} epochs with MFS S/N >= {SPEC_PLOT_SNR_THRESH} -- plotting spectra')
+    for k in range(len(det_mask)):
+        epoch_desc = f'epoch {k} ({os.path.basename(prefix_arr[k])})'
+        if det_mask[k]:
+            msg(f'    {epoch_desc}: MFS S/N = {mfs_snr_arr[k]:.1f} >= {SPEC_PLOT_SNR_THRESH} -- spectrum plot SAVED')
+            plot_stokes_spectrum(output_dictionary, src_name, prefix_arr[k],
+                                component, int(k), save_plot=True, label=label)
+        else:
+            msg(f'    {epoch_desc}: MFS S/N = {mfs_snr_arr[k]:.1f} <  {SPEC_PLOT_SNR_THRESH} -- spectrum plot SKIPPED')
+
+
 def plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k,
-                         save_plot=True):
+                         save_plot=True, label=None):
     '''
     Diagnostic plot of per-channel Stokes I, Q, U, V spectra for one source
     component in one time-interval epoch, stacked vertically with a shared
@@ -1935,13 +1930,20 @@ def plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k,
     Parameters
     ----------
     output_dictionary : dict  -- full extraction dictionary (modified in place)
-    src_name          : str   -- source name for plot title and filename
+    src_name          : str   -- true source name; prefix is a literal glob match
+                                 on this string, so it's what label (if set)
+                                 gets substituted for below
     prefix            : str   -- epoch path prefix (used for output filename)
     component         : str   -- component key, e.g. 'component0'
     k                 : int   -- epoch index within the prefix list
     save_plot         : bool  -- if False, compute and store spectral index but
                                  skip figure generation (default True)
+    label             : str or None -- display/output name override (rmsynth_info.json
+                                 'label' field, via extract_polarization_properties).
+                                 None/unset means "use src_name" -- unchanged behaviour.
     '''
+
+    label = label or src_name
 
     # Ensure the output directory exists
     plot_dir = os.path.join('RESULTS', 'fitting_plots')
@@ -2220,18 +2222,22 @@ def plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k,
     # Shared x-axis label on the bottom panel only
     axes[-1].set_xlabel('Frequency (GHz)', fontsize=11)
 
-    fig.suptitle(f'{src_name}  |  {component}  |  epoch {k}', fontsize=12, y=1.01)
+    fig.suptitle(f'{label}  |  {component}  |  epoch {k}', fontsize=12, y=1.01)
     plt.tight_layout()
+
+    # prefix is a literal glob match on src_name (see docstring); _apply_label
+    # carries the label into the output filename only (never a directory).
+    out_basename = _apply_label(os.path.basename(prefix), src_name, label)
 
     plot_fname = os.path.join(
         plot_dir,
-        f'{os.path.basename(prefix)}_{component}_IQUV_spectrum.png')
+        f'{out_basename}_{component}_IQUV_spectrum.png')
     plt.savefig(plot_fname, dpi=150, bbox_inches='tight')
     plt.close()
     msg(f'  IQUV spectrum plot saved: {plot_fname}')
 
 
-def plot_light_curve(output_dictionary, src_name, prefix_arr):
+def plot_light_curve(output_dictionary, src_name, prefix_arr, label=None):
     '''
     Plot MFS IQUV light curves for time-resolved data. Always produced
     whenever the run is time-resolved, and always plots every epoch -- this
@@ -2256,10 +2262,17 @@ def plot_light_curve(output_dictionary, src_name, prefix_arr):
     Parameters
     ----------
     output_dictionary : dict  -- full extraction dictionary
-    src_name          : str   -- source name for title and filename
+    src_name          : str   -- true source name; prefix_arr entries are literal
+                                 glob matches on this string, so it's what label
+                                 (if set) gets substituted for below
     prefix_arr        : list  -- list of prefix strings (one per epoch),
                                  used to build the output filename
+    label             : str or None -- display/output name override (rmsynth_info.json
+                                 'label' field, via extract_polarization_properties).
+                                 None/unset means "use src_name" -- unchanged behaviour.
     '''
+
+    label = label or src_name
 
     plot_dir = os.path.join('RESULTS', 'fitting_plots')
     os.makedirs(plot_dir, exist_ok=True)
@@ -2361,14 +2374,17 @@ def plot_light_curve(output_dictionary, src_name, prefix_arr):
             for ax in axes[-1, :]:
                 ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d\n%H:%M'))
 
-    fig.suptitle(f'{src_name}  |  MFS light curve', fontsize=12, y=1.02)
+    fig.suptitle(f'{label}  |  MFS light curve', fontsize=12, y=1.02)
     plt.tight_layout()
 
-    # Strip the time index (e.g. -t0051) from the prefix for the filename
-    lc_basename = re.sub(r'-t\d+$', '', os.path.basename(prefix_arr[0]))
+    # Strip the time index (e.g. -t0051) from the prefix for the filename.
+    # prefix_arr[0] is a literal glob match on src_name (see docstring); the
+    # _apply_label call carries the label into the filename only, same
+    # pattern as plot_stokes_spectrum().
+    lc_basename = _apply_label(re.sub(r'-t\d+$', '', os.path.basename(prefix_arr[0])), src_name, label)
     plot_fname = os.path.join(
         plot_dir,
-        f'{lc_basename}_{src_name}_MFS_lightcurve.png')
+        f'{lc_basename}_{label}_MFS_lightcurve.png')
     plt.savefig(plot_fname, dpi=150, bbox_inches='tight')
     plt.close()
     msg(f'  MFS light curve plot saved: {plot_fname}')
@@ -2384,7 +2400,12 @@ def main():
     pol_flag=False
     if cfg.POLANG_NAME != '':
         pol_flag = True
-        
+
+    # Optional per-entry output-name override. Missing key or empty string
+    # means "use source_name" (unchanged default behaviour) -- see out_label
+    # in extract_polarization_properties() docstring.
+    labels = rmsynth_info.get('label', [])
+
     # Iterate through sources as specified in rmsynth_info.json
     for k in range(len(rmsynth_info['image_directory']))[:]:
    
@@ -2432,7 +2453,8 @@ def main():
             rmsynth_info['rms_region'][k],
             rmsynth_info['image_directory'][k],
             rmsynth_info["image_identifier"][k],
-            fix_additional_comps = True)
+            fix_additional_comps = True,
+            out_label = labels[k] if k < len(labels) else '')
 
 
 
