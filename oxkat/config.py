@@ -570,14 +570,14 @@ WSC_CIRCULARBEAM = False # Force a circular (not elliptical) restoring beam (-ci
 # --- Channel strategy ---
 WSC_BLIND_CHANNELSOUT = 8     # Blind (shallow, no mask) image — used only to generate initial mask
 WSC_PCAL_CHANNELSOUT  = 128     # Final self-calibrated (pcalmask) image
-WSC_DMASK_CHANNELSOUT = 128  # Data-masked image (stage 1 selfcal model);
+WSC_DMASK_CHANNELSOUT = 64  # Data-masked image (stage 1 selfcal model);
                                                # set independently if a different channelisation is needed
-WSC_CAL_CHANNELSOUT   = WSC_PCAL_CHANNELSOUT    # Calibrator images (secondaries / primary)
+WSC_CAL_CHANNELSOUT   = WSC_DMASK_CHANNELSOUT    # Calibrator images (secondaries / primary)
 
 # Memory-safe channel chunking: if WSC_MAX_CHANNELS < channels-out, wsclean is called
 # multiple times in channel-range blocks of WSC_MAX_CHANNELS, then the results are
 # assembled into a full cube. Must divide evenly into both PRE_NCHANS and channels-out.
-WSC_MAX_CHANNELS = 64
+WSC_MAX_CHANNELS = 128
 
 # Spectral polynomial fitting across output channels (-fit-spectral-pol N)
 # Applied during deconvolution to constrain spectral index. 0 = disabled.
@@ -961,7 +961,7 @@ RMSYN_SPEC_INDEX_SNR_THRESH = 25    # Minimum MFS Stokes I S/N to attempt the sp
 RMSYN_SPEC_INDEX_MAD_CLIP  = 10     # Iterative MAD outlier rejection threshold (in sigma) applied
                                     # to channels during the spectral index power-law fit.
 
-RMSYN_MAX_I_DRIFT_PIX      = False  # Maximum pixel drift allowed for a Stokes I fitted position
+RMSYN_MAX_I_DRIFT_PIX      = True  # Maximum pixel drift allowed for a Stokes I fitted position
                                     # before the fit is re-run with the position fixed.
                                     # False = no drift check; float = threshold in pixels.
 

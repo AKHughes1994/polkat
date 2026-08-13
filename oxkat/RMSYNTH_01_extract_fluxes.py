@@ -28,6 +28,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 sys.path.append(o.abspath(o.join(o.dirname(sys.modules[__name__].__file__), "..")))
 from oxkat import config as cfg
+from oxkat import generate_jobs as gen
 
 from casatasks import imfit, imstat, imhead
 from casatools import table
@@ -62,6 +63,7 @@ V_FORCE_EXCLUDED_SUBSTRINGS = []
 # --- Spectral index fit thresholds (defaults pulled from config.py) ----------
 SPEC_INDEX_SNR_THRESH = cfg.RMSYN_SPEC_INDEX_SNR_THRESH  # Minimum MFS Stokes I S/N to attempt the fit
 SPEC_INDEX_MAD_CLIP   = cfg.RMSYN_SPEC_INDEX_MAD_CLIP    # Iterative MAD outlier rejection threshold (sigma)
+MAX_I_DRIFT_PIX       = cfg.RMSYN_MAX_I_DRIFT_PIX        # Max pixel drift of fitted Stokes I from the input seed position; False = no check
 
 # =============================================================================
 
@@ -329,18 +331,27 @@ def get_source_from_ms(myms, source_name):
 def parse_casa_position(position_str):
     """
     Parse CASA format position string to decimal degrees.
-    CASA format: RA is colon-separated (HH:MM:SS.SS), Dec is period-separated (±DD.MM.SS.SS)
-    Example: '17:02:49.40,-48.47.23.40'
-    
+
+    Accepts two formats:
+      - CASA HMS/DMS: RA is colon-separated (HH:MM:SS.SS), Dec is period-
+        separated (±DD.MM.SS.SS). Example: '17:02:49.40,-48.47.23.40'
+      - Decimal degrees: '260.430458,-16.204894', optionally with a 'deg'
+        suffix. Detected by the absence of a colon in the RA part.
+
     Returns
     -------
     ra_deg, dec_deg : float, float
         Position in decimal degrees
     """
     try:
+        # Decimal-degree format (no colons in the RA part)
+        if ':' not in position_str:
+            parts = position_str.replace('deg', '').split(',')
+            return float(parts[0].strip()), float(parts[1].strip())
+
         # Split RA and Dec by comma
         ra_str, dec_str = position_str.split(',')
-        
+
         # Parse RA (colon-separated: HH:MM:SS.SS)
         ra_parts = ra_str.strip().split(':')
         if len(ra_parts) != 3:
@@ -378,30 +389,60 @@ def parse_casa_position(position_str):
 def read_position_file(position_file, source_name):
     """
     Read source position from text file for target sources.
-    Format: FIELD_NAME  CASA_POSITION
-    where CASA_POSITION is RA:colon-separated,Dec:period-separated
+    Format: FIELD_NAME<TAB>POSITION, one entry per line, where POSITION is
+    either CASA HMS/DMS (RA colon-separated, Dec period-separated) or plain
+    decimal degrees -- see parse_casa_position().
+
+    source_name is matched against the FIELD_NAME column by normalized
+    similarity, not exact/substring match: MS field names and XRB catalogue
+    names for the same source commonly differ only in incidental punctuation/
+    spacing (e.g. 'MAXI J1820+070' vs 'MAXIJ1820+070'). See
+    gen.match_field_name() / gen._normalize_field_name() for the exact rule
+    (>=80% difflib ratio after stripping spaces/underscores/colons/'+' and
+    lowercasing).
+
+    Hard-fails (raises RuntimeError) if no entry reaches that threshold. This
+    mirrors the pre-flight check in setups/RMSYNTH.py, which uses the same
+    matcher and is expected to catch this before a job is ever submitted --
+    reaching this at runtime means something unexpected changed (e.g. the
+    position file was edited after the job was generated), so it does not
+    silently fall back to the MS phase centre.
     """
     if not os.path.exists(position_file):
-        msg(f"WARNING: Position file {position_file} not found")
-        return None, None
-    
+        raise FileNotFoundError(f"Position file {position_file} not found")
+
     msg(f"Reading position from file: {position_file}")
-    
+
+    entries = []  # (field_name, position_str) pairs, in file order
     with open(position_file, 'r') as f:
         for line in f:
             if line.startswith('#') or not line.strip():
                 continue
-            parts = line.split()
-            if len(parts) >= 2 and parts[0].lower() == source_name.lower():
-                # Parse CASA format position
-                position_str = parts[1]
-                ra_deg, dec_deg = parse_casa_position(position_str)
-                if ra_deg is not None:
-                    msg(f"Found position in file: RA={ra_deg:.6f} deg, Dec={dec_deg:.6f} deg")
-                    return ra_deg, dec_deg
-    
-    msg(f"WARNING: Source {source_name} not found in position file")
-    return None, None
+            parts = line.rstrip('\n').split('\t', 1)
+            if len(parts) < 2 or not parts[1].strip():
+                continue
+            entries.append((parts[0].strip(), parts[1].strip()))
+
+    if not entries:
+        raise RuntimeError(f"Position file {position_file} contains no entries")
+
+    names = [name for name, _ in entries]
+    best_name, best_ratio, matched = gen.match_field_name(source_name, names)
+
+    if not matched:
+        raise RuntimeError(
+            f"No entry in {position_file} matched '{source_name}' at >= 80% "
+            f"similarity (closest: '{best_name}' at {best_ratio:.0%}). "
+            f"Add/fix the target in the position file.")
+
+    msg(f"Matched '{source_name}' -> '{best_name}' ({best_ratio:.0%} similarity)")
+    position_str = dict(entries)[best_name]
+    ra_deg, dec_deg = parse_casa_position(position_str)
+    if ra_deg is None:
+        raise RuntimeError(f"Failed to parse position '{position_str}' for '{best_name}' in {position_file}")
+
+    msg(f"Found position in file: RA={ra_deg:.6f} deg, Dec={dec_deg:.6f} deg")
+    return ra_deg, dec_deg
 
 
 def read_rms_region_file(rms_region_file, source_name):
@@ -1194,10 +1235,30 @@ def extract_polarization_properties(src_name,
                                        MFS_images[0], src_ra_pix, src_dec_pix)
 
         # Get component (single component only)
-        component = 'component0'           
+        component = 'component0'
         MFS_I_ra_pix = MFS_I_imfit['results'][component]['pixelcoords'][0]
         MFS_I_dec_pix = MFS_I_imfit['results'][component]['pixelcoords'][1]
-       
+
+        # --- MFS Stokes I drift check vs input sky-coordinate seed -----------
+        # If MAX_I_DRIFT_PIX is set and the fitted position has moved further
+        # than that threshold from the input reference, refix position and refit.
+        if MAX_I_DRIFT_PIX is not False:
+            drift = np.sqrt((MFS_I_ra_pix - src_ra_pix) ** 2 +
+                             (MFS_I_dec_pix - src_dec_pix) ** 2)
+            if drift > MAX_I_DRIFT_PIX:
+                msg(f'  WARNING: MFS Stokes I drifted {drift:.1f} pix '
+                    f'from input reference (threshold {MAX_I_DRIFT_PIX} pix). '
+                    f'Will re-fit with position fixed to input reference.')
+                make_estimate(f'estimate_I_{src_name}.txt', MFS_images[0],
+                              src_ra_pix, src_dec_pix, 'xyabp')
+                MFS_I_imfit   = get_imfit_values(f'estimate_I_{src_name}.txt',
+                                                  MFS_images[0], src_ra_pix, src_dec_pix)
+                MFS_I_ra_pix  = MFS_I_imfit['results'][component]['pixelcoords'][0]
+                MFS_I_dec_pix = MFS_I_imfit['results'][component]['pixelcoords'][1]
+                msg(f'  MFS Stokes I re-fit complete: position fixed to input reference.')
+            else:
+                msg(f'  MFS Stokes I drift OK: {drift:.1f} pix (threshold {MAX_I_DRIFT_PIX} pix)')
+
         # Extract values for single component
         flux_I = MFS_I_imfit['results'][component]['peak']['value'] * 1e3
         err_I = MFS_I_imfit['results'][component]['peak']['error'] * 1e3

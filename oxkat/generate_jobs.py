@@ -8,6 +8,7 @@ import time
 import os
 import os.path as o
 import sys
+import difflib
 sys.path.append(o.abspath(o.join(o.dirname(sys.modules[__name__].__file__), "..")))
 from oxkat import config as cfg
 
@@ -43,6 +44,50 @@ def col(txt=''):
 
 def print_spacer():
     print('---------------------+----------------------------------------------------------')
+
+
+def _normalize_field_name(name):
+    '''
+    Normalize a field/source name for fuzzy matching: strip spaces,
+    underscores, colons and '+' signs, then lowercase. XRB catalogue names
+    and MS field names for the same source commonly differ only in this kind
+    of incidental punctuation/spacing (e.g. 'MAXI J1820+070' vs 'MAXIJ1820+070'
+    vs 'maxij1820_070') -- stripping it down leaves mostly the digit sequences
+    (the catalogue number) as the signal being compared.
+    '''
+    for ch in (' ', '_', ':', '+'):
+        name = name.replace(ch, '')
+    return name.lower()
+
+
+def match_field_name(query_name, candidate_names, threshold=0.8):
+    '''
+    Find the best-matching name for `query_name` among `candidate_names` by
+    normalized similarity (difflib.SequenceMatcher ratio on the
+    _normalize_field_name()'d strings).
+
+    Parameters
+    ----------
+    query_name      : str        -- name to match, e.g. an MS field name
+    candidate_names : list[str]  -- candidates to match against, e.g. the
+                                     FIELD_NAME column of XRB_pos_list.txt
+    threshold       : float      -- minimum ratio in [0, 1] to count as a match
+                                     (default 0.8, i.e. 80%)
+
+    Returns
+    -------
+    (best_name, best_ratio, matched) -- best_name/best_ratio are always the
+    single best-scoring candidate (even if matched is False), so callers can
+    report the closest miss; matched is True iff best_ratio >= threshold.
+    Ties are broken by candidate order (first one seen wins).
+    '''
+    query_norm = _normalize_field_name(query_name)
+    best_name, best_ratio = None, 0.0
+    for candidate in candidate_names:
+        ratio = difflib.SequenceMatcher(None, query_norm, _normalize_field_name(candidate)).ratio()
+        if ratio > best_ratio:
+            best_ratio, best_name = ratio, candidate
+    return best_name, best_ratio, (best_ratio >= threshold)
 
 
 def set_infrastructure(args):

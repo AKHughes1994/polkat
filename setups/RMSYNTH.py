@@ -150,28 +150,45 @@ def main():
     # ------------------------------------------------------------------------------
     #
     # Verify every target has a known position before building the job graph.
-    # RMSYNTH_01_extract_fluxes.py silently falls back to the MS phase centre
-    # for any target missing from the position file (see read_position_file()
-    # there) -- fail fast here instead of letting that happen unnoticed.
+    # Matched by fuzzy/normalized similarity (gen.match_field_name()), the same
+    # rule RMSYNTH_01_extract_fluxes.py's read_position_file() uses at runtime --
+    # a target that passes here is guaranteed to resolve the same way there.
+    # read_position_file() hard-fails if it doesn't find a match, so this exists
+    # purely to catch that before a job is ever submitted, not after.
     #
     # ------------------------------------------------------------------------------
 
     position_file = cfg.DATA + '/positions/XRB_pos_list.txt'
-    known_positions = set()
+    known_names = []
     if o.exists(position_file):
         with open(position_file, 'r') as f:
             for line in f:
                 if line.startswith('#') or not line.strip():
                     continue
-                known_positions.add(line.split()[0].lower())
+                parts = line.rstrip('\n').split('\t', 1)
+                if len(parts) == 2 and parts[0].strip():
+                    known_names.append(parts[0].strip())
     else:
         print(gen.col('ERROR')+f'Position file {position_file} not found')
         sys.exit()
 
-    missing_targets = [field['name'] for field in field_list if field['is_target'] and field['name'].lower() not in known_positions]
+    print(gen.col('Position matches:'))
+    missing_targets = []
+    for field in field_list:
+        if not field['is_target']:
+            continue
+        best_name, best_ratio, matched = gen.match_field_name(field['name'], known_names)
+        if matched:
+            print(gen.col(f"  {field['name']}") + f"-> '{best_name}' ({best_ratio:.0%})")
+        else:
+            closest = f"closest was '{best_name}' at {best_ratio:.0%}" if best_name else 'position file is empty'
+            missing_targets.append((field['name'], closest))
+
     if missing_targets:
-        print(gen.col('ERROR')+f"Target(s) missing from position file {position_file}: {', '.join(missing_targets)}")
-        print(gen.col('ERROR')+'Add the missing target(s) to the position file before re-running RMSYNTH.py')
+        print(gen.col('ERROR')+f"Target(s) with no position-file match >= 80% similarity in {position_file}:")
+        for name, closest in missing_targets:
+            print(gen.col('ERROR')+f"  {name}: {closest}")
+        print(gen.col('ERROR')+'Add or fix the target(s) in the position file before re-running RMSYNTH.py')
         sys.exit()
 
     # ------------------------------------------------------------------------------
