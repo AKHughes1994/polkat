@@ -61,7 +61,7 @@ K:
   direction_dependent: false
   pinned_directions:
   - 0
-  time_interval: '1'
+  time_interval: '8'
   freq_interval: '0'
   interp_mode: reim
   interp_method: 2dlinear

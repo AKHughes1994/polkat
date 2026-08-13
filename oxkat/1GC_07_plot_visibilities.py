@@ -55,7 +55,7 @@ def main():
     colour_by = ['--colour-by ANTENNA1 --cnum 64']
 
 #    shadems_base = 'shadems --profile --dir '+VISPLOTS+' '
-    shadems_base = 'shadems -j 8 --dir '+VISPLOTS+' '
+    shadems_base = 'shadems --dir '+VISPLOTS+' '
     
     for field in fields:
         for plot in plots:

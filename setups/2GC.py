@@ -487,7 +487,7 @@ def main():
                 nomodel = True,
                 sourcelist = False,
                 automask = automask_dmask,
-                localrms = cfg.WSC_INTER_LOCALRMS,
+                localrms = cfg.WSC_SHALLOWMASK_LOCALRMS,
                 autothreshold = cfg.WSC_INTER_AUTOTHRESHOLD,
                 weight=weight_dmask,
                 imsize = imsize_dmask,

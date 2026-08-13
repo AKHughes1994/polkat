@@ -616,7 +616,6 @@ def generate_syscall_wsclean(mslist,
                           autothreshold = cfg.WSC_AUTOTHRESHOLD,
                           automask = cfg.WSC_AUTOMASK,
                           localrms = cfg.WSC_LOCALRMS,
-                          localrms_strength = cfg.WSC_LOCALRMS_STRENGTH,
                           stopnegative = cfg.WSC_STOPNEGATIVE,
                           fitspectralpol = cfg.WSC_FITSPECTRALPOL,
                           circularbeam = cfg.WSC_CIRCULARBEAM,
@@ -750,6 +749,20 @@ def generate_syscall_wsclean(mslist,
     if circularbeam:
         syscall += '-circular-beam '
 
+    # localrms is a single knob for both whether -local-rms is enabled and its
+    # strength: False disables it; True enables it at the default strength;
+    # a non-zero float enables it at that strength (e.g. localrms=0.8).
+    _LOCALRMS_DEFAULT_STRENGTH = 0.5
+    if isinstance(localrms, bool):
+        _localrms_on       = localrms
+        _localrms_strength = _LOCALRMS_DEFAULT_STRENGTH
+    else:
+        try:
+            _localrms_strength = float(localrms)
+        except (TypeError, ValueError):
+            _localrms_strength = 0.0
+        _localrms_on = (_localrms_strength != 0)
+
     # Masking
     if mask:
         if mask.lower() == 'fits':
@@ -761,9 +774,9 @@ def generate_syscall_wsclean(mslist,
         syscall += '-auto-mask '+str(automask)+' '
     if autothreshold:
         syscall += '-auto-threshold '+str(autothreshold)+' '
-        if localrms:
+        if _localrms_on:
             syscall += '-local-rms '
-            syscall += '-local-rms-strength '+str(localrms_strength)+' '
+            syscall += '-local-rms-strength '+str(_localrms_strength)+' '
     if threshold:
         syscall += '-threshold '+str(threshold)+' '
 
@@ -824,18 +837,33 @@ def generate_syscall_wsclean(mslist,
         syscall_arr    += syscall_arr
         _syscall_names += _syscall_names
 
-        # Resolve the QU/IV split deconvolution behaviour from qu_automask_scale:
-        #   0       : disabled — no changes to QU or IV, local-rms not added
-        #   'auto'  : QU gets local-rms; IV auto-mask floored at 3.0, auto-threshold floored at 1.0
-        #   float   : QU gets local-rms; IV auto-mask multiplied by scale, auto-threshold floored at 1.0
-        try:
-            _scale = float(qu_automask_scale)
-            _qu_disabled = (_scale == 0)
-            _qu_auto_mode = False
-        except (TypeError, ValueError):
-            _scale = None
-            _qu_disabled = False
-            _qu_auto_mode = True  # 'auto' or unrecognised string
+        # Resolve the QU deconvolution scaling from qu_automask_scale. IV is never
+        # touched here -- it keeps whatever automask/autothreshold was set in config.
+        # qu_automask_scale is always a plain float multiplier on both automask and
+        # autothreshold; its sign is a mode switch, magnitude is the scale factor:
+        #   0        : disabled — no changes to QU, IV untouched either way
+        #   negative : |value| x automask/autothreshold, nothing else changes
+        #   positive : value x automask/autothreshold, and -- if squarechans is
+        #              also True -- local-rms is additionally turned on for QU.
+        #              Square-channel-joining's sum-of-squares peak-finding has
+        #              non-Gaussian noise statistics that make a plain
+        #              multiplicative auto-mask/threshold prone to diverging on
+        #              QU; local-rms weighting is what keeps it stable, so it's
+        #              opt-out (via a negative scale) rather than opt-in.
+        #              Local-rms strength is looked up directly from
+        #              WSC_INTER_LOCALRMS (itself a strength value, e.g. 0.33);
+        #              if that's False, QU still forces local-rms on but at a
+        #              fixed strength of 0.5.
+        # NOTE: the QU scale only takes effect if automask/autothreshold were
+        # actually set (truthy) in config. If disabled (False/0/None), the base
+        # syscall never contains a '-auto-mask'/'-auto-threshold' flag to begin
+        # with (see the `if automask:` / `if autothreshold:` guards where the
+        # syscall is first built), so there is nothing for .replace() below to
+        # substitute — the QU pass ends up with no auto-mask/auto-threshold flag
+        # at all, regardless of qu_automask_scale.
+        _scale        = float(qu_automask_scale)
+        _qu_disabled  = (_scale == 0)
+        _qu_local_rms = (_scale > 0) and squarechans
 
         for _k in range(k):
             # QU: strip --deconvolution-channels (only appropriate for IV)
@@ -843,29 +871,31 @@ def generate_syscall_wsclean(mslist,
             if chandeconvolution:
                 qu_syscall = qu_syscall.replace(
                     f'--deconvolution-channels {chandeconvolution} ', '')
-            # Enable local-rms for QU unless disabled
-            if not _qu_disabled and not localrms:
-                qu_syscall = qu_syscall.replace(
-                    '-auto-threshold ',
-                    '-local-rms -local-rms-strength '+str(localrms_strength)+' -auto-threshold ')
+            # Scale QU auto-mask/auto-threshold unless disabled; IV is left untouched.
+            if not _qu_disabled:
+                _qu_automask      = round(automask * abs(_scale), 1) if automask else automask
+                _qu_autothreshold = round(autothreshold * abs(_scale), 1) if autothreshold else autothreshold
+                # Only substitute if automask/autothreshold was set: with no base
+                # value there's no '-auto-mask {automask} '/'-auto-threshold ...'
+                # substring in qu_syscall to replace, so this is a no-op.
+                if automask and _qu_automask != automask:
+                    qu_syscall = qu_syscall.replace(
+                        f'-auto-mask {automask} ',
+                        f'-auto-mask {_qu_automask} ')
+                if autothreshold and _qu_autothreshold != autothreshold:
+                    qu_syscall = qu_syscall.replace(
+                        f'-auto-threshold {autothreshold} ',
+                        f'-auto-threshold {_qu_autothreshold} ')
+                # Positive scale + square-channel-joining additionally enables
+                # local-rms for QU -- see NOTE above for the strength/on-ness rule.
+                if _qu_local_rms and not localrms:
+                    _qu_local_rms_strength = cfg.WSC_INTER_LOCALRMS if cfg.WSC_INTER_LOCALRMS else 0.5
+                    qu_syscall = qu_syscall.replace(
+                        '-auto-threshold ',
+                        '-local-rms -local-rms-strength '+str(_qu_local_rms_strength)+' -auto-threshold ')
             syscall_arr[_k] = qu_syscall + f'-pol {pol_QU} {joinpol_QU} '
             # IV: strip squared-channel-joining unconditionally (not appropriate for Stokes V)
             iv_syscall = syscall_arr[_k + k].replace('-squared-channel-joining ', '')
-            # Apply IV mask/threshold overrides unless disabled
-            if not _qu_disabled:
-                if _qu_auto_mode:
-                    _iv_automask = max(automask, 3.0) if automask else 3.0
-                else:
-                    _iv_automask = round(automask * _scale, 1) if automask else automask
-                if automask and _iv_automask != automask:
-                    iv_syscall = iv_syscall.replace(
-                        f'-auto-mask {automask} ',
-                        f'-auto-mask {_iv_automask} ')
-                _iv_autothreshold = max(autothreshold, 1.0) if autothreshold else 1.0
-                if autothreshold and _iv_autothreshold != autothreshold:
-                    iv_syscall = iv_syscall.replace(
-                        f'-auto-threshold {autothreshold} ',
-                        f'-auto-threshold {_iv_autothreshold} ')
             syscall_arr[_k + k] = iv_syscall + f'-pol {pol_IV} {spectralpol_IV} {joinpol_IV} '
 
     else:

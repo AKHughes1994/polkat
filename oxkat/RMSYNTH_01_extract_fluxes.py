@@ -569,14 +569,22 @@ def return_max(im, region):
 
 def get_imstat_values(image, xpix, ypix, manual_rms_region = False):
     '''
-    Take in an image and a position, 
+    Take in an image and a position,
     return the max, max pixel location(s), and rms
+
+    The RMS annulus is measured on the matching *-residual.fits image when one
+    exists on disk (pure post-CLEAN noise, not biased by real source flux/
+    sidelobes the way the restored image's own annulus can be), falling back
+    to the restored image itself when no residual is present (e.g. residuals
+    not saved, or a homogenized image with no homogenized residual counterpart).
+    manual_rms_region only overrides *where* the region is measured; which
+    image it's measured on is still resolved by this same residual/fallback rule.
     '''
 
     # Get the beam parameters
     bmaj = imhead(image, mode='get', hdkey = 'BMAJ')['value']
     bmin = imhead(image, mode='get', hdkey = 'BMIN')['value']
-    bpa  = imhead(image, mode='get', hdkey = 'BPA')['value']    
+    bpa  = imhead(image, mode='get', hdkey = 'BPA')['value']
 
     # Define the regions of interest (rms is ~500 beam area)
     r_in  = 5.0 * bmaj
@@ -586,14 +594,18 @@ def get_imstat_values(image, xpix, ypix, manual_rms_region = False):
     if manual_rms_region:
         rms_region = manual_rms_region
 
-    # Values of interest -- Source
+    # Values of interest -- Source (always measured on the restored image)
     ims = imstat(image, region = src_region)
     flux = return_max(image, src_region)
     xpix = ims['maxpos'][0]
     ypix = ims['maxpos'][1]
 
-    # Extract RMS
-    rms = imstat(image, region = rms_region)['rms'][0]
+    # Extract RMS -- prefer the matching residual image, fall back to the
+    # restored image if no residual is on disk.
+    rms_image = re.sub(r'-image(\.homogenized)?\.fits$', r'-residual\1.fits', image)
+    if not os.path.exists(rms_image):
+        rms_image = image
+    rms = imstat(rms_image, region = rms_region)['rms'][0]
 
     return [flux, xpix, ypix, rms]
     
