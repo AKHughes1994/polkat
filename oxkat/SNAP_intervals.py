@@ -21,21 +21,28 @@ sys.path.append(o.abspath(o.join(o.dirname(sys.modules[__name__].__file__), ".."
 from oxkat import generate_jobs as gen
 from oxkat import config as cfg
 
-# Comma-separated list of scan indices (0-based, in MS scan order) to (re)image
-# this run. Leave as '' to process every scan found in the MS. Set to '-1' to skip
-# imaging entirely and only run the completion-check/rename pass below.
-# Entries can be single indices or CASA-style ranges:
-#     '2,3'   -> scans 2 and 3
-#     '2~5'   -> scans 2 through 5 inclusive
-#     '2~'    -> scan 2 through the last scan
-#     '~3'    -> scan 0 through scan 3 inclusive
+# Which scans to (re)image this run:
+#   'auto' (default) -- every scan found in the MS, but a scan whose output is
+#                        already complete (full expected channel x interval x
+#                        Stokes count, either still staged un-renamed or already
+#                        renamed to its final t-label range) is skipped rather
+#                        than re-imaged. This is the resume-a-partial-run mode.
+#   ''               -- every scan found in the MS, unconditionally overwritten
+#                        regardless of what output already exists for it.
+#   '-1'             -- skip imaging entirely, only run the completion-check/
+#                        rename pass below.
+#   explicit spec    -- image exactly the listed scan(s), unconditionally
+#                        overwritten (same as ''), e.g. after deliberately
+#                        redoing a scan for some other reason:
+#                          '2,3'   -> scans 2 and 3
+#                          '2~5'   -> scans 2 through 5 inclusive
+#                          '2~'    -> scan 2 through the last scan
+#                          '~3'    -> scan 0 through scan 3 inclusive
 # (see the WARNING printed at the end of a run for the exact list of scans that need re-running)
 #
-# Imaging is the expensive part of this script -- every scan is checked against what's
-# already on disk (finalized/renamed, or imaged but not yet renamed) before considering
-# SNAP_SCANS at all, so a scan that's already done is never re-imaged even if listed here,
-# and any leftover unrenamed scan from an earlier run gets picked up and renamed automatically.
-SNAP_SCANS = ''
+# Regardless of mode, any leftover un-renamed scan from an earlier run gets
+# picked up and renamed automatically by the completion-check/rename pass below.
+SNAP_SCANS = 'auto'
 
 def msg(txt):
     stamp = time.strftime(' %Y-%m-%d %H:%M:%S | ')
@@ -102,6 +109,47 @@ def check_final_totals(myms, expected_total_nint, img_re):
             f'rename or produced the wrong total number of t values.')
     else:
         msg(f'Final check OK: {actual_total_nint} total t-interval(s) match prediction.')
+
+
+def scan_output_complete(myms, scan_n, expected_nint, expected_channels, expected_stokes, t0, t_end, img_re):
+    """
+    True if scan_n's imaging output is already fully present on disk -- either
+    still staged under the '_scanNNNN' prefix (imaged but not yet renamed) or
+    already renamed into its final t{t0:04d}-t{t_end:04d} range -- with every
+    expected (interval x channel x Stokes) image file actually present, not
+    just some of them. A partial/failed attempt (missing files -- including a
+    scan that has every channel/interval but is missing one or more Stokes --
+    or a lingering '*tmp*' file marking a crashed wsclean run) does NOT count
+    as complete.
+
+    expected_stokes is the number of Stokes-labelled image files each
+    interval/channel combination should produce (1 for pol='I', 4 for 'IQUV').
+    Comparing total file counts (rather than just distinct t/channel labels)
+    is what catches a scan that has all its channels and intervals but
+    dropped a Stokes partway through.
+
+    Used to decide whether a scan needs (re-)imaging at all, regardless of
+    whether it's in this run's scan list because it was listed explicitly or
+    because it's part of the default full range.
+    """
+    expected_total = expected_nint * expected_channels * expected_stokes
+
+    # Still-staged, not-yet-renamed output for this scan
+    staged_prefix = cfg.INTERVALS + f'/img_{myms}_modelsub_scan{scan_n:04d}'
+    if not glob.glob(f'{staged_prefix}*tmp*'):
+        staged_matches = [image for image in glob.glob(f'{staged_prefix}*') if img_re.search(image)]
+        if len(staged_matches) == expected_total:
+            return True
+
+    # Already renamed, final t-labelled output covering this scan's t-range
+    final_prefix = cfg.INTERVALS + f'/img_{myms}_modelsub'
+    final_matches = []
+    for t in range(t0, t_end + 1):
+        final_matches += [image for image in glob.glob(f'{final_prefix}-t{t:04d}-*') if img_re.search(image)]
+    if len(final_matches) == expected_total:
+        return True
+
+    return False
 
 
 def get_total_ints(myms):
@@ -221,13 +269,20 @@ def main():
     msg(f'Predicted total: {expected_total_nint} interval(s) across {len(int_arr)} scan(s) -> t0000-t{expected_total_nint - 1:04d}')
 
     SNAP_SCANS_stripped = SNAP_SCANS.strip()
+    skip_if_complete = False
     if SNAP_SCANS_stripped == '-1':
         to_image = []
         msg('SNAP_SCANS = -1 -- skipping all imaging, only checking/renaming existing output')
-    elif SNAP_SCANS_stripped != '':
-        to_image = parse_scan_spec(SNAP_SCANS_stripped, len(int_arr))
-    else:
+    elif SNAP_SCANS_stripped.lower() == 'auto':
         to_image = list(range(len(int_arr)))
+        skip_if_complete = True
+        msg('SNAP_SCANS = auto -- imaging every scan, skipping any that are already complete')
+    elif SNAP_SCANS_stripped == '':
+        to_image = list(range(len(int_arr)))
+        msg("SNAP_SCANS = '' -- imaging every scan, overwriting any existing output")
+    else:
+        to_image = parse_scan_spec(SNAP_SCANS_stripped, len(int_arr))
+        msg(f"SNAP_SCANS = '{SNAP_SCANS_stripped}' -- imaging the listed scan(s), overwriting any existing output")
 
     msg(f'Imaging {len(to_image)}/{len(int_arr)} scan(s): {to_image}')
 
@@ -240,14 +295,25 @@ def main():
     rename_pairs = []
     scan_images = {}
     imaging_failed_scans = []
+    already_complete_scans = []
 
-    # Iterate through the scans explicitly requested for (re)imaging -- always (re)imaged
-    # regardless of whether output already exists for them.
+    # Iterate through the scans requested for (re)imaging. In 'auto' mode
+    # (skip_if_complete), a scan whose output is already complete is skipped
+    # rather than re-imaged; otherwise every scan here is always (re)imaged
+    # regardless of whether output already exists for it.
     for run_idx, scan_n in enumerate(to_image, start=1):
 
         int0 = int0_arr[scan_n]
         int1 = int1_arr[scan_n]
         nint = nint_arr[scan_n]
+        t0 = t_offset_arr[scan_n]
+        t_end = t0 + nint - 1
+
+        if skip_if_complete and scan_output_complete(myms, scan_n, nint, chanout, len(pol), t0, t_end, img_re):
+            msg(f'Scan {scan_n:04d} ({run_idx}/{len(to_image)}) already complete '
+                f'(staged or renamed to t{t0:04d}-t{t_end:04d}) -- skipping imaging')
+            already_complete_scans.append(scan_n)
+            continue
 
         msg(f'Imaging scan {scan_n:04d} ({run_idx}/{len(to_image)})')
 
@@ -313,6 +379,10 @@ def main():
             continue
 
         scan_images[scan_n] = images
+
+    if already_complete_scans:
+        msg(f'SNAP_SCANS = auto: {len(already_complete_scans)}/{len(to_image)} scan(s) already complete, '
+            f'imaging skipped: {[f"{s:04d}" for s in already_complete_scans]}')
 
     if imaging_failed_scans:
         failed_str = ','.join(str(s) for s in imaging_failed_scans)
