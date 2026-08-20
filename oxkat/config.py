@@ -325,8 +325,12 @@ XF_DELTARM_TRIALS    = [-7,7] # Was: [min, max] RM offsets (rad/m²) defining th
 
 # Reference antennas
 CAL_1GC_REF_ANT = 'auto'             # Comma-separated list to manually specify refant(s)
-CAL_1GC_REF_POOL = ['m060','m061','m059','m058', 'm050', 'm048', 'm062', 'm063'] 
+CAL_1GC_REF_POOL = ['m060','m061','m059','m058', 'm050', 'm048', 'm062', 'm063']
                                      # Pool to re-order for reference antenna list for 'auto'
+
+CAL_1GC_REFANT_SNR_SELECT = True     # After cal flagging, solve per-scan delay S/N on the primary
+                                     # and replace CAL_1GC_REF_POOL with the 7 antennas with the
+                                     # highest average S/N (m060 still pinned to front if present)
 
 # Field selection, IDs only at present. (Use tools/ms_info.py.)
 CAL_1GC_PRIMARY = 'auto'             # Primary calibrator field ID
@@ -354,6 +358,17 @@ CAL_1GC_FILLGAPS = 8                 # Maximum channel gap over which to interpo
 # solve should remain in the antenna frame, with parallactic angle applied
 # only as the final step to rotate into the sky frame.
 CAL_1GC_APPLYPARANG = True
+
+# Parallactic angle model during 2GC self-calibration (QuartiCal apply_p_jones_inv).
+# If the data is still in the antenna frame (parang not yet applied), we
+# need to re-apply parang every time we make a model image during self-cal,
+# otherwise parallactic angle smears across each imaging integration.
+# Defaults to the opposite of CAL_1GC_APPLYPARANG: if 1GC already applied
+# the P-Jones correction, the data is in the sky frame and no further
+# parang modelling is needed here.
+CAL_2GC_PARANGMODEL = not CAL_1GC_APPLYPARANG
+assert not (CAL_1GC_APPLYPARANG and CAL_2GC_PARANGMODEL), \
+    'CAL_2GC_PARANGMODEL must be False when CAL_1GC_APPLYPARANG is True'
 
 # If True, parallactic-angle correction is applied via applycal to all calibrators
 # except BPCAL (i.e. the polarization angle calibrator and secondary phase

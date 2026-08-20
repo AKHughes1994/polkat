@@ -1,6 +1,11 @@
 # andrew.hughes@physics.ox.ac.uk
 # fraser.cowie@physics.ox.ac.uk
 
+import functools
+import json
+
+print = functools.partial(print, flush=True)
+
 # --- RFlag parameters (flagdata mode='rflag') ---
 RFLAG_TIMEDEVSCALE = 5.0   # Flagging threshold (sigma) for time-direction deviation
 RFLAG_FREQDEVSCALE = 5.0   # Flagging threshold (sigma) for freq-direction deviation
@@ -99,6 +104,32 @@ for pcal in pcal_names:
 
 # Saving the flag state
 flagmanager(vis=myms,mode='save',versionname='autoflag_cals_data')
+
+
+# Refant selection by post-flagging delay-solve S/N on the primary
+if CAL_1GC_REFANT_SNR_SELECT:
+
+    print(f'Solving per-scan delay S/N on the primary ({bpcal_name}) for refant ranking...')
+    exec(open(f'{TOOLS}/antenna_delay_snr.py').read())
+
+    top_names = [name for name, snr in refant_snr_ranking[:7]]
+    if 'm060' in top_names and top_names[0] != 'm060':
+        top_names.remove('m060')
+        top_names.insert(0, 'm060')
+
+    tb.open(myms+'/ANTENNA')
+    ant_names = list(tb.getcol('NAME'))
+    tb.close()
+
+    new_ref_ant = ','.join(str(ant_names.index(name)) for name in top_names)
+    print(f'Top {len(top_names)} antennas by average delay-solve S/N: {top_names}')
+    print(f'Replacing ref_ant with: {new_ref_ant}')
+
+    with open('project_info.json') as f:
+        project_info = json.load(f)
+    project_info['ref_ant'] = new_ref_ant
+    with open('project_info.json', 'w') as f:
+        json.dump(project_info, f, indent=4, sort_keys=True)
 
 
 clearstat()

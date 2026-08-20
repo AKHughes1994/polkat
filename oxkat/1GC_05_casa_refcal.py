@@ -170,6 +170,15 @@ for i in range(0,len(pcal_names)):
             reffreq = '1000MHz',
             usescratch = True)
 
+# For parrellel hand solve; redefined further down (POLANG_MOD) before the cross-hand solves.
+if pacal_name != '' and pacal_name != bpcal_name and pacal_name not in pcal_names:
+    setjy(vis=myms,
+        field=pacal_name,
+        standard='manual',
+        fluxdensity=[1.0,0,0,0],
+        reffreq='1000MHz',
+        usescratch=True)
+
 # --------------------------------------------------------------- #
 # --------------------------------------------------------------- #
 # --------------------------- STAGE 0 ----------------------- #

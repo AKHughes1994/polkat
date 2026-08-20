@@ -4,13 +4,22 @@
 # parallactic angle correction, then apply parang via CASA applycal as a
 # separate final step.
 #
+# Exception: with --parangmodel set (i.e. CAL_2GC_PARANGMODEL was True for
+# this run), a failed solve almost always means a known CASA ephemeris quirk
+# has snuck into QuartiCal's deterministic parang solver and made it choke.
+# Every self-cal model image (WSDMA/WSCMI) already relied on that same
+# solver, so the fallback below isn't used; this prints an error and exits
+# non-zero instead.
+#
 # Usage:
-#   python check_and_fix_parang_selfcal.py <log_outdir> <myms> <fallback_qc_command>
+#   python check_and_fix_parang_selfcal.py <log_outdir> <myms> <fallback_qc_command> [--parangmodel]
 #
 #   log_outdir          - Directory containing QuartiCal log output
 #   myms                - Target MS path (used for split and applycal)
 #   fallback_qc_command - Full QuartiCal command to run WITHOUT apply_p_jones_inv
 #                         (passed as a single quoted string)
+#   --parangmodel        - Pass this when CAL_2GC_PARANGMODEL was True for the
+#                         run being checked (see exception above)
 
 import glob
 import os
@@ -34,15 +43,18 @@ def msg(txt):
 # Arguments
 # -----------------------------------------------------------------------
 
-if len(sys.argv) != 4:
+parangmodel = '--parangmodel' in sys.argv
+positional = [a for a in sys.argv[1:] if a != '--parangmodel']
+
+if len(positional) != 3:
     sys.exit(
         'Usage: python check_and_fix_parang_selfcal.py '
-        '<log_outdir> <myms> <fallback_qc_command>'
+        '<log_outdir> <myms> <fallback_qc_command> [--parangmodel]'
     )
 
-log_outdir        = sys.argv[1]
-myms              = sys.argv[2]
-fallback_qc_cmd   = sys.argv[3]
+log_outdir        = positional[0]
+myms              = positional[1]
+fallback_qc_cmd   = positional[2]
 
 # Strip any singularity exec prefix upfront — this script runs inside the
 # container already, so QuartiCal must be called directly
@@ -87,6 +99,14 @@ if solve_succeeded:
 # -----------------------------------------------------------------------
 
 msg('SUCCESS MARKER NOT FOUND — solve likely failed.')
+
+if parangmodel:
+    msg('ERROR: The deterministic parallactic angle solve failed — a known '
+        'CASA ephemeris quirk sneaking into QuartiCal is the usual culprit. '
+        'Set CAL_1GC_APPLYPARANG = True or CAL_2GC_PARANGMODEL = False in '
+        'config.py, then re-run 2GC.')
+    sys.exit(1)
+
 msg('Re-running QuartiCal without parallactic angle correction...')
 
 ret = subprocess.run(fallback_qc_cmd, shell=True)
