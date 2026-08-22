@@ -3,9 +3,18 @@
 # run_pipeline.sh -- run polkat setups in sequence, waiting for each stage's
 # SLURM jobs to finish before generating the next stage's submit script.
 #
-#     nohup bash run_pipeline.sh idia > pipeline.log 2>&1 &
+# Run from the project root, inside screen or tmux -- this blocks for as long
+# as the pipeline takes, and an SSH drop would otherwise stop the driver from
+# advancing to the next stage (already-submitted jobs keep running).
 #
-# Start part-way through:  bash run_pipeline.sh idia 2
+#     screen -S polkat
+#     mv extra/run_pipeline.sh .; chmod +x run_pipeline.sh; ./run_pipeline.sh idia 2>&1 | tee pipeline.log
+#     # Ctrl-A d to detach, screen -r polkat to reattach
+#
+# Note: if the cluster round-robins you across login nodes, `screen -ls` will
+# be empty on reconnect unless you SSH back to the same host.
+#
+# Start part-way through:  ./run_pipeline.sh idia 2
 #
 set -uo pipefail
 
