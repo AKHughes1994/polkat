@@ -646,6 +646,8 @@ def get_imstat_values(image, xpix, ypix, manual_rms_region = False):
     rms_image = re.sub(r'-image(\.homogenized)?\.fits$', r'-residual\1.fits', image)
     if not os.path.exists(rms_image):
         rms_image = image
+    else:
+        msg(f'  Found residual image for RMS fit: {rms_image}')
     rms = imstat(rms_image, region = rms_region)['rms'][0]
 
     return [flux, xpix, ypix, rms]

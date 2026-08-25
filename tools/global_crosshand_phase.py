@@ -227,44 +227,31 @@ os.makedirs(RESULTS, exist_ok=True)
 
 
 # -----------------------------------------------------------------------
-#  Resolve PA calibrator field name(s)
+#  Which fields does this run on?
 #
-#  If pacal_name is empty, auto-discover fields from the MS by inspecting
-#  scan intents.  Fields whose intent(s) match any of the following
-#  criteria (case-insensitive) are included:
-#    - intent == 'UNKNOWN'         (exact)
-#    - intent == 'TARGET'          (exact)
-#    - intent starts with 'CALIBRATE_AMP'  (partial)
-#    - intent starts with 'CALIBRATE_PHA'  (partial)
-#  The result is a comma-separated string of matching field names.
+#  If you don't pass --pacal-name, we use every unique field name in
+#  project_info.json except the primary: your target(s), the secondaries,
+#  and the polarization-angle calibrator. Solving Xf across all of them
+#  (not just the polarization-angle calibrator) gives the solve more S/N
+#  to work with. Pass --pacal-name explicitly if you want to restrict it
+#  to specific field(s) instead.
+#
+#  Each target's K/Gp/G calibration comes from its secondary, per
+#  target_cal_map in project_info.json. Secondaries and the
+#  polarization-angle calibrator use their own solution.
 # -----------------------------------------------------------------------
 
 if pacal_name == '':
-    msg('pacal_name is empty — auto-discovering PA calibrator fields from MS intents.')
+    msg('pacal_name is empty — using every field in project_info.json except the primary.')
 
-    _matched_fields = []
-    msmd.open(myms)
-    try:
-        _all_names = msmd.fieldnames()
-        for _fid in range(len(_all_names)):
-            _fname   = _all_names[_fid]
-            _intents = msmd.intentsforfield(_fid)
-            for _intent in _intents:
-                _il = _intent.lower()
-                if (_il == 'unknown' or
-                        _il.startswith('calibrate_amp') or
-                        _il.startswith('calibrate_pha')):
-                    _matched_fields.append(_fname)
-                    break   # one matching intent is enough per field
-    finally:
-        msmd.close()
-
-    pacal_name = ','.join(_matched_fields)
+    pacal_name = ','.join(dict.fromkeys(
+        target_names + pcal_names +
+        ([str(project_info['polang_name'])] if project_info.get('polang_name', '') else [])))
 
     if pacal_name:
-        msg(f'  Auto-discovered PA calibrator field(s): {pacal_name}')
+        msg(f'  Field(s) from project_info.json: {pacal_name}')
     else:
-        msg('WARNING: No fields matched the PA calibrator intent criteria. '
+        msg('WARNING: No target/secondary/polang fields found in project_info.json. '
             'Xf solving will be skipped.')
 
 
@@ -1934,23 +1921,51 @@ for _t in [xftab_combine, xftab_per, xftab_field]:
 #    — CASA pools all scans of all PA cal fields into a single solution.
 # -----------------------------------------------------------------------
 
-_polcal_kwargs = dict(
-    vis      = myms,
-    field    = pacal_name,
-    uvrange  = myuvrange,
-    refant   = str(ref_ant),
-    solint   = f'inf,{XF_CHANINT}ch',
-    poltype  = 'Xf',
-    gaintable = [ktab, bptab, gptab, gtab, dftab],
-    gainfield = [pacal_name, bpcal_name, pacal_name, pacal_name, bpcal_name],
-    interp    = ['nearest', 'linear', 'linear', 'linear', 'linear'],
-    append    = False,
-)
+target_to_secondary = dict(zip(target_names, target_cal_map))
+
+gainfield_groups = {}
+for cal in pcal_names:
+    gainfield_groups.setdefault(cal, []).append(cal)
+if project_info.get('polang_name', ''):
+    _pn = str(project_info['polang_name'])
+    gainfield_groups.setdefault(_pn, []).append(_pn)
+for _t in target_names:
+    _sec = target_to_secondary.get(_t, '')
+    if _sec:
+        gainfield_groups.setdefault(_sec, []).append(_t)
+    else:
+        msg(f'WARNING: "{_t}" has no secondary in target_cal_map -- excluding from Xf solve.')
+
+gainfield_groups = {sec: [f for f in fields if f in _tmp_fields]
+                     for sec, fields in gainfield_groups.items()}
+gainfield_groups = {sec: fields for sec, fields in gainfield_groups.items() if fields}
+
+for _sec, _fields in gainfield_groups.items():
+    msg(f'  Xf solve group: gainfield="{_sec}"  fields={_fields}')
+
+
+def _solve_xf(caltable, combine):
+    for i, (sec, fields) in enumerate(gainfield_groups.items()):
+        polcal(
+            vis       = myms,
+            field     = ','.join(fields),
+            uvrange   = myuvrange,
+            refant    = str(ref_ant),
+            solint    = f'inf,{XF_CHANINT}ch',
+            poltype   = 'Xf',
+            gaintable = [ktab, bptab, gptab, gtab, dftab],
+            gainfield = [sec, bpcal_name, sec, sec, bpcal_name],
+            interp    = ['nearest', 'linear', 'linear', 'linear', 'linear'],
+            caltable  = caltable,
+            combine   = combine,
+            append    = (i > 0),
+        )
+
 
 if do_per_scan:
     msg()
     msg('=== Solving Xf (perScan) ===')
-    polcal(caltable=xftab_per, combine='', **_polcal_kwargs)
+    _solve_xf(xftab_per, combine='')
 
 # combineScan template: solved with combine='scan' to get the correct table
 # structure/dimensions.  CPARAM is overwritten after per-scan flagging by
@@ -1958,7 +1973,7 @@ if do_per_scan:
 # If only one scan exists, the per-scan solution IS the combine solution.
 msg()
 msg('=== Solving Xf (combineScan template) ===')
-polcal(caltable=xftab_combine, combine='scan', **_polcal_kwargs)
+_solve_xf(xftab_combine, combine='scan')
 
 # combineScanField template is built from xftab_combine via copytree inside
 # _avg_combine_fields_to_global — no separate polcal solve needed.
@@ -2095,20 +2110,34 @@ else:
     msg()
     msg('=== Applying calibration tables (K, B, Gp, F, Df) for flux extraction ===')
 
-    applycal(vis=myms,
-        field=pacal_name,
-        parang=False,
-        gaintable=[ktab, bptab, gptab, ftab, dftab],
-        gainfield=[pacal_name, bpcal_name, pacal_name, pacal_name, bpcal_name],
-        interp=['nearest', 'linear', 'linear', 'linear', 'linear'],
-        flagbackup=False)
+    known_calibrators = set([bpcal_name] + pcal_names)
+    if project_info.get('polang_name', ''):
+        known_calibrators.add(str(project_info['polang_name']))
 
-    msg('  applycal complete — reading from CORRECTED_DATA column.')
+    for field_name in field_info:
+        if field_name not in known_calibrators:
+            msg(f'  "{field_name}" not in project_info.json calibrator lists -- skipping applycal.')
+            continue
+
+        applycal(vis=myms,
+            field=field_name,
+            parang=False,
+            gaintable=[ktab, bptab, gptab, ftab, dftab],
+            gainfield=[field_name, bpcal_name, field_name, field_name, bpcal_name],
+            interp=['nearest', 'linear', 'linear', 'linear', 'linear'],
+            flagbackup=False)
+        msg(f'  applycal complete for "{field_name}".')
+
+    msg('  reading from CORRECTED_DATA column.')
 
     msg()
     msg('=== Extracting per-field-scan cross-hand flux spectra ===')
 
     for field_name, (fid, ra_rad, dec_rad) in field_info.items():
+
+        if field_name not in known_calibrators:
+            msg(f'  "{field_name}" not in project_info.json calibrator lists -- skipping extraction/output.')
+            continue
 
         scan_nums = [sn for fn, sn in all_field_scans if fn == field_name]
 

@@ -45,7 +45,7 @@ def main():
         CONTAINER_RUNNER=''
 
     PYTHON3_CONTAINER = gen.get_container(CONTAINER_PATH,cfg.PYTHON3_PATTERN,USE_SINGULARITY)
-    ALBUS_CONTAINER = gen.get_container(CONTAINER_PATH,cfg.ALBUS_PATTERN,USE_SINGULARITY)
+    # ALBUS_CONTAINER = gen.get_container(CONTAINER_PATH,cfg.ALBUS_PATTERN,USE_SINGULARITY)  # DEPRECATED: ALBUS step below is commented out; polkat-albus image no longer exists
     CASA_CONTAINER = gen.get_container(CONTAINER_PATH,cfg.CASA_PATTERN,USE_SINGULARITY)
     TRICOLOUR_CONTAINER = gen.get_container(CONTAINER_PATH,cfg.TRICOLOUR_PATTERN,USE_SINGULARITY)
     SPINIFEX_CONTAINER = gen.get_container(CONTAINER_PATH,cfg.PYTHON3_PATTERN,USE_SINGULARITY)
@@ -97,10 +97,11 @@ def main():
             'name': field_name,
             'id': target_ids[tt],
             'ms': target_ms[tt],
-            'is_target': True
+            'is_target': True,
+            'is_secondary': False
         })
-    
-    # Add primary calibrator (per scan)
+
+    # Add primary calibrator (per scan) -- always processed, never skipped by CAL_SKIP_CALS
     # Skip if PRE_FIELDS is active and primary is not in working_names
     if not apply_field_filter or bpcal_name in allowed_fields:
         for myms in primary_ms:
@@ -109,10 +110,12 @@ def main():
                 'name': f"{bpcal_name}_scan{scan_str}",
                 'id': bpcal_id,
                 'ms': myms,
-                'is_target': False
+                'is_target': False,
+                'is_secondary': False
             })
-    
-    # Add polarization angle calibrator (per scan) if it exists
+
+    # Add polarization angle calibrator (per scan) if it exists -- always processed,
+    # never skipped by CAL_SKIP_CALS
     if pacal_name != '' and pacal_id != '' and len(pacal_ms) > 0:
         # Skip if PRE_FIELDS is active and pacal is not in working_names
         if not apply_field_filter or pacal_name in allowed_fields:
@@ -122,10 +125,11 @@ def main():
                     'name': f"{pacal_name}_scan{scan_str}",
                     'id': pacal_id,
                     'ms': myms,
-                    'is_target': False
+                    'is_target': False,
+                    'is_secondary': False
                 })
-    
-    # Add secondaries (per scan)
+
+    # Add secondaries (per scan) -- these are the only fields CAL_SKIP_CALS skips
     for ss in range(len(pcal_ids)):
         pcal_name = pcal_names[ss]
         # Skip if PRE_FIELDS is active and this secondary is not in working_names
@@ -137,8 +141,43 @@ def main():
                 'name': f"{pcal_name}_scan{scan_str}",
                 'id': pcal_ids[ss],
                 'ms': myms,
-                'is_target': False
+                'is_target': False,
+                'is_secondary': True
             })
+
+    # Skip secondary calibrators -- targets, the primary, and the polarization-angle
+    # calibrator are always processed regardless of this flag.
+    if cfg.CAL_SKIP_CALS:
+        n_cals = len([f for f in field_list if f['is_secondary']])
+        field_list = [f for f in field_list if not f['is_secondary']]
+        print(gen.col('RMSYNTH Cals')+f'CAL_SKIP_CALS is True -- skipping {n_cals} secondary field/scan(s)')
+
+    # ------------------------------------------------------------------------------
+    #
+    # Check that images actually exist for each remaining field before building the
+    # job graph. A field can still be listed in project_info.json with no images on
+    # disk (e.g. 2GC hasn't been run yet) -- extraction would just fail at runtime.
+    # Drop those fields here instead, and say so.
+    #
+    # ------------------------------------------------------------------------------
+
+    fields_with_images = []
+    for field in field_list:
+        img_dir = cfg.IMAGES + '/' + gen.scrub_target_name(field['name'])
+        has_images = o.isdir(img_dir) and len(glob.glob(img_dir + '/*-I-image.fits')) > 0
+        if has_images:
+            fields_with_images.append(field)
+        else:
+            print(gen.col('NOTE')+f"No images for {field['name']} -- skipping")
+
+    n_missing = len(field_list) - len(fields_with_images)
+    if n_missing:
+        print(gen.col('RMSYNTH Images')+f'skipping {n_missing}, {len(fields_with_images)} remaining')
+    field_list = fields_with_images
+
+    if not field_list:
+        print(gen.col('ERROR')+'No fields with images found -- nothing to extract. Run 2GC.py first.')
+        sys.exit()
 
     # Print field information
     gen.print_spacer()

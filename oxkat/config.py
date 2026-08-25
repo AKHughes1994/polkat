@@ -240,6 +240,20 @@ GLAM_COREHEAVY = {
 
 # ------------------------------------------------------------------------
 #
+# Calibrator handling -- shared across 1GC (splitting), 2GC (imaging/
+# self-cal), and RMSYNTH (polarization extraction)
+#
+
+# If True, skip the secondary calibrators only (the primary and the
+# polarization-angle calibrator are always split/imaged/extracted): 1GC won't
+# split their per-scan MS files, 2GC won't image/self-calibrate them, and
+# RMSYNTH won't try to extract fluxes for them. Saves disk space by never
+# writing secondary MS files/images when they aren't needed for QC.
+# Set False to keep secondaries in every stage too.
+CAL_SKIP_CALS = True
+
+# ------------------------------------------------------------------------
+#
 # 1GC settings
 #
 
@@ -325,8 +339,12 @@ XF_DELTARM_TRIALS    = [-7,7] # Was: [min, max] RM offsets (rad/m²) defining th
 
 # Reference antennas
 CAL_1GC_REF_ANT = 'auto'             # Comma-separated list to manually specify refant(s)
-CAL_1GC_REF_POOL = ['m060','m061','m059','m058', 'm048', 'm062', 'm063'] 
+CAL_1GC_REF_POOL = ['m060','m061','m059','m058', 'm048', 'm062', 'm063']
                                      # Pool to re-order for reference antenna list for 'auto'
+
+CAL_1GC_REFANT_SNR_SELECT = True     # After cal flagging, solve per-scan delay S/N on the primary
+                                     # and replace CAL_1GC_REF_POOL with the 7 antennas with the
+                                     # highest average S/N (m060 still pinned to front if present)
 
 # Field selection, IDs only at present. (Use tools/ms_info.py.)
 CAL_1GC_PRIMARY = 'auto'             # Primary calibrator field ID
@@ -569,7 +587,7 @@ WSC_CIRCULARBEAM = False # Force a circular (not elliptical) restoring beam (-ci
 
 # --- Channel strategy ---
 WSC_BLIND_CHANNELSOUT = 8     # Blind (shallow, no mask) image — used only to generate initial mask
-WSC_PCAL_CHANNELSOUT  = 128     # Final self-calibrated (pcalmask) image
+WSC_PCAL_CHANNELSOUT  = 64     # Final self-calibrated (pcalmask) image
 WSC_DMASK_CHANNELSOUT = 64  # Data-masked image (stage 1 selfcal model);
                                                # set independently if a different channelisation is needed
 WSC_CAL_CHANNELSOUT   = WSC_DMASK_CHANNELSOUT    # Calibrator images (secondaries / primary)
@@ -668,7 +686,7 @@ WSC_LOCALRMS      = False    # Local RMS map for adaptive masking during main de
 #   '<value>m'  — a physical length in metres; converted to wavelengths per band (frequency-dependent)
 #   '<value>'   — already in wavelengths; used directly with no frequency scaling
 WSC_BASELINE_CUT = True
-WSC_BASELINE_CUTLENGTH = '750m'  # Default: exclude baselines shorter than 750 m
+WSC_BASELINE_CUTLENGTH = '600m'  # Default: exclude baselines shorter than 750 m
 
 if WSC_BASELINE_CUT:
     _cutlen = str(WSC_BASELINE_CUTLENGTH).strip()

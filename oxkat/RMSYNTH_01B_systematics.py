@@ -1,6 +1,13 @@
 # andrew.hughes@physics.ox.ac.uk
 # fraser.cowie@physics.ox.ac.uk
 
+# Modular-CASA version: imfit/imstat/imhead are plain imports from
+# casatasks rather than casashell-injected globals, so this runs under a
+# normal `python-pycasa` interpreter (not `casa -c`). That in turn lets the
+# per-channel fits run in a ProcessPoolExecutor the same way
+# RMSYNTH_01_extract_fluxes.py does -- a spawned worker just re-imports this
+# module and gets imfit/imstat/imhead back the normal way.
+
 import glob
 import os
 import re
@@ -9,6 +16,9 @@ import json
 import time
 import numpy as np
 import os.path as o
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from astropy.io import fits
 sys.path.append(o.abspath(o.join(o.dirname(sys.modules[__name__].__file__), "..")))
 
 import matplotlib
@@ -16,6 +26,8 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 from oxkat import config as cfg
+
+from casatasks import imfit, imstat, imhead
 
 
 # =============================================================================
@@ -35,6 +47,143 @@ def msg(txt):
     """Print a timestamped log message to stdout."""
     stamp = time.strftime(' %Y-%m-%d %H:%M:%S | ')
     print(stamp + txt, flush=True)
+
+
+# =============================================================================
+# Channel-fit parallelization: worker count + job chunking.
+# Same approach as RMSYNTH_01_extract_fluxes.py -- see that file for the
+# full rationale on each of these.
+# =============================================================================
+
+def _proc_rss_mb(pid):
+    """Read a process's resident memory (MB) straight from /proc -- no
+    psutil dependency needed."""
+    try:
+        with open(f'/proc/{pid}/status') as f:
+            for line in f:
+                if line.startswith('VmRSS:'):
+                    return int(line.split()[1]) / 1024.0
+    except OSError:
+        pass
+    return 0.0
+
+
+def get_available_memory_bytes():
+    slurm_mem_node = os.environ.get('SLURM_MEM_PER_NODE')
+    if slurm_mem_node:
+        try:
+            allocated = int(slurm_mem_node) * 1024 ** 2
+            msg(f'SLURM memory detected: SLURM_MEM_PER_NODE={slurm_mem_node} MB -> {allocated / 1024**3:.1f} GB')
+            return allocated
+        except ValueError:
+            pass
+
+    slurm_mem_cpu = os.environ.get('SLURM_MEM_PER_CPU')
+    cpus_per_task = os.environ.get('SLURM_CPUS_PER_TASK')
+    ntasks        = os.environ.get('SLURM_NTASKS')
+    alloc_cpus    = (int(cpus_per_task) * int(ntasks) if cpus_per_task and ntasks
+                     else int(cpus_per_task) if cpus_per_task
+                     else int(ntasks) if ntasks
+                     else None)
+    if slurm_mem_cpu and alloc_cpus:
+        try:
+            allocated = int(slurm_mem_cpu) * alloc_cpus * 1024 ** 2
+            msg(f'SLURM memory detected: SLURM_MEM_PER_CPU={slurm_mem_cpu} MB x {alloc_cpus} CPUs -> {allocated / 1024**3:.1f} GB')
+            return allocated
+        except ValueError:
+            pass
+
+    try:
+        import psutil
+        available = psutil.virtual_memory().available
+        msg(f'No SLURM memory allocation detected -- using node available memory: {available / 1024**3:.1f} GB')
+        return available
+    except ImportError:
+        pass
+
+    try:
+        with open('/proc/meminfo') as f:
+            for line in f:
+                if line.startswith('MemAvailable:'):
+                    available = int(line.split()[1]) * 1024
+                    msg(f'No SLURM memory allocation detected -- using /proc/meminfo: {available / 1024**3:.1f} GB')
+                    return available
+    except OSError:
+        pass
+
+    msg('WARNING: Could not determine available memory. Assuming 4 GB.')
+    return 4 * 1024 ** 3
+
+
+def estimate_memory_per_worker_bytes(image, casa_worker_floor_mb=350):
+    """Conservative peak estimate for one channel-fit worker: pixel data size
+    (x4 for headroom) or a ~280 MB floor for a fresh casatasks import per
+    spawned worker, whichever is larger."""
+    with fits.open(image) as hdul:
+        shape       = hdul[0].data.shape
+        dtype       = hdul[0].data.dtype
+        image_bytes = 4 * hdul[0].data.nbytes
+    floor_bytes  = casa_worker_floor_mb * 1024 ** 2
+    chosen_bytes = max(image_bytes, floor_bytes)
+    msg(f'  [mem-est] sample={os.path.basename(image)}  shape={shape}  '
+        f'dtype={dtype}  x4 copies = {image_bytes / 1024**2:.1f}MB  '
+        f'vs  floor={floor_bytes / 1024**2:.0f}MB  '
+        f'-> using {"image size" if image_bytes >= floor_bytes else "casatasks import floor"} '
+        f'({chosen_bytes / 1024**2:.1f}MB/worker)')
+    return chosen_bytes
+
+
+def compute_max_workers(sample_images, n_jobs):
+    """sample_images is used only to estimate per-worker memory (a handful of
+    representative images is enough -- they're all roughly the same size).
+    n_jobs is the actual number of parallel work units (channels), which is
+    what should cap the worker count -- NOT len(sample_images)."""
+    available  = get_available_memory_bytes()
+    per_worker = max(estimate_memory_per_worker_bytes(im) for im in sample_images)
+    mem_cap    = max(1, int(available // per_worker))
+
+    cpus_per_task = os.environ.get('SLURM_CPUS_PER_TASK')
+    ntasks        = os.environ.get('SLURM_NTASKS')
+    job_cpus      = os.environ.get('SLURM_JOB_CPUS_PER_NODE', '')
+    job_cpus_m    = re.match(r'(\d+)', job_cpus)
+
+    if cpus_per_task and ntasks:
+        cpu_cap  = int(cpus_per_task) * int(ntasks)
+        cpu_src  = f'SLURM_CPUS_PER_TASK={cpus_per_task} x SLURM_NTASKS={ntasks}'
+    elif cpus_per_task:
+        cpu_cap  = int(cpus_per_task)
+        cpu_src  = f'SLURM_CPUS_PER_TASK={cpus_per_task}'
+    elif job_cpus_m:
+        cpu_cap  = int(job_cpus_m.group(1))
+        cpu_src  = f'SLURM_JOB_CPUS_PER_NODE={job_cpus} -> {cpu_cap}'
+    elif ntasks:
+        cpu_cap  = int(ntasks)
+        cpu_src  = f'SLURM_NTASKS={ntasks}'
+    else:
+        cpu_cap  = os.cpu_count() or 1
+        cpu_src  = 'os.cpu_count() (no SLURM allocation detected)'
+
+    workers        = max(1, min(mem_cap, cpu_cap, n_jobs))
+    projected_used = per_worker * workers
+    msg(f'Memory available   : {available / 1024**3:.2f} GB')
+    msg(f'Est. memory/worker : {per_worker / 1024**3:.2f} GB ({per_worker / 1024**2:.0f} MB)')
+    msg(f'Workers (mem cap)  : {mem_cap}')
+    msg(f'Workers (CPU cap)  : {cpu_cap}  [{cpu_src}]')
+    msg(f'Workers (selected) : {workers}  [min(mem={mem_cap}, cpu={cpu_cap}, jobs={n_jobs})]')
+    msg(f'Projected usage    : {workers} workers x {per_worker / 1024**2:.0f} MB '
+        f'= {projected_used / 1024**3:.2f} GB of {available / 1024**3:.2f} GB available '
+        f'({100.0 * projected_used / available:.0f}%)')
+    return workers, None
+
+
+def chunk_jobs(jobs, n_chunks):
+    """Round-robin split so any systematic per-channel cost trend (e.g. RFI
+    flagging clustered in frequency) gets spread evenly across workers."""
+    n_chunks = max(1, min(n_chunks, len(jobs)))
+    chunks = [[] for _ in range(n_chunks)]
+    for i, job in enumerate(jobs):
+        chunks[i % n_chunks].append(job)
+    return [c for c in chunks if c]
 
 
 # =============================================================================
@@ -232,6 +381,146 @@ def check_position(fname, image, x, y, snr_thresh=5.0):
             f'| {os.path.basename(image)}')
 
     make_estimate(fname, image, x, y, fix_var)
+
+
+# =============================================================================
+# Per-channel IQUV fitting -- shared parallel worker
+#
+# Used by both the pol-angle calibrator and the bandpass calibrator
+# per-channel loops. Fully self-contained (job dict in, result dict out) so
+# it can run inside a ProcessPoolExecutor worker: no output_dictionary
+# access, and every estimate-file name carries the calibrator tag and
+# channel number so concurrent workers never write the same file.
+# =============================================================================
+
+def fit_channel_iquv(job):
+    """
+    Fit Stokes I, Q, U, V for one channel-image group.
+
+    Stokes I is always position-checked (check_position) against the seed
+    (I_xpix, I_ypix) from the MFS fit. Q and U follow the same check_position
+    rule unless `freeze_quv_to_i` is set, in which case they -- like V, which
+    is ALWAYS frozen -- are fit with the position fixed to Stokes I ('xyabp').
+
+    `job` keys: ch_num, cal_tag, chan_I, chan_Q, chan_U, chan_V, I_xpix,
+    I_ypix, mfs_freq_GHz, mfs_bmaj_asec, freeze_quv_to_i, compute_pol.
+
+    Returns (ch_num, result) where result is None if the channel was skipped
+    (missing Stokes image, flagged/anomalous beam) or the fit raised,
+    otherwise a dict of the per-channel scalars.
+    """
+    ch_num          = job['ch_num']
+    cal_tag         = job['cal_tag']
+    chan_I          = job['chan_I']
+    chan_Q          = job['chan_Q']
+    chan_U          = job['chan_U']
+    chan_V          = job['chan_V']
+    I_xpix          = job['I_xpix']
+    I_ypix          = job['I_ypix']
+    mfs_freq_GHz    = job['mfs_freq_GHz']
+    mfs_bmaj_asec   = job['mfs_bmaj_asec']
+    freeze_quv_to_i = job['freeze_quv_to_i']
+    compute_pol     = job['compute_pol']
+
+    missing_chan = [s for s, im in [('Q', chan_Q), ('U', chan_U), ('V', chan_V)]
+                    if not os.path.exists(im)]
+    if missing_chan:
+        msg(f'    Channel {ch_num}: missing Stokes {missing_chan} -- skipping')
+        return ch_num, None
+
+    try:
+        c_freq_GHz = imhead(chan_I, mode='get', hdkey='CRVAL3')['value'] / 1.0e9
+        c_bmaj     = imhead(chan_I, mode='get', hdkey='bmaj')['value']
+        c_bmin     = imhead(chan_I, mode='get', hdkey='bmin')['value']
+        c_bpa      = imhead(chan_I, mode='get', hdkey='bpa')['value']
+
+        # Skip heavily flagged channels (beam >> MFS beam scaled by freq ratio)
+        beam_scaled = mfs_freq_GHz / c_freq_GHz * mfs_bmaj_asec
+        if c_bmaj > 3.0 * beam_scaled:
+            msg(f'    Channel {ch_num}: BMAJ = {c_bmaj:.2f}" >> 3 x scaled MFS '
+                f'beam = {3.0 * beam_scaled:.2f}" -- likely heavily flagged, skipping')
+            return ch_num, None
+
+        # Stokes I -- check_position
+        est_I = f'estimate_I_{cal_tag}_chan{ch_num}.txt'
+        check_position(est_I, chan_I, I_xpix, I_ypix)
+        cI_imfit = get_imfit_values(est_I, chan_I, I_xpix, I_ypix)
+        c_flux_I = cI_imfit['results']['component0']['peak']['value'] * 1e3
+        c_err_I  = cI_imfit['results']['component0']['peak']['error'] * 1e3
+        cI_xpix  = cI_imfit['results']['component0']['pixelcoords'][0]
+        cI_ypix  = cI_imfit['results']['component0']['pixelcoords'][1]
+        c_rms_I  = get_imstat_values(chan_I, cI_xpix, cI_ypix)[3] * 1e3
+
+        result = {'freq_GHz': c_freq_GHz, 'bmaj_asec': c_bmaj, 'bmin_asec': c_bmin,
+                  'bpa_deg': c_bpa, 'I_flux_mJy': c_flux_I, 'I_err_mJy': c_err_I,
+                  'I_rms_mJy': c_rms_I}
+
+        # Stokes Q, U -- check_position unless frozen to I; Stokes V -- ALWAYS frozen
+        for stokes, im, freeze in [('Q', chan_Q, freeze_quv_to_i),
+                                    ('U', chan_U, freeze_quv_to_i),
+                                    ('V', chan_V, True)]:
+            est_fname = f'estimate_{stokes}_{cal_tag}_chan{ch_num}.txt'
+            if freeze:
+                make_estimate(est_fname, im, I_xpix, I_ypix, 'xyabp')
+            else:
+                check_position(est_fname, im, I_xpix, I_ypix)
+            s_imfit = get_imfit_values(est_fname, im, I_xpix, I_ypix)
+            result[f'{stokes}_flux_mJy'] = s_imfit['results']['component0']['peak']['value'] * 1e3
+            result[f'{stokes}_err_mJy']  = s_imfit['results']['component0']['peak']['error'] * 1e3
+            result[f'{stokes}_rms_mJy']  = get_imstat_values(im, I_xpix, I_ypix)[3] * 1e3
+
+        msg(f'    Channel {ch_num}: freq = {c_freq_GHz:.4f} GHz  '
+            f'I={result["I_flux_mJy"]:.3f}  Q={result["Q_flux_mJy"]:.3f}  '
+            f'U={result["U_flux_mJy"]:.3f}  V={result["V_flux_mJy"]:.3f}  [mJy]')
+
+        if compute_pol:
+            flux_P            = np.sqrt(result['Q_flux_mJy']**2 + result['U_flux_mJy']**2)
+            flux_P0, rms_P    = calculate_P0(flux_P, result['Q_rms_mJy'], result['U_rms_mJy'])
+            LP_frac           = flux_P0 / c_flux_I * 100.0
+            LP_frac_err       = LP_frac * np.sqrt(
+                (c_rms_I / c_flux_I)**2 +
+                (rms_P / max(flux_P0, 1e-10))**2)
+            LP_EVPA           = 0.5 * np.arctan2(result['U_flux_mJy'], result['Q_flux_mJy']) * 180.0 / np.pi
+            LP_EVPA_err       = (0.5 * np.sqrt(result['U_flux_mJy']**2 * result['Q_rms_mJy']**2 +
+                                                result['Q_flux_mJy']**2 * result['U_rms_mJy']**2) /
+                                  max(result['U_flux_mJy']**2 + result['Q_flux_mJy']**2, 1e-30) * 180.0 / np.pi)
+            result['LP_frac']     = LP_frac
+            result['LP_frac_err'] = LP_frac_err
+            result['LP_EVPA']     = LP_EVPA
+            result['LP_EVPA_err'] = LP_EVPA_err
+            msg(f'      LP={LP_frac:.4f}%  EVPA={LP_EVPA:.4f} deg')
+
+        return ch_num, result
+
+    except Exception as e:
+        msg(f'    Channel {ch_num} fitting failed: {e}')
+        return ch_num, None
+
+
+def fit_channel_iquv_batch(jobs):
+    """Pool entry point: runs in a freshly spawned worker process and
+    processes its whole assigned chunk of channels in one call."""
+    return [fit_channel_iquv(job) for job in jobs]
+
+
+def run_channel_pool(jobs):
+    """Size and run a one-shot pool for one scan's channel fits, then replay
+    results in original channel order. Returns a dict keyed by ch_num."""
+    chan_results = {}
+    if not jobs:
+        return chan_results
+
+    max_workers, _ = compute_max_workers([jobs[0]['chan_I']], len(jobs))
+    pool_ctx = mp.get_context('spawn')
+    msg(f'  CHAN-fitting pool starting with {max_workers} worker(s) for {len(jobs)} channel(s).')
+    with ProcessPoolExecutor(max_workers=max_workers, mp_context=pool_ctx) as chan_pool:
+        chunks  = chunk_jobs(jobs, max_workers)
+        futures = [chan_pool.submit(fit_channel_iquv_batch, chunk) for chunk in chunks]
+        for future in as_completed(futures):
+            for ch_num, result in future.result():
+                chan_results[ch_num] = result
+
+    return chan_results
 
 
 # =============================================================================

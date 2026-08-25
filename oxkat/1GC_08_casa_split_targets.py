@@ -26,6 +26,9 @@ time_info = []
 if not os.path.exists(RESULTS):
     os.makedirs(RESULTS)
 
+if CAL_SKIP_CALS:
+    print('CAL_SKIP_CALS is True -- skipping secondary calibrator splitting (primary and polarization-angle calibrator still split)')
+
 # Split target fields (integrated over all scans)
 for target in target_names:
 
@@ -113,9 +116,12 @@ for opms in primary_ms:
 # Split secondary calibrator fields (per scan)
 for i, pcal in enumerate(pcal_names):
 
+    if CAL_SKIP_CALS:
+        continue
+
     # pcal_ms[i] is a list of MS files for each scan of this secondary
     for opms in pcal_ms[i]:
-        
+
         # Extract scan number from MS filename (format: _scanXX.ms)
         scan_str = opms.split('_scan')[-1].replace('.ms', '')
         scan_num = str(int(scan_str))  # Remove zero-padding for CASA field selection

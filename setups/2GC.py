@@ -36,7 +36,7 @@ def get_adaptive_freq_intervals(yaml_path, n_model_channels):
             overrides.append((term, fi, ratio))
         else:
             ok.append((term, fi))
-    return ratio, overrides, zeros, ok
+    return ratio, overrides, zeros, okmeasurements (of unique sources) from a single instrument to date. I will highlight some key results from the catalog, including a 
 
 
 def main():
@@ -112,8 +112,9 @@ def main():
     SELFCAL_MOD_DIR = DATA + '/selfcal_mod'
 
     # If True, skip imaging/self-calibrating the primary/polarization-angle/secondary calibrators
-    # entirely and process targets only.
-    CAL_2GC_SKIP_CALS = True
+    # entirely and process targets only. Now set in oxkat/config.py (CAL_SKIP_CALS) so 1GC's
+    # splitting step and RMSYNTH's extraction step can share the same setting.
+    CAL_2GC_SKIP_CALS = cfg.CAL_SKIP_CALS
 
     gen.setup_dir(GAINTABLES)
     gen.setup_dir(IMAGES)
@@ -194,10 +195,11 @@ def main():
             'name': field_name,
             'id': target_ids[tt],
             'ms': target_ms[tt],
-            'is_target': True
+            'is_target': True,
+            'is_secondary': False
         })
-    
-    # Add primary calibrator (per scan)
+
+    # Add primary calibrator (per scan) -- always processed, never skipped by CAL_SKIP_CALS
     # Skip if PRE_FIELDS is active and primary is not in working_names
     if not apply_field_filter or bpcal_name in allowed_fields:
         for myms in primary_ms:
@@ -206,10 +208,12 @@ def main():
                 'name': f"{bpcal_name}_scan{scan_str}",
                 'id': bpcal_id,
                 'ms': myms,
-                'is_target': False
+                'is_target': False,
+                'is_secondary': False
             })
-    
-    # Add polarization angle calibrator (per scan) if it exists
+
+    # Add polarization angle calibrator (per scan) if it exists -- always processed,
+    # never skipped by CAL_SKIP_CALS
     if pacal_name != '' and pacal_id != '' and len(pacal_ms) > 0:
         # Skip if PRE_FIELDS is active and pacal is not in working_names
         if not apply_field_filter or pacal_name in allowed_fields:
@@ -219,10 +223,11 @@ def main():
                     'name': f"{pacal_name}_scan{scan_str}",
                     'id': pacal_id,
                     'ms': myms,
-                    'is_target': False
+                    'is_target': False,
+                    'is_secondary': False
                 })
-    
-    # Add secondaries (per scan)
+
+    # Add secondaries (per scan) -- these are the only fields CAL_SKIP_CALS skips
     for ss in range(len(pcal_ids)):
         pcal_name = pcal_names[ss]
         # Skip if PRE_FIELDS is active and this secondary is not in working_names
@@ -234,14 +239,16 @@ def main():
                 'name': f"{pcal_name}_scan{scan_str}",
                 'id': pcal_ids[ss],
                 'ms': myms,
-                'is_target': False
+                'is_target': False,
+                'is_secondary': True
             })
 
-    # Skip calibrator imaging/self-calibration entirely, targets only
+    # Skip secondary calibrator imaging/self-calibration -- targets, the primary, and the
+    # polarization-angle calibrator are always processed regardless of this flag.
     if CAL_2GC_SKIP_CALS:
-        n_cals = len([f for f in field_list if not f['is_target']])
-        field_list = [f for f in field_list if f['is_target']]
-        print(gen.col('2GC Cals')+f'CAL_2GC_SKIP_CALS is True -- skipping {n_cals} calibrator field/scan(s), targets only')
+        n_cals = len([f for f in field_list if f['is_secondary']])
+        field_list = [f for f in field_list if not f['is_secondary']]
+        print(gen.col('2GC Cals')+f'CAL_2GC_SKIP_CALS is True -- skipping {n_cals} secondary field/scan(s)')
 
     # Determine if the blind/datamask images are going to be tapered
     if not cfg.WSC_TAPERMASK:
@@ -571,7 +578,8 @@ def main():
             extra_args += ' output.apply_p_jones_inv=true'
         if ref_ant_arg is not None:
             extra_args += f' solver.reference_antenna={ref_ant_arg}'
-        # Apply adaptive freq_interval overrides: targets use stage1 YAML, non-targets use calibrator YAML
+        # Apply adaptive freq_interval overrides: target        prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
+s use stage1 YAML, non-targets use calibrator YAML
         fi_overrides = freq_int_overrides_stage1 if is_target else freq_int_overrides_cal
         for term, _, new_fi in fi_overrides:
             extra_args += f' {term}.freq_interval={new_fi}'
