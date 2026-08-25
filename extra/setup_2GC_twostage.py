@@ -574,7 +574,7 @@ def main():
 
                 step = {}
                 step['step'] = n
-                step['comment'] = 'Run Quartical amplitude self-calibration (stage 2) on the target {}'.format(targetname)
+                step['comment'] = 'Run Quartical refined self-calibration (stage 2) on the target {}'.format(targetname)
                 step['dependency'] = n - 1
                 step['id'] = 'CL2GC'+code
                 step['slurm_config'] = cfg.SLURM_WSCLEAN
