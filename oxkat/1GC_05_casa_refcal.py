@@ -35,6 +35,23 @@ DEBUG_PRINT_FLAGS = False
 # applied to calibrators only, not targets.
 EXTEND_AUTO = False
 
+# Target flagdata parameters (rflag/tfcrop) -- same names/defaults as 1GC_04, so
+# this behaves identically out of the box but is tunable for more aggressive flags.
+RFLAG_TIMEDEVSCALE = 5.0   # rflag threshold (sigma), time direction
+RFLAG_FREQDEVSCALE = 5.0   # rflag threshold (sigma), freq direction
+TFCROP_TIMECUTOFF  = 4.0   # tfcrop threshold (sigma), time direction
+TFCROP_FREQCUTOFF  = 3.0   # tfcrop threshold (sigma), freq direction
+EXTEND_TIME        = 80.0  # mode='extend' growtime (% already flagged)
+EXTEND_FREQ        = 80.0  # mode='extend' growfreq (% already flagged)
+
+# Andrew's custom hacky flagger (tools/visflagger.py) -- extra pass run on the
+# primary (after its first-stage flag), the polang cal, each secondary, and
+# each target. Off by default.
+BASED_FLAGGER = False
+BASED_FLAGGER_CORRELATION_PRODUCTS = 'XX,YY,XY,YX'
+BASED_FLAGGER_ANTENNA_FLAG_CAP = 2
+BASED_FLAGGER_OUTLIER_MODE = 'mixed'
+
 gapfill = CAL_1GC_FILLGAPS
 myuvrange = CAL_1GC_UVRANGE 
 myspw = CAL_1GC_FREQRANGE
@@ -321,6 +338,18 @@ flagmanager(vis=myms,
         mode='save',
         versionname='bpcal_residual_flags')
 
+# ------- BASED flagger (primary)
+
+if BASED_FLAGGER:
+    based_cmd = (f"python_dask {TOOLS}/visflagger.py "
+                 f"{myms} {bpcal_name} "
+                 f"--correlation-products {BASED_FLAGGER_CORRELATION_PRODUCTS} "
+                 f"--antenna-flag-cap {BASED_FLAGGER_ANTENNA_FLAG_CAP} --outlier-mode {BASED_FLAGGER_OUTLIER_MODE} "
+                 f"--save-dir {VISPLOTS}/ --output-suffix _bpcal")
+    print(f'Running BASED flagger on primary: {based_cmd}')
+    subprocess.run([based_cmd], shell=True)
+    flagdata(vis=myms, mode='list', inpfile='baseline_flags_bpcal.txt', flagbackup=False)
+
 
 # ---------------------------------------------------------------------------------------- #
 # ---------------------------------------------------------------------------------------- #
@@ -571,6 +600,18 @@ if pacal_name != '':
         print('DEBUG: PRINTING FLAGS')
         flagdata(myms, mode='summary')
 
+    # ------- BASED flagger (pacal)
+
+    if BASED_FLAGGER:
+        based_cmd = (f"python_dask {TOOLS}/visflagger.py "
+                     f"{myms} {pacal_name} "
+                     f"--correlation-products {BASED_FLAGGER_CORRELATION_PRODUCTS} "
+                     f"--antenna-flag-cap {BASED_FLAGGER_ANTENNA_FLAG_CAP} --outlier-mode {BASED_FLAGGER_OUTLIER_MODE} "
+                     f"--save-dir {VISPLOTS}/ --output-suffix _pacal")
+        print(f'Running BASED flagger on pacal: {based_cmd}')
+        subprocess.run([based_cmd], shell=True)
+        flagdata(vis=myms, mode='list', inpfile='baseline_flags_pacal.txt', flagbackup=False)
+
 
 # ----- Loop over secondaries
 
@@ -614,6 +655,18 @@ for i in range(0,len(pcal_names)):
     if DEBUG_PRINT_FLAGS:
         print('DEBUG: PRINTING FLAGS')
         flagdata(myms, mode='summary')
+
+    # ------- BASED flagger (secondary)
+
+    if BASED_FLAGGER:
+        based_cmd = (f"python_dask {TOOLS}/visflagger.py "
+                     f"{myms} {pcal} "
+                     f"--correlation-products {BASED_FLAGGER_CORRELATION_PRODUCTS} "
+                     f"--antenna-flag-cap {BASED_FLAGGER_ANTENNA_FLAG_CAP} --outlier-mode {BASED_FLAGGER_OUTLIER_MODE} "
+                     f"--save-dir {VISPLOTS}/ --output-suffix _{pcal}")
+        print(f'Running BASED flagger on secondary {pcal}: {based_cmd}')
+        subprocess.run([based_cmd], shell=True)
+        flagdata(vis=myms, mode='list', inpfile=f'baseline_flags_{pcal}.txt', flagbackup=False)
 
 # -------------------------------------------------------------------------------------------------------- #
 # -------------------------------------------------------------------------------------------------------- #
@@ -1125,12 +1178,36 @@ if pacal_name == '':
         flagdata(vis=myms,
             mode='rflag',
             datacolumn='corrected',
-            field=target, flagbackup=False)
+            field=target,
+            timedevscale=RFLAG_TIMEDEVSCALE,
+            freqdevscale=RFLAG_FREQDEVSCALE,
+            extendflags=EXTEND_AUTO,
+            flagbackup=False)
 
         flagdata(vis=myms,
             mode='tfcrop',
             datacolumn='corrected',
+            field=target,
+            timecutoff=TFCROP_TIMECUTOFF,
+            freqcutoff=TFCROP_FREQCUTOFF,
+            extendflags=EXTEND_AUTO,
+            flagbackup=False)
+
+        flagdata(vis=myms, mode='extend', growtime=EXTEND_TIME, growfreq=EXTEND_FREQ,
+            growaround=True, flagneartime=True, flagnearfreq=True,
             field=target, flagbackup=False)
+
+        # ------- BASED flagger (target)
+
+        if BASED_FLAGGER:
+            based_cmd = (f"python_dask {TOOLS}/visflagger.py "
+                         f"{myms} {target} "
+                         f"--correlation-products {BASED_FLAGGER_CORRELATION_PRODUCTS} "
+                         f"--antenna-flag-cap {BASED_FLAGGER_ANTENNA_FLAG_CAP} --outlier-mode {BASED_FLAGGER_OUTLIER_MODE} "
+                         f"--save-dir {VISPLOTS}/ --output-suffix _{target}")
+            print(f'Running BASED flagger on target {target}: {based_cmd}')
+            subprocess.run([based_cmd], shell=True)
+            flagdata(vis=myms, mode='list', inpfile=f'baseline_flags_{target}.txt', flagbackup=False)
 
     # ---- Save flags
 
@@ -1194,12 +1271,36 @@ for i in range(0,len(targets)):
     flagdata(vis=myms,
         mode='rflag',
         datacolumn='corrected',
-        field=target, flagbackup=False)
+        field=target,
+        timedevscale=RFLAG_TIMEDEVSCALE,
+        freqdevscale=RFLAG_FREQDEVSCALE,
+        extendflags=EXTEND_AUTO,
+        flagbackup=False)
 
     flagdata(vis=myms,
         mode='tfcrop',
         datacolumn='corrected',
+        field=target,
+        timecutoff=TFCROP_TIMECUTOFF,
+        freqcutoff=TFCROP_FREQCUTOFF,
+        extendflags=EXTEND_AUTO,
+        flagbackup=False)
+
+    flagdata(vis=myms, mode='extend', growtime=EXTEND_TIME, growfreq=EXTEND_FREQ,
+        growaround=True, flagneartime=True, flagnearfreq=True,
         field=target, flagbackup=False)
+
+    # ------- BASED flagger (target)
+
+    if BASED_FLAGGER:
+        based_cmd = (f"python_dask {TOOLS}/visflagger.py "
+                     f"{myms} {target} "
+                     f"--correlation-products {BASED_FLAGGER_CORRELATION_PRODUCTS} "
+                     f"--antenna-flag-cap {BASED_FLAGGER_ANTENNA_FLAG_CAP} --outlier-mode {BASED_FLAGGER_OUTLIER_MODE} "
+                     f"--save-dir {VISPLOTS}/ --output-suffix _{target}")
+        print(f'Running BASED flagger on target {target}: {based_cmd}')
+        subprocess.run([based_cmd], shell=True)
+        flagdata(vis=myms, mode='list', inpfile=f'baseline_flags_{target}.txt', flagbackup=False)
 
 # ---- Apply aggressive flags if desired
 if CAL_1GC_AGGRESSIVE_FLAGS and CAL_1GC_BL_FREQS != []:

@@ -27,21 +27,40 @@ def main():
 
     myms = project_info['working_ms']
     bpcal = project_info['primary_name']
-    pcals = project_info['secondary_ids']
-    #targets = project_info['target_ids'] 
+    pcals = project_info['secondary_names']
+    targets = project_info['target_names']
     pacal = project_info['polang_name']
 
+    # If PRE_FIELDS selected a subset of fields when the working MS was built,
+    # working_names is the authoritative list of what actually survived --
+    # cross-check bpcal/pacal/secondaries/targets against it rather than
+    # assuming they're all still present.
     if cfg.PRE_FIELDS != '':
-        from oxkat import user_field_handler as ufh
-        pcals   = ufh.user_pcals
-        targets = ufh.user_targets
-    fields = [bpcal]
+        working_names = project_info.get('working_names', [])
+        if bpcal not in working_names:
+            print(f'WARNING: primary calibrator "{bpcal}" not in working_names -- skipping')
+            bpcal = None
+        if pacal != '' and pacal not in working_names:
+            print(f'WARNING: pol-angle calibrator "{pacal}" not in working_names -- skipping')
+            pacal = ''
+        dropped_pcals = [p for p in pcals if p not in working_names]
+        if dropped_pcals:
+            print(f'NOTE: secondary field(s) not in working_names -- skipping: {dropped_pcals}')
+        pcals = [p for p in pcals if p in working_names]
+        dropped_targets = [t for t in targets if t not in working_names]
+        if dropped_targets:
+            print(f'NOTE: target field(s) not in working_names -- skipping: {dropped_targets}')
+        targets = [t for t in targets if t in working_names]
+
+    fields = []
+    if bpcal:
+        fields.append(bpcal)
     if pacal != '':
-        fields = [bpcal, pacal]
+        fields.append(pacal)
     for pcal in pcals:
         fields.append(pcal)
-    #for target in targets:
-    #    fields.append(target)
+    for target in targets:
+        fields.append(target)
 
     plots = ['--xaxis CORRECTED_DATA:real:XX,CORRECTED_DATA:real:YY --yaxis CORRECTED_DATA:imag:XX,CORRECTED_DATA:imag:YY',
              '--xaxis CORRECTED_DATA:real:XY,CORRECTED_DATA:real:YX --yaxis CORRECTED_DATA:imag:XY,CORRECTED_DATA:imag:YX',

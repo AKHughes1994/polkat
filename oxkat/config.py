@@ -689,7 +689,7 @@ WSC_LOCALRMS      = False    # Local RMS map for adaptive masking during main de
 #   '<value>m'  — a physical length in metres; converted to wavelengths per band (frequency-dependent)
 #   '<value>'   — already in wavelengths; used directly with no frequency scaling
 WSC_BASELINE_CUT = True
-WSC_BASELINE_CUTLENGTH = '750m'  # Default: exclude baselines shorter than 750 m
+WSC_BASELINE_CUTLENGTH = '600m'  # Default: exclude baselines shorter than 750 m
 
 if WSC_BASELINE_CUT:
     _cutlen = str(WSC_BASELINE_CUTLENGTH).strip()

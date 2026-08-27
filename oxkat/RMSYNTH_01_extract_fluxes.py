@@ -289,6 +289,39 @@ def chunk_jobs(jobs, n_chunks):
     return [c for c in chunks if c]
 
 
+_DEC_COLON_RE = re.compile(r'[+-]\d{1,3}:\d{1,2}:\d{1,2}(?:\.\d+)?')
+
+
+def fix_dec_colons(pos_str, context_label=''):
+    """
+    Convert a colon-separated declination (HMS,DMS style, e.g. '-63:42:45.6')
+    to CASA's period-separated style ('-63.42.45.6'), leaving RA untouched.
+
+    Declination is identified as a signed sexagesimal token (only Dec carries
+    a +/- sign in these position/region strings). If no such token is found,
+    the string is returned unchanged.
+
+    Parameters
+    ----------
+    pos_str       : str  -- position or region string to check
+    context_label : str  -- what this string is, for the NOTE message (e.g.
+                             'source position', 'rms_region')
+
+    Returns
+    -------
+    str : the string with any colon-separated declination converted to periods,
+          or pos_str itself unchanged if it isn't a (non-empty) string -- e.g.
+          rms_region defaults to False/'' when no manual region is set.
+    """
+    if not isinstance(pos_str, str) or not pos_str:
+        return pos_str
+    fixed = _DEC_COLON_RE.sub(lambda m: m.group(0).replace(':', '.'), pos_str)
+    if fixed != pos_str:
+        msg(f'NOTE: {context_label} declination uses colons -- converting to CASA period format: '
+            f'"{pos_str}" -> "{fixed}"')
+    return fixed
+
+
 def parse_casa_position(position_str):
     """
     Parse a CASA-format position string to decimal degrees.
@@ -1219,12 +1252,14 @@ def extract_polarization_properties(src_name,
 
         if is_time_resolved:
             for component in components:
-                _plot_detected_spectra(output_dictionary, src_name, prefix_arr, component, label)
+                _plot_detected_spectra(output_dictionary, src_name, prefix_arr, component, label,
+                                       pol_flag=pol_flag)
             plot_light_curve(output_dictionary, src_name, prefix_arr, label=label)
         else:
             for component in components:
                 plot_stokes_spectrum(output_dictionary, src_name, prefix_arr[0],
-                                    component, 0, save_plot=True, label=label)
+                                    component, 0, save_plot=True, label=label,
+                                    pol_flag=pol_flag)
         return 0
 
     # Persistent pool for CHAN-image fitting, created lazily on first use (once
@@ -1823,7 +1858,7 @@ def extract_polarization_properties(src_name,
         # is preserved even if a plotting call crashes.
         for component in components:
             plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k,
-                                save_plot=False, label=label)
+                                save_plot=False, label=label, pol_flag=pol_flag)
 
         # Remove this timestep's estimate/check_position scratch files
         cleanup_estimate_files(src_name)
@@ -1862,7 +1897,8 @@ def extract_polarization_properties(src_name,
     if is_time_resolved:
         # Plot IQUV spectrum for all epochs meeting the MFS S/N threshold
         for component in components:
-            _plot_detected_spectra(output_dictionary, src_name, prefix_arr, component, label)
+            _plot_detected_spectra(output_dictionary, src_name, prefix_arr, component, label,
+                                   pol_flag=pol_flag)
 
         # Plot MFS light curve across all epochs
         plot_light_curve(output_dictionary, src_name, prefix_arr, label=label)
@@ -1870,12 +1906,13 @@ def extract_polarization_properties(src_name,
         # Single-epoch: plot spectrum for each component
         for component in components:
             plot_stokes_spectrum(output_dictionary, src_name, prefix_arr[0],
-                                component, 0, save_plot=True, label=label)
+                                component, 0, save_plot=True, label=label,
+                                pol_flag=pol_flag)
 
     return 0
 
 
-def _plot_detected_spectra(output_dictionary, src_name, prefix_arr, component, label):
+def _plot_detected_spectra(output_dictionary, src_name, prefix_arr, component, label, pol_flag=False):
     '''
     Plot the IQUV spectrum for every time-resolved epoch of `component` whose
     MFS Stokes I S/N clears SPEC_PLOT_SNR_THRESH, and log a line per epoch
@@ -1894,13 +1931,14 @@ def _plot_detected_spectra(output_dictionary, src_name, prefix_arr, component, l
         if det_mask[k]:
             msg(f'    {epoch_desc}: MFS S/N = {mfs_snr_arr[k]:.1f} >= {SPEC_PLOT_SNR_THRESH} -- spectrum plot SAVED')
             plot_stokes_spectrum(output_dictionary, src_name, prefix_arr[k],
-                                component, int(k), save_plot=True, label=label)
+                                component, int(k), save_plot=True, label=label,
+                                pol_flag=pol_flag)
         else:
             msg(f'    {epoch_desc}: MFS S/N = {mfs_snr_arr[k]:.1f} <  {SPEC_PLOT_SNR_THRESH} -- spectrum plot SKIPPED')
 
 
 def plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k,
-                         save_plot=True, label=None):
+                         save_plot=True, label=None, pol_flag=False):
     '''
     Diagnostic plot of per-channel Stokes I, Q, U, V spectra for one source
     component in one time-interval epoch, stacked vertically with a shared
@@ -1941,6 +1979,10 @@ def plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k,
     label             : str or None -- display/output name override (rmsynth_info.json
                                  'label' field, via extract_polarization_properties).
                                  None/unset means "use src_name" -- unchanged behaviour.
+    pol_flag          : bool  -- True when a polarization angle calibrator was used, so
+                                 P is Plin = sqrt(Q^2+U^2) rather than Ptot = sqrt(Q^2+U^2+V^2).
+                                 Only then is P overlaid on the Q and U panels -- Ptot mixes
+                                 in V and doesn't belong on Q/U axes.
     '''
 
     label = label or src_name
@@ -1975,9 +2017,16 @@ def plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k,
         V_flux = np.array(chan['V_flux_mJy'][k])
         V_rms  = np.array(chan['V_rms_mJy'][k])
 
+    # P is only overlaid on the Q/U panels when it's Plin (pol_flag True) --
+    # Ptot includes V and isn't meaningful on Q/U axes.
+    show_P = pol_flag and not only_intensity and 'P_flux_mJy' in chan
+    if show_P:
+        P_flux = np.array(chan['P_flux_mJy'][k])
+        P_rms  = np.array(chan['P_rms_mJy'][k])
+
     # ------------------------------------------------------------------
-    # MAD-based outlier rejection on error bars: if ANY Stokes parameter
-    # has a crazy RMS in a channel, mask that channel from all arrays.
+    # MAD-based outlier rejection on error bars: if ANY of I, Q, U, V has a
+    # crazy RMS in a channel, mask that channel from I, Q, U, V, and P alike.
     # This prevents single pathological channels from distorting the plot.
     # ------------------------------------------------------------------
     all_rms = [I_rms]
@@ -2005,6 +2054,9 @@ def plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k,
             U_rms  = U_rms[good]
             V_flux = V_flux[good]
             V_rms  = V_rms[good]
+        if show_P:
+            P_flux = P_flux[good]
+            P_rms  = P_rms[good]
 
     if len(freq_arr) == 0:
         msg(f'  plot_stokes_spectrum: all channels masked for {component} epoch {k}, skipping plot')
@@ -2209,6 +2261,14 @@ def plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k,
             ax.set_ylabel(f'{label}  (mJy/beam)', fontsize=10)
             ax.grid(True, which='both', alpha=0.3, linestyle=':')
             ax.legend(fontsize=9, loc='best')
+
+        # Overlay Plin on the Q and U panels only (axes[1], axes[2] -- not V)
+        if show_P:
+            for ax in axes[1:3]:
+                ax.errorbar(freq_arr, P_flux, yerr=P_rms,
+                            fmt='o', markersize=3, capsize=2, color='black',
+                            alpha=0.5, label='Stokes P (lin)', zorder=2.5)
+                ax.legend(fontsize=9, loc='best')
 
     # Overlay flagged channels on all panels as translucent red spans.
     # Width of each span = minimum channel separation in the frequency array.
@@ -2428,6 +2488,7 @@ def main():
         src_ra  = []
         src_dec = []
         for pos in rmsynth_info['source_pos'][k]:
+            pos = fix_dec_colons(pos, 'source position')
             ra_deg, dec_deg = parse_casa_position(pos)
             if ra_deg is None:
                 msg(f'ERROR: Could not parse position "{pos}" -- skipping source')
@@ -2449,8 +2510,8 @@ def main():
             src_ra, 
             src_dec, 
             rmsynth_info['source_ulim'][k],
-            pol_flag, 
-            rmsynth_info['rms_region'][k],
+            pol_flag,
+            fix_dec_colons(rmsynth_info['rms_region'][k], 'rms_region'),
             rmsynth_info['image_directory'][k],
             rmsynth_info["image_identifier"][k],
             fix_additional_comps = True,
