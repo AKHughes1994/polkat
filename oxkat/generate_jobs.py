@@ -132,11 +132,13 @@ def setup_dir(DIR,relabel=False):
 
     if not o.isdir(DIR):
         os.mkdir(DIR)
-    elif o.isdir(DIR) and relabel and (len(os.listdir(DIR)) != 0):
+    elif relabel and (len(os.listdir(DIR)) != 0):
         dirs = glob.glob(DIR+'*')
         n = len(dirs)
         os.rename(DIR,DIR+str(n))
         os.mkdir(DIR)
+    elif len(os.listdir(DIR)) != 0:
+        print(col('NOTE')+f'{DIR} already exists and is not empty')
 
 
 def timenow():

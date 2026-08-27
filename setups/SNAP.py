@@ -41,7 +41,7 @@ def main():
     gen.setup_dir(IMAGES)
     gen.setup_dir(cfg.LOGS)
     gen.setup_dir(cfg.SCRIPTS)
-    gen.setup_dir(cfg.INTERVALS, relabel=True)
+    gen.setup_dir(cfg.INTERVALS)
 
 
     INFRASTRUCTURE, CONTAINER_PATH = gen.set_infrastructure(sys.argv)
