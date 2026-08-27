@@ -20,7 +20,7 @@ set -uo pipefail
 
 CLUSTER=${1:-idia}
 START=${2:-0}
-POLL=${POLL:-60}
+POLL=${POLL:-300}
 
 STAGES=(
   "setups/0_GET_INFO.py|submit_info_job.sh"
@@ -48,9 +48,15 @@ submit_and_collect() {
 }
 
 wait_for() {
-  local ids=$1 q
+  local ids=$1 q err
   while :; do
-    q=$(squeue -h -j "$ids" -o "%i %T %r" 2>/dev/null)
+    err=$(squeue -h -j "$ids" -o "%i %T %r" 2>&1 >/tmp/squeue_out.$$)
+    q=$(</tmp/squeue_out.$$); rm -f /tmp/squeue_out.$$
+    if [[ -n $err ]]; then
+      log "squeue query failed, retrying: $err"
+      sleep "$POLL"
+      continue
+    fi
     [[ -z $q ]] && break
     if grep -q DependencyNeverSatisfied <<< "$q"; then
       log "dependency never satisfied -- cancelling remaining jobs"
