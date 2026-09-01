@@ -38,7 +38,7 @@ def main():
     gen.setup_dir(cfg.GAINPLOTS)
     gen.setup_dir(cfg.VISPLOTS)
 
-    with open('data/rmsynth/rmsynth_info.json', 'r') as j:
+    with open(cfg.RMSYN_INFO_FILE, 'r') as j:
         rmsynth_info = json.load(j)
     for k, name in enumerate(rmsynth_info['image_directory']):
         print(gen.col() + 'Trying to fit {} in directory {}'.format(rmsynth_info['source_name'][k], rmsynth_info['image_directory'][k]))

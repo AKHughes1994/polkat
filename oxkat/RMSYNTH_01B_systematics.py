@@ -625,6 +625,14 @@ def get_primary_systematic(bpcal_name, bpcal_pos):
     and averaged, giving a more robust estimate than a single combined image.
     A per-scan MFS light curve plot is produced after fitting.
 
+    If per-channel Stokes I images exist for a scan (same naming convention
+    as the pol-angle calibrator's channel images), they are fitted too --
+    Q, U, and V again with position frozen to Stokes I -- and a per-scan
+    IQUV spectrum plot is written to RESULTS/fitting_plots, exactly as for
+    the pol-angle calibrator.  Scans without channel images are still
+    processed for their MFS systematic; only the channel spectrum plot is
+    skipped for those.
+
     Parameters
     ----------
     bpcal_name : str  -- calibrator field name as it appears in image filenames
@@ -637,6 +645,7 @@ def get_primary_systematic(bpcal_name, bpcal_pos):
         BPCAL_RESIDUAL_UFRAC : float  -- mean U/I leakage fraction
         BPCAL_RESIDUAL_VFRAC : float  -- mean V/I leakage fraction
         _mfs_dict            : dict   -- per-scan MFS data (internal; for plotting)
+        _chan_dict           : dict   -- per-scan channel data (internal; for plotting)
     """
     msg('')
     msg(f'{"="*70}')
@@ -651,12 +660,13 @@ def get_primary_systematic(bpcal_name, bpcal_pos):
         return {'BPCAL_RESIDUAL_QFRAC': 0.0,
                 'BPCAL_RESIDUAL_UFRAC': 0.0,
                 'BPCAL_RESIDUAL_VFRAC': 0.0,
-                '_mfs_dict': {}}
+                '_mfs_dict': {}, '_chan_dict': {}}
 
     msg(f'Looping over {len(prefixes)} scan prefix(es) for {bpcal_name}')
 
     Q_fracs, U_fracs, V_fracs = [], [], []
-    mfs_dict = {}
+    mfs_dict  = {}
+    chan_dict = {}
 
     for k, prefix in enumerate(prefixes):
 
@@ -698,8 +708,12 @@ def get_primary_systematic(bpcal_name, bpcal_pos):
         msg(f'  Position : x = {I_xpix:.1f}, y = {I_ypix:.1f} pix  '
             f'[astrometric reference for Q, U, V]')
 
+        freq_GHz = imhead(im_I, mode='get', hdkey='CRVAL3')['value'] / 1.0e9
+        bmaj     = imhead(im_I, mode='get', hdkey='bmaj')['value']
+
         scan_mfs = {
             'I_flux_mJy': flux_I, 'I_rms_mJy': rms_I, 'I_err_mJy': err_I,
+            'freq_GHz': freq_GHz, 'bmaj_asec': bmaj,
         }
 
         # ------------------------------------------------------------------
@@ -738,6 +752,98 @@ def get_primary_systematic(bpcal_name, bpcal_pos):
 
         mfs_dict[scan_key] = scan_mfs
 
+        # ------------------------------------------------------------------
+        # Per-channel Stokes I images (optional) -- fit and plot spectra
+        #
+        # Q, U, V positions are ALWAYS frozen to the Stokes I pixel position,
+        # for the same reason as the MFS fit above: J1939/J0408 is
+        # intrinsically unpolarised, so check_position() is bypassed for them.
+        # ------------------------------------------------------------------
+        CHAN_I_images = sorted(glob.glob(f'{prefix}-[!M]*-I-image.fits'))
+        if not CHAN_I_images:
+            prefix_zoom   = prefix.replace('diagnostic', 'diagnostic_zoom')
+            CHAN_I_images = sorted(glob.glob(f'{prefix_zoom}-[!M]*-I-image.fits'))
+            if CHAN_I_images:
+                msg(f'  Channel I images not found at prefix; '
+                    f'using diagnostic_zoom ({len(CHAN_I_images)} found)')
+
+        scan_chan = {
+            'freq_GHz'  : [], 'I_flux_mJy': [], 'Q_flux_mJy': [], 'U_flux_mJy': [],
+            'V_flux_mJy': [], 'I_rms_mJy' : [], 'Q_rms_mJy' : [], 'U_rms_mJy' : [],
+            'V_rms_mJy' : [],
+        }
+
+        if not CHAN_I_images:
+            msg(f'  No per-channel Stokes I images found for this scan -- '
+                f'skipping channel fits')
+        else:
+            msg(f'  Found {len(CHAN_I_images)} per-channel I image(s) -- looping')
+
+            for n, ch_I in enumerate(CHAN_I_images):
+
+                ch_Q = ch_I.replace('-I-image.fits', '-Q-image.fits')
+                ch_U = ch_I.replace('-I-image.fits', '-U-image.fits')
+                ch_V = ch_I.replace('-I-image.fits', '-V-image.fits')
+
+                missing_chan = [s for s, im in [('Q', ch_Q), ('U', ch_U), ('V', ch_V)]
+                                if not os.path.exists(im)]
+                if missing_chan:
+                    msg(f'    Channel {n+1}: missing Stokes {missing_chan} -- skipping')
+                    continue
+
+                try:
+                    c_freq_GHz = imhead(ch_I, mode='get', hdkey='CRVAL3')['value'] / 1.0e9
+                    c_bmaj     = imhead(ch_I, mode='get', hdkey='bmaj')['value']
+
+                    # Skip heavily flagged channels (beam >> MFS beam scaled by freq ratio)
+                    beam_scaled = freq_GHz / c_freq_GHz * bmaj
+                    if c_bmaj > 3.0 * beam_scaled:
+                        msg(f'    Channel {n+1}: BMAJ = {c_bmaj:.2f}" >> 3 x scaled MFS '
+                            f'beam = {3.0 * beam_scaled:.2f}" -- likely heavily flagged, '
+                            f'skipping')
+                        continue
+
+                    # Stokes I -- check_position
+                    check_position('estimate_I_bpcal_chan.txt', ch_I, I_xpix, I_ypix)
+                    cI_imfit = get_imfit_values('estimate_I_bpcal_chan.txt', ch_I,
+                                                 I_xpix, I_ypix)
+                    c_flux_I = cI_imfit['results']['component0']['peak']['value'] * 1e3
+                    cI_xpix  = cI_imfit['results']['component0']['pixelcoords'][0]
+                    cI_ypix  = cI_imfit['results']['component0']['pixelcoords'][1]
+                    c_rms_I  = get_imstat_values(ch_I, cI_xpix, cI_ypix)[3] * 1e3
+
+                    # Stokes Q, U, V -- position FROZEN to Stokes I ('xyabp')
+                    c_flux = {'I': c_flux_I}
+                    c_rms  = {'I': c_rms_I}
+                    for stokes, im in [('Q', ch_Q), ('U', ch_U), ('V', ch_V)]:
+                        est_fname = f'estimate_{stokes}_bpcal_chan.txt'
+                        make_estimate(est_fname, im, I_xpix, I_ypix, 'xyabp')
+                        c_imfit = get_imfit_values(est_fname, im, I_xpix, I_ypix)
+                        c_flux[stokes] = c_imfit['results']['component0']['peak']['value'] * 1e3
+                        c_rms[stokes]  = get_imstat_values(im, I_xpix, I_ypix)[3] * 1e3
+
+                    msg(f'    Channel {n+1}/{len(CHAN_I_images)}: freq = {c_freq_GHz:.4f} GHz  '
+                        f'I={c_flux["I"]:.3f}  Q={c_flux["Q"]:.3f}  '
+                        f'U={c_flux["U"]:.3f}  V={c_flux["V"]:.3f}  [mJy]')
+
+                    scan_chan['freq_GHz'  ].append(c_freq_GHz)
+                    scan_chan['I_flux_mJy'].append(c_flux['I'])
+                    scan_chan['Q_flux_mJy'].append(c_flux['Q'])
+                    scan_chan['U_flux_mJy'].append(c_flux['U'])
+                    scan_chan['V_flux_mJy'].append(c_flux['V'])
+                    scan_chan['I_rms_mJy' ].append(c_rms['I'])
+                    scan_chan['Q_rms_mJy' ].append(c_rms['Q'])
+                    scan_chan['U_rms_mJy' ].append(c_rms['U'])
+                    scan_chan['V_rms_mJy' ].append(c_rms['V'])
+
+                except Exception as e:
+                    msg(f'    Channel {n+1} fitting failed: {e}')
+
+        chan_dict[scan_key] = scan_chan
+
+        # Per-scan IQUV spectrum plot (MFS + channel data collected above)
+        plot_cal_spectrum({'MFS': mfs_dict, 'CHAN': chan_dict}, bpcal_name, scan_key)
+
     # ------------------------------------------------------------------
     # Average systematics across all successfully processed scans
     # ------------------------------------------------------------------
@@ -748,7 +854,7 @@ def get_primary_systematic(bpcal_name, bpcal_pos):
         return {'BPCAL_RESIDUAL_QFRAC': 0.0,
                 'BPCAL_RESIDUAL_UFRAC': 0.0,
                 'BPCAL_RESIDUAL_VFRAC': 0.0,
-                '_mfs_dict': mfs_dict}
+                '_mfs_dict': mfs_dict, '_chan_dict': chan_dict}
 
     Q_sys = float(np.mean(Q_fracs))
     U_sys = float(np.mean(U_fracs))
@@ -770,7 +876,7 @@ def get_primary_systematic(bpcal_name, bpcal_pos):
     return {'BPCAL_RESIDUAL_QFRAC': Q_sys,
             'BPCAL_RESIDUAL_UFRAC': U_sys,
             'BPCAL_RESIDUAL_VFRAC': V_sys,
-            '_mfs_dict': mfs_dict}
+            '_mfs_dict': mfs_dict, '_chan_dict': chan_dict}
 
 
 def get_polcal_polarization(pacal_name, pacal_pos, bpcal_sys):
@@ -1238,6 +1344,17 @@ def main():
         'J1939-6342': '19:39:25.0264,-63.42.45.624',
         'J0408-6545': '04:08:20.3782,-65.45.09.080',
     }
+
+    # PKS B1934-638 is the B1950 name for J1939-6342 (same source).  Some
+    # project_info.json files record the calibrator this way even though the
+    # image/JSON filenames on disk still use the field's real name -- so we
+    # resolve the POSITION via this alias without renaming bpcal_name itself,
+    # keeping find_cal_images() and every filename-based lookup below working
+    # against whatever name actually appears on disk.
+    if '1934' in bpcal_name and bpcal_name not in bpcal_positions:
+        msg(f'  Bandpass calibrator "{bpcal_name}" recognised as J1939-6342 '
+            f'(B1934-638 / J1939-6342 are the same source) -- using its position')
+        bpcal_positions[bpcal_name] = bpcal_positions['J1939-6342']
 
     systematics = {
         'BPCAL_RESIDUAL_QFRAC': 0.0,

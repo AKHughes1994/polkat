@@ -306,7 +306,7 @@ def main():
             tukeytaper        = tukeytaper,
             minuvl            = minuvl,
             automask          = cfg.WSC_SHALLOWMASK,
-            localrms          = cfg.WSC_INTER_LOCALRMS,
+            localrms          = cfg.WSC_SHALLOWMASK_LOCALRMS,
             autothreshold     = cfg.WSC_INTER_AUTOTHRESHOLD,
             joinpolarizations = False,
             multiscale        = False,

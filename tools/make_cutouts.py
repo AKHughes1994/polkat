@@ -172,7 +172,7 @@ def create_zoom_cutout(input_file, output_file, cutout_size=512):
     return output_file, cutout_data.shape
 
 
-def process_one(input_file, identifier, full_dir, cutout_size):
+def process_one(input_file, identifier, full_dir, cutout_size, delete_originals):
     """Worker: create cutout for a single file and optionally delete the original."""
     base_name   = os.path.basename(input_file)
     output_name = base_name.replace(identifier, f'{identifier}_zoom')
@@ -181,7 +181,7 @@ def process_one(input_file, identifier, full_dir, cutout_size):
     output_file, shape = create_zoom_cutout(input_file, output_file, cutout_size)
 
     # Delete original unless it is an MFS image
-    if not ('MFS-' in base_name and '-image' in base_name):
+    if delete_originals and not ('MFS-' in base_name and '-image' in base_name):
         os.remove(input_file)
 
     return f'Created {output_file} {shape}'
@@ -191,10 +191,11 @@ def main():
 
     # ================== MODIFIABLE VARIABLES ==================
 
-    DIR         = 'IMAGES'
-    identifiers = ['datablind', 'datamask', 'diagnostic', 'pcalmask', 'uniform']
-    suffixes    = ['image.fits', 'residual.fits', 'model.fits', 'image.homogenized.fits']
-    cutout_size = 512
+    DIR              = 'IMAGES'
+    identifiers      = ['datablind', 'datamask', 'diagnostic', 'pcalmask', 'uniform']
+    suffixes         = ['image.fits', 'residual.fits', 'model.fits', 'dirty.fits','image.homogenized.fits']
+    cutout_size      = 512
+    delete_originals = True  # set False to keep original files after cutouts are made
 
     # ===========================================================
 
@@ -224,7 +225,7 @@ def main():
 
     with ProcessPoolExecutor(max_workers=max_workers) as pool:
         futures = {
-            pool.submit(process_one, f, ident, full_dir, cutout_size): f
+            pool.submit(process_one, f, ident, full_dir, cutout_size, delete_originals): f
             for f, ident in all_jobs
         }
         for future in as_completed(futures):

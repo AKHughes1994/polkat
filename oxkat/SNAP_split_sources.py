@@ -6,42 +6,18 @@ import sys
 exec(open('oxkat/config.py').read())
 exec(open('oxkat/casa_read_project_info.py').read())
 
-if len(sys.argv) == 1:
-    print('Please specify a field to split')
+if len(sys.argv) < 3:
+    print('Usage: SNAP_split_sources.py <targetname> <source_ms>')
     sys.exit()
 else:
-    targetname = sys.argv[-1]
+    targetname = sys.argv[-2]
+    source_ms  = sys.argv[-1]
 
-# -----------------------------------------------------------------------
-# Determine the best source MS to split from, in priority order:
-#   1. stage2 MS  (<target>_stage2.ms) — produced by two-stage selfcal
-#   2. Target MS  from project_info    — produced by 1GC_08 split
-#   3. Working MS (working_ms)         — the averaged master MS, as a last resort
-# -----------------------------------------------------------------------
-
-target_ms_files = project_info['target_ms']
-
-# Build the expected stage2 MS name: same convention as setup_2GC_twostage.py
-if any(targetname in tms for tms in target_ms_files):
-    project_target_ms = target_ms_files[target_names.index(targetname)]
-    stage2_ms = project_target_ms.replace('.ms', '_stage2.ms')
-else:
-    project_target_ms = None
-    stage2_ms = None
-
-# Walk the priority list and pick the first MS that exists on disk
-if stage2_ms and o.isdir(stage2_ms):
-    source_ms = stage2_ms
-    print(f'SNAP_split_sources: Using stage2 MS: {source_ms}')
-elif project_target_ms and o.isdir(project_target_ms):
-    source_ms = project_target_ms
-    print(f'SNAP_split_sources: Using project target MS: {source_ms}')
-elif o.isdir(myms):
-    source_ms = myms
-    print(f'SNAP_split_sources: Falling back to working MS: {source_ms}')
-else:
-    sys.exit(f'ERROR: No suitable MS found for target "{targetname}". '
-             f'Checked: {stage2_ms}, {project_target_ms}, {myms}')
+# The source MS priority (stage2 -> project target MS -> working MS) is
+# resolved once, at setup time, by SNAP.py -- it's passed in directly here
+# so a missing MS is caught before any jobs are generated, not at runtime.
+if not o.isdir(source_ms):
+    sys.exit(f'ERROR: source MS "{source_ms}" for target "{targetname}" does not exist.')
 
 # -----------------------------------------------------------------------
 # Determine the output snapshot MS name

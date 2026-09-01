@@ -50,7 +50,7 @@ SAVE_PB    = False        # beam image
 SAVE_WT    = False        # beam^2 weight image
 
 # Overwrite existing output files
-OVERWRITE = True
+OVERWRITE = False
 
 # =============================================================================
 # End configuration

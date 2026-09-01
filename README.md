@@ -72,7 +72,7 @@ Ionospheric RM estimation has been migrated from ALBUS to [Spinifex](https://spi
 
 #### Update: Two-Stage Self-Calibration and wsclean 3.5
 
-An alternative 2GC script, [`extra/setup_2GC_twostage.py`](extra/setup_2GC_twostage.py), performs two rounds of self-calibration: a first pass on high-significance pixels only (controlled by `WSC_SHALLOWMASK`), followed by amplitude self-calibration on an intermediate image, then a final imaging pass. wsclean has been upgraded to **version 3.5**, adding `--local-rms-strength`, exposed as `WSC_LOCALRMS_STRENGTH` (default `0.5`). Intermediate masking parameters (`WSC_INTER_AUTOMASK`, `WSC_INTER_AUTOTHRESHOLD`, `WSC_INTER_LOCALRMS`) apply only to this workflow. See the 2GC section below for full parameter listings.
+An alternative 2GC script, [`extra/setup_2GC_twostage.py`](extra/setup_2GC_twostage.py), performs two rounds of self-calibration: a first pass on high-significance pixels only (controlled by `WSC_SHALLOWMASK`), followed by amplitude self-calibration on an intermediate image, then a final imaging pass. wsclean has been upgraded to **version 3.5**, adding `--local-rms-strength`; every `localrms`-style parameter (e.g. `WSC_INTER_LOCALRMS`, `WSC_SHALLOWMASK_LOCALRMS`) is now a single knob for both on/off and strength -- `False` disables it, `True` enables it at the default strength (0.5), a float enables it at that strength. Intermediate masking parameters (`WSC_INTER_AUTOMASK`, `WSC_INTER_AUTOTHRESHOLD`, `WSC_INTER_LOCALRMS`) apply only to this workflow. See the 2GC section below for full parameter listings.
 
 **Amplitude self-calibration** YAML files have been added to `data/quartical/`. [`2GC_complex.yaml`](data/quartical/2GC_complex.yaml) performs direction-independent amplitude self-calibration; [`2GC_complex_2dir.yaml`](data/quartical/2GC_complex_2dir.yaml) extends this to two directions and is used to peel a problematic in-field source. Place a DS9 region file named `DIR.reg` in your working directory to activate the peeling. This is intended for **advanced users**; inspect your solutions carefully.
 
@@ -289,20 +289,17 @@ python3 extra/setup_2GC_twostage.py idia
 ./submit_2GC_twostage_job.sh
 ```
 
-This performs two rounds of self-calibration: a first pass restricted to high-significance pixels (controlled by `WSC_SHALLOWMASK`), followed by amplitude self-calibration on an intermediate image, before proceeding to the final imaging pass. wsclean has been upgraded to **version 3.5**, which introduces the `--local-rms-strength` option, exposed as `WSC_LOCALRMS_STRENGTH`. The relevant `config.py` parameters are:
+This performs two rounds of self-calibration: a first pass restricted to high-significance pixels (controlled by `WSC_SHALLOWMASK`), followed by amplitude self-calibration on an intermediate image, before proceeding to the final imaging pass. wsclean has been upgraded to **version 3.5**, which introduces the `--local-rms-strength` option. Every `localrms`-style parameter is now a single knob for both on/off and strength: `False` disables it, `True` enables it at the default strength (0.5), and a float enables it at that strength directly. The relevant `config.py` parameters are:
 
 ```python
-WSC_LOCALRMS_STRENGTH = 0.5   # local-rms strength factor (wsclean 3.5+); scales how aggressively 
-                               # the local RMS map modulates the clean threshold. 
-                               # 0.5 = weight by sqrt of local noise; see wsclean docs for details.
-
 # Intermediate image (two-stage self-calibration only)
-WSC_INTER_LOCALRMS      = True   # Use local RMS map for intermediate image masking
+WSC_INTER_LOCALRMS      = 0.33   # Local RMS map for intermediate image masking; local-rms strength
 WSC_INTER_AUTOMASK      = 3.0    # Auto-mask threshold (sigma) for intermediate image
 WSC_INTER_AUTOTHRESHOLD = 1.0    # Auto-threshold (sigma) for intermediate image
 
-WSC_SHALLOWMASK = 10.0  # Initial auto-mask threshold (sigma) for the first deconvolution pass;
-                         # in the two-stage workflow, calibrators use 2× this value
+WSC_SHALLOWMASK          = 30.0  # Initial auto-mask threshold (sigma) for the first deconvolution pass;
+                                  # in the two-stage workflow, calibrators use 2× this value
+WSC_SHALLOWMASK_LOCALRMS = 0.5   # Local RMS map for the first deconvolution pass; local-rms strength
 ```
 
 **Amplitude self-calibration** YAML files are available in `data/quartical/`. [`2GC_complex.yaml`](data/quartical/2GC_complex.yaml) performs direction-independent amplitude self-calibration; [`2GC_complex_2dir.yaml`](data/quartical/2GC_complex_2dir.yaml) extends this to two directions to peel a problematic in-field source. To use the peeling configuration, create a DS9 region file named `DIR.reg` in your working directory specifying the source. This is intended for **advanced users**.
@@ -364,7 +361,7 @@ WSC_CIRCULARBEAM = False   # Force circular restoring beam
 WSC_AUTOMASK_BLIND      = 5.0   # Auto-mask threshold (sigma) for blind image
 WSC_AUTOTHRESHOLD_BLIND = 1.0   # Auto-threshold (sigma) at which CLEAN stops for blind image
 WSC_THRESHOLD_BLIND     = False  # Absolute flux threshold for blind image; False = use auto-threshold
-WSC_LOCALRMS_BLIND      = True   # Use a local RMS map for masking in the blind image
+WSC_LOCALRMS_BLIND      = 0.5    # Local RMS map for masking in the blind image; local-rms strength
 
 # Masking: final image
 # Standard 2GC: applied to both self-calibration imaging passes.
@@ -374,7 +371,8 @@ WSC_MASK          = False   # FITS mask to use; False = no mask (blind deconvolu
 WSC_THRESHOLD     = False   # Absolute flux threshold (Jy) to stop cleaning; False = use auto
 WSC_AUTOMASK      = 2.0     # Auto-mask threshold (sigma) for main deconvolution
 WSC_AUTOTHRESHOLD = 0.5     # Auto-threshold (sigma) at which CLEAN stops
-WSC_LOCALRMS      = False   # Use a local RMS map for adaptive masking
+WSC_LOCALRMS      = False   # Local RMS map for adaptive masking: False disables, True enables at
+                             # the default strength (0.5), a float enables at that strength
 ```
 
 
@@ -531,6 +529,7 @@ You may need to modify `data/rmsynth/rmsynth_info.json` to match your dataset. E
     "image_suffix": ["image.fits", "image.fits"],
     "image_timing": [false, true],
     "source_name": ["SwiftJ1727", "SwiftJ1727"],
+    "label": ["", ""],
     "source_ulim": [[false], [false]],
     "rms_region": [false, false],
     "source_pos": [["17:27:43.307,-16.12.17.619"], ["17:27:43.307,-16.12.17.619"]],
@@ -546,6 +545,7 @@ You may need to modify `data/rmsynth/rmsynth_info.json` to match your dataset. E
 - `"image_suffix"`: Image file type (`image.fits` for standard, `image.homogenized.fits` for homogenized images).
 - `"image_timing"`: Set to `true` if images are time-split (e.g., snapshots).
 - `"source_name"`: Names of sources to fit.
+- `"label"`: Optional output name override, one per entry. Leave as `""` to use `"source_name"` as-is (the default, unchanged behaviour). If you're fitting multiple components/entries against the same field/`"source_name"` — e.g. separate jet ejecta or repeated fits with different `"source_pos"` — give each entry its own `"label"` so their outputs (JSON, plots) get distinct filenames instead of overwriting the previous entry's results. `"source_name"` itself still drives image discovery and MS timing lookups either way, so `"label"` never affects which input files are found.
 - `"source_ulim"`: Whether to fix the component position to `"source_pos"`.
 - `"rms_region"`: Manual RMS region (CASA format); otherwise, an annulus is used.
 - `"source_pos"`: List of component positions (CASA format). Add more entries for multiple components.

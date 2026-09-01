@@ -325,8 +325,12 @@ XF_DELTARM_TRIALS    = [-7,7] # Was: [min, max] RM offsets (rad/m²) defining th
 
 # Reference antennas
 CAL_1GC_REF_ANT = 'auto'             # Comma-separated list to manually specify refant(s)
-CAL_1GC_REF_POOL = ['m060','m061','m059','m058', 'm050', 'm048', 'm062', 'm063'] 
+CAL_1GC_REF_POOL = ['m060','m061','m059','m058', 'm050', 'm048', 'm062', 'm063']
                                      # Pool to re-order for reference antenna list for 'auto'
+
+CAL_1GC_REFANT_SNR_SELECT = True     # After cal flagging, solve per-scan delay S/N on the primary
+                                     # and replace CAL_1GC_REF_POOL with the 7 antennas with the
+                                     # highest average S/N (m060 still pinned to front if present)
 
 # Field selection, IDs only at present. (Use tools/ms_info.py.)
 CAL_1GC_PRIMARY = 'auto'             # Primary calibrator field ID
@@ -354,6 +358,17 @@ CAL_1GC_FILLGAPS = 8                 # Maximum channel gap over which to interpo
 # solve should remain in the antenna frame, with parallactic angle applied
 # only as the final step to rotate into the sky frame.
 CAL_1GC_APPLYPARANG = True
+
+# Parallactic angle model during 2GC self-calibration (QuartiCal apply_p_jones_inv).
+# If the data is still in the antenna frame (parang not yet applied), we
+# need to re-apply parang every time we make a model image during self-cal,
+# otherwise parallactic angle smears across each imaging integration.
+# Defaults to the opposite of CAL_1GC_APPLYPARANG: if 1GC already applied
+# the P-Jones correction, the data is in the sky frame and no further
+# parang modelling is needed here.
+CAL_2GC_PARANGMODEL = not CAL_1GC_APPLYPARANG
+assert not (CAL_1GC_APPLYPARANG and CAL_2GC_PARANGMODEL), \
+    'CAL_2GC_PARANGMODEL must be False when CAL_1GC_APPLYPARANG is True'
 
 # If True, parallactic-angle correction is applied via applycal to all calibrators
 # except BPCAL (i.e. the polarization angle calibrator and secondary phase
@@ -599,11 +614,19 @@ WSC_JOINCHANNELS = True
 # (e.g. due to Faraday rotation); the sum-of-squares avoids cancellation.
 WSC_SQUARECHANS  = True
 
-# Controls QU/IV deconvolution behaviour when WSC_SPLITPOL is True.
-#   0       : disabled — no changes to QU or IV, local-rms not added
-#   'auto'  : QU gets local-rms only; IV auto-mask floored at 3.0, auto-threshold floored at 1.0
-#   float   : QU gets local-rms; IV auto-mask multiplied by scale, auto-threshold floored at 1.0
-WSC_QU_AUTOMASK_SCALE = 'auto'
+# Controls QU deconvolution scaling when WSC_SPLITPOL is True. IV always keeps
+# whatever auto-mask/auto-threshold was set above, regardless of this setting.
+# Always a plain float multiplier on both auto-mask and auto-threshold; sign
+# is a mode switch, magnitude is the scale factor:
+#   0        : disabled — no changes to QU
+#   negative : |value| x auto-mask/auto-threshold, nothing else changes
+#   positive : value x auto-mask/auto-threshold, and if WSC_SQUARECHANS is
+#              also True, local-rms is additionally turned on for QU
+# NOTE: with WSC_SQUARECHANS True, a purely multiplicative QU auto-mask/
+# threshold (i.e. a negative scale) tends to diverge hard -- likely the
+# sum-of-squares peak-finding's non-Gaussian noise statistics. That's why
+# local-rms defaults on for positive scales instead of being opt-in.
+WSC_QU_AUTOMASK_SCALE = 1.0
 
 # Stokes parameters to image. Standard options: 'I', 'IQUV', 'QU', etc.
 WSC_POL = 'IQUV'
@@ -621,21 +644,18 @@ WSC_SPLITPOL = True
 # as it can fold Q/U artefacts into the model.
 WSC_JOINPOLARIZATIONS = False
 
-# Local RMS weighting strength for -local-rms (-local-rms-strength).
-# 0.5 = weight by sqrt of local noise; see WSClean docs for full details.
-WSC_LOCALRMS_STRENGTH = 0.5
-
 # --- Masking: blind image (stage 0 — mask generation only) ---
 WSC_AUTOMASK_BLIND      = 5.0   # Auto-mask threshold (sigma) for blind image
 WSC_AUTOTHRESHOLD_BLIND = 1.0   # Auto-threshold (sigma) at which CLEAN stops for blind image
 WSC_THRESHOLD_BLIND     = False  # Absolute flux threshold for blind image; False = use auto-threshold
-WSC_LOCALRMS_BLIND      = True   # Use a local RMS map for masking in the blind image
+WSC_LOCALRMS_BLIND      = 0.5    # Local RMS map for masking in the blind image; local-rms strength
 
 # --- Masking: first self-calibration pass (two-stage workflow only) ---
 # Restricts cleaning to high-significance pixels before any amplitude self-calibration.
 # Has no effect in the standard single-round 2GC workflow.
-WSC_SHALLOWMASK = 20.0  # Auto-mask threshold (sigma) for the first deconvolution pass;
-                         # calibrators use 2× this value
+WSC_SHALLOWMASK          = 30.0  # Auto-mask threshold (sigma) for the first deconvolution pass;
+                                  # calibrators use 2× this value
+WSC_SHALLOWMASK_LOCALRMS = 0.5   # Local RMS map for the first deconvolution pass; local-rms strength
 
 # --- Model modification before predict (two-stage self-calibration only) ---
 # If True, runs mod_model_selfcal.py after fix_nan_models.py before each predict step
@@ -646,7 +666,7 @@ MOD_MODEL_SELFCAL = False
 # An intermediate image is made from CORRECTED_DATA after stage 1 phase self-calibration.
 # This model is used for amplitude self-calibration in stage 2.
 # Has no effect in the standard single-round 2GC workflow.
-WSC_INTER_LOCALRMS      = True   # Use local RMS map for intermediate image masking
+WSC_INTER_LOCALRMS      = 0.33   # Local RMS map for intermediate image masking; local-rms strength
 WSC_INTER_AUTOMASK      = 3.0    # Auto-mask threshold (sigma) for intermediate image
 WSC_INTER_AUTOTHRESHOLD = 1.0    # Auto-threshold (sigma) for intermediate image and shallow clean
 
@@ -656,9 +676,11 @@ WSC_INTER_AUTOTHRESHOLD = 1.0    # Auto-threshold (sigma) for intermediate image
 WSC_MASK          = False    # FITS mask to use; False = no mask (blind deconvolution)
                               # Can also be a list of per-field mask paths
 WSC_THRESHOLD     = False    # Absolute flux threshold (Jy) at which to stop cleaning; False = use auto
-WSC_AUTOMASK      = 2.0      # Auto-mask threshold (sigma) for main deconvolution
-WSC_AUTOTHRESHOLD = 0.5      # Auto-threshold (sigma) at which CLEAN stops
-WSC_LOCALRMS      = False    # Use a local RMS map for adaptive masking during main deconvolution
+WSC_AUTOMASK      = 3.0      # Auto-mask threshold (sigma) for main deconvolution
+WSC_AUTOTHRESHOLD = 1.0      # Auto-threshold (sigma) at which CLEAN stops
+WSC_LOCALRMS      = False    # Local RMS map for adaptive masking during main deconvolution:
+                              # False disables it, True enables it at the default strength (0.5),
+                              # a float enables it at that strength (see generate_syscall_wsclean())
 
 # --- Minimum baseline UV cut ---
 # If True, sets WSC_MINUVL by converting WSC_BASELINE_CUTLENGTH to wavelengths at the band centre.
@@ -667,7 +689,7 @@ WSC_LOCALRMS      = False    # Use a local RMS map for adaptive masking during m
 #   '<value>m'  — a physical length in metres; converted to wavelengths per band (frequency-dependent)
 #   '<value>'   — already in wavelengths; used directly with no frequency scaling
 WSC_BASELINE_CUT = True
-WSC_BASELINE_CUTLENGTH = '750m'  # Default: exclude baselines shorter than 750 m
+WSC_BASELINE_CUTLENGTH = '600m'  # Default: exclude baselines shorter than 750 m
 
 if WSC_BASELINE_CUT:
     _cutlen = str(WSC_BASELINE_CUTLENGTH).strip()
@@ -945,6 +967,10 @@ KMS_COVQ = 0.05
 #
 
 # --- Extraction (RMSYNTH_01_extract_fluxes.py) ---
+
+RMSYN_INFO_FILE           = DATA + '/rmsynth/rmsynth_info.json'  # Source list + fit config consumed
+                                    # by the RMSYNTH extraction scripts. Change this to point at a
+                                    # different info file without moving/renaming your dataset copy.
 
 RMSYN_OVERWRITE           = True    # Re-run fitting even when the output JSON already exists.
                                     # Set False to skip to plotting only.
