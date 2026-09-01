@@ -2221,7 +2221,7 @@ def plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k,
 
     # --- Panels 1-3: Stokes Q, U, V (linear y, actual data range) ---
     if not only_intensity:
-        for ax, flux, rms, label, mfs_val, colour in zip(
+        for ax, flux, rms, stokes_label, mfs_val, colour in zip(
                 axes[1:],
                 [Q_flux,   U_flux,   V_flux],
                 [Q_rms,    U_rms,    V_rms],
@@ -2231,7 +2231,7 @@ def plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k,
 
             ax.errorbar(freq_arr, flux, yerr=rms,
                         fmt='o', markersize=4, capsize=3, color=colour,
-                        label=f'Stokes {label}', zorder=3)
+                        label=f'Stokes {stokes_label}', zorder=3)
             ax.axhline(y=mfs_val, color='k', linestyle='--', linewidth=1.5,
                        label=f'MFS: {mfs_val:.2f} mJy', zorder=2)
             ax.axhline(y=0, color='grey', linestyle=':', linewidth=0.8, zorder=1)
@@ -2258,7 +2258,7 @@ def plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k,
                 pad  = 0.15 * span
                 ax.set_ylim(lo - pad, hi + pad)
 
-            ax.set_ylabel(f'{label}  (mJy/beam)', fontsize=10)
+            ax.set_ylabel(f'{stokes_label}  (mJy/beam)', fontsize=10)
             ax.grid(True, which='both', alpha=0.3, linestyle=':')
             ax.legend(fontsize=9, loc='best')
 
