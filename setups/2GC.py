@@ -36,7 +36,7 @@ def get_adaptive_freq_intervals(yaml_path, n_model_channels):
             overrides.append((term, fi, ratio))
         else:
             ok.append((term, fi))
-    return ratio, overrides, zeros, okmeasurements (of unique sources) from a single instrument to date. I will highlight some key results from the catalog, including a 
+    return ratio, overrides, zeros, ok
 
 
 def main():
@@ -578,8 +578,7 @@ def main():
             extra_args += ' output.apply_p_jones_inv=true'
         if ref_ant_arg is not None:
             extra_args += f' solver.reference_antenna={ref_ant_arg}'
-        # Apply adaptive freq_interval overrides: target        prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
-s use stage1 YAML, non-targets use calibrator YAML
+        # Apply adaptive freq_interval overrides: targets use stage1 YAML, non-targets use calibrator YAML
         fi_overrides = freq_int_overrides_stage1 if is_target else freq_int_overrides_cal
         for term, _, new_fi in fi_overrides:
             extra_args += f' {term}.freq_interval={new_fi}'
