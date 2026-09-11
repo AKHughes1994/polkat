@@ -19,8 +19,9 @@ def main():
 
     gen.preamble()
     print(gen.col()+'Extraction of the polarization flux densities')
-    if cfg.CAL_1GC_DIAGNOSTICS:
-        print(gen.col() + 'Including systematic calculations using Primary and Polarization Angle Calibrator')
+    # DISABLED alongside the RMSYNTH_01B_systematics.py step below
+    # if cfg.CAL_1GC_DIAGNOSTICS:
+    #     print(gen.col() + 'Including systematic calculations using Primary and Polarization Angle Calibrator')
     gen.print_spacer()
 
     # ------------------------------------------------------------------------------
@@ -290,19 +291,29 @@ def main():
     rmsyn_step_index = step_i
     step_i += 1
 
+    # DISABLED:
     # Diagnostic step depends on ALL extraction jobs (primary/polarization-angle calibrator only)
-    if cfg.CAL_1GC_DIAGNOSTICS:
-        step = {}
-        step['step'] = step_i
-        step['comment'] = 'Calculate systematic effects by performing image plane analysis on polarization/primary calibrator'
-        step['dependency'] = extraction_job_ids  # List of all extraction job IDs
-        step['glam_config'] = cfg.GLAM_SMALL  # Add glam_config
-        step['id'] = 'POSYS'+code
-        syscall = CONTAINER_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
-        syscall += gen.generate_syscall_casa_short(casascript=cfg.OXKAT+f'/RMSYNTH_01B_systematics.py')
-        step['syscall'] = syscall
-        steps.append(step)
-        step_i += 1
+    #
+    # In this branch the primary and polarization-angle calibrators are already added to
+    # field_list above (per scan, never skipped by CAL_SKIP_CALS), so RMSYNTH_01 fits them
+    # in full alongside the targets. RMSYNTH_01B_systematics.py refits the same calibrators
+    # from scratch with its own duplicate copy of the imfit/imstat stack -- redundant CASA
+    # time for the fitting, and the only thing it adds on top (the scan-averaged
+    # BPCAL_RESIDUAL_*/PACAL_RESIDUAL_VFRAC terms it stamps into the target JSONs) has no
+    # consumer: nothing in 02, 04 or RM-Tools reads those keys.
+    #
+    # if cfg.CAL_1GC_DIAGNOSTICS:
+    #     step = {}
+    #     step['step'] = step_i
+    #     step['comment'] = 'Calculate systematic effects by performing image plane analysis on polarization/primary calibrator'
+    #     step['dependency'] = extraction_job_ids  # List of all extraction job IDs
+    #     step['glam_config'] = cfg.GLAM_SMALL  # Add glam_config
+    #     step['id'] = 'POSYS'+code
+    #     syscall = CONTAINER_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
+    #     syscall += gen.generate_syscall_casa_short(casascript=cfg.OXKAT+f'/RMSYNTH_01B_systematics.py')
+    #     step['syscall'] = syscall
+    #     steps.append(step)
+    #     step_i += 1
 
     # Summarize MFS/RM synthesis outputs for every target; depends on RMSynth (rmsynth1d/rmclean1d outputs)
     step = {}
