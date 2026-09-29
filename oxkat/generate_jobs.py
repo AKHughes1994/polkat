@@ -60,6 +60,49 @@ def _normalize_field_name(name):
     return name.lower()
 
 
+def read_name_matching_file(matching_file):
+    '''
+    Alias map read from the XRB name-matching list.
+
+    The list is two tab- or whitespace-separated columns: an MS field name as
+    it appears in the data, and the catalogue name the position and RMS-region
+    lists are keyed on (e.g. 'J1709-3624' -> 'IGR J17091-3624'). It carries
+    the pairs that no amount of punctuation-stripping would connect.
+
+    Returns {variant_lowercased: canonical_name}, or {} when the file is
+    absent, so a caller can fall back to fuzzy matching alone.
+    '''
+    aliases = {}
+    if not os.path.exists(matching_file):
+        return aliases
+
+    with open(matching_file, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            parts = line.split('\t') if '\t' in line else line.split(None, 1)
+            if len(parts) < 2 or not parts[0].strip() or not parts[1].strip():
+                continue
+            aliases[parts[0].strip().lower()] = parts[1].strip()
+
+    return aliases
+
+
+def resolve_field_name(query_name, matching_file):
+    '''
+    Catalogue name for an MS field name, via read_name_matching_file().
+
+    Returns (resolved_name, was_aliased). A name with no entry in the list is
+    returned unchanged, so callers can carry on to fuzzy matching.
+    '''
+    aliases = read_name_matching_file(matching_file)
+    canonical = aliases.get(query_name.strip().lower())
+    if canonical is None:
+        return query_name, False
+    return canonical, True
+
+
 def match_field_name(query_name, candidate_names, threshold=0.8):
     '''
     Find the best-matching name for `query_name` among `candidate_names` by

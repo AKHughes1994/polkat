@@ -3,6 +3,7 @@
 
 
 import glob
+import json
 import shutil
 import time
 import datetime
@@ -27,15 +28,186 @@ def stamp():
     return now
     
 
-# ------- Parameters
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+# --------------------------- FLAGGING PARAMETERS ---------------------------- #
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
 
+# The values below are the settled defaults from a long investigation into a
+# break in the Stokes I spectrum above ~1.6 GHz in L-band. Simply raising
+# BPCAL_CPARAM_RFLAG_FREQDEVSCALE to 7.0 turned out to be what fixes it.
 
 DEBUG_PRINT_FLAGS = False
-BASED_FLAGGER = False
 
 # Extend flags across correlations (flagdata rflag/tfcrop 'extendflags' param) --
 # applied to calibrators only, not targets.
 EXTEND_AUTO = False
+
+# Target visibility rflag/tfcrop thresholds
+TARGET_VIS_RFLAG_TIMEDEVSCALE = 5.0   # rflag threshold (sigma), time direction
+TARGET_VIS_RFLAG_FREQDEVSCALE = 5.0   # rflag threshold (sigma), freq direction
+TARGET_VIS_TFCROP_TIMECUTOFF  = 4.0   # tfcrop threshold (sigma), time direction
+TARGET_VIS_TFCROP_FREQCUTOFF  = 3.0   # tfcrop threshold (sigma), freq direction
+TARGET_VIS_EXTEND             = False  # whether the mode='extend' pass runs
+TARGET_VIS_EXTENDPOLS         = False  # mode='extend' extendpols
+TARGET_VIS_EXTEND_TIME        = 90.0  # mode='extend' growtime (% already flagged)
+TARGET_VIS_EXTEND_FREQ        = 90.0  # mode='extend' growfreq (% already flagged)
+TARGET_VIS_EXTEND_GROWAROUND  = False  # mode='extend' growaround
+TARGET_VIS_EXTEND_FLAGNEARTIME = False  # mode='extend' flagneartime
+TARGET_VIS_EXTEND_FLAGNEARFREQ = False  # mode='extend' flagnearfreq
+
+# B0/B bandpass table (CPARAM) rflag/tfcrop thresholds
+BPCAL_CPARAM_RFLAG_TIMEDEVSCALE = 5.0   # rflag threshold (sigma), time direction
+BPCAL_CPARAM_RFLAG_FREQDEVSCALE = 7.0 if band == 'L' else 5.0   # rflag threshold (sigma), freq direction
+BPCAL_CPARAM_TFCROP_TIMECUTOFF  = 4.0   # tfcrop threshold (sigma), time direction
+BPCAL_CPARAM_TFCROP_FREQCUTOFF  = 3.0   # tfcrop threshold (sigma), freq direction
+BPCAL_CPARAM_TFCROP_MAXNPIECES  = 7     # tfcrop maxnpieces, amplitude pass
+BPCAL_CPARAM_EXTENDFLAGS        = False # rflag/tfcrop 'extendflags' on CPARAM
+
+# Extra L-band-only CPARAM rflag over a restricted frequency range, run just
+# before the main CPARAM rflag on both the B0 and B tables
+BPCAL_CPARAM_LBAND_RFLAG              = False
+BPCAL_CPARAM_LBAND_RFLAG_SPW          = '*:0.5GHz~1.6GHz'
+BPCAL_CPARAM_LBAND_RFLAG_TIMEDEVSCALE = 5.0   # rflag threshold (sigma), time direction
+BPCAL_CPARAM_LBAND_RFLAG_FREQDEVSCALE = 5.0   # rflag threshold (sigma), freq direction
+
+# Extra CPARAM pass: tfcrop on bandpass phase only (ARG_Sol1,Sol2)
+BPCAL_EXTRA_TFCROP = False
+BPCAL_ARG_TFCROP_MAXNPIECES = 3     # tfcrop maxnpieces, phase-only (ARG) pass
+BPCAL_ARG_TFCROP_TIMECUTOFF = 5.0   # tfcrop threshold (sigma), time direction
+BPCAL_ARG_TFCROP_FREQCUTOFF = 5.0   # tfcrop threshold (sigma), freq direction
+
+# CPARAM extend pass, propagating flags across polarisation. Independent of the
+# phase-only tfcrop above; either pass can run without the other. growtime and
+# growfreq at 100 confine the extension to the polarisation axis.
+BPCAL_CPARAM_EXTEND      = False  # whether the mode='extend' pass runs
+BPCAL_CPARAM_EXTENDPOLS  = True   # mode='extend' extendpols
+BPCAL_CPARAM_EXTEND_TIME = 100.0  # mode='extend' growtime (% already flagged)
+BPCAL_CPARAM_EXTEND_FREQ = 100.0  # mode='extend' growfreq (% already flagged)
+
+# Calibrator (bpcal/pacal/secondary) visibility rflag/tfcrop thresholds
+CAL_VIS_RFLAG_TIMEDEVSCALE = 5.0   # rflag threshold (sigma), time direction
+CAL_VIS_RFLAG_FREQDEVSCALE = 5.0   # rflag threshold (sigma), freq direction
+CAL_VIS_TFCROP_TIMECUTOFF  = 4.0   # tfcrop threshold (sigma), time direction
+CAL_VIS_TFCROP_FREQCUTOFF  = 3.0   # tfcrop threshold (sigma), freq direction
+CAL_VIS_TFCROP_MAXNPIECES  = 7     # tfcrop maxnpieces
+CAL_VIS_EXTEND             = False  # whether the mode='extend' pass runs
+CAL_VIS_EXTENDPOLS         = False  # mode='extend' extendpols
+CAL_VIS_EXTEND_TIME        = 90.0  # mode='extend' growtime (% already flagged)
+CAL_VIS_EXTEND_FREQ        = 90.0  # mode='extend' growfreq (% already flagged)
+CAL_VIS_EXTEND_GROWAROUND  = False # mode='extend' growaround
+CAL_VIS_EXTEND_FLAGNEARTIME = False # mode='extend' flagneartime
+CAL_VIS_EXTEND_FLAGNEARFREQ = False # mode='extend' flagnearfreq
+
+# Andrew's custom hacky flagger (tools/basedflagger.py) -- extra pass run on the
+# primary (after its first-stage flag), the polang cal, each secondary, and
+# each target. Off by default.
+BASED_FLAGGER = False
+BASED_FLAGGER_CORRELATION_PRODUCTS = 'XX,YY,XY,YX'
+BASED_FLAGGER_ANTENNA_FLAG_CAP = 2
+BASED_FLAGGER_OUTLIER_MODE = 'mixed'
+
+# Test phase as well as amplitude. basedflagger runs the phase pass on the
+# parallel hands only, whatever correlations are selected above.
+BASED_FLAGGER_PHASE = True
+
+# The --phase switch is appended to every basedflagger call from one place.
+BASED_FLAGGER_PHASE_ARG = ' --phase' if BASED_FLAGGER_PHASE else ''
+
+# DEBUGGING: shadems amp/phase vs baseline of the field basedflagger just ran
+# on, once its flags are applied -- i.e. the CORRECTED_DATA it tested, before
+# any later solve or applycal overwrites it.
+DEBUG_BASED_SHADEMS = True
+
+# Which fields to run BASED flagger on: comma-separated combination of
+# 'primary', 'pacal', 'secondary', 'target'
+BASED_FLAGGER_FIELDS = 'primary,pacal'
+BASED_FLAGGER_FIELDS_LIST = [f.strip().lower() for f in BASED_FLAGGER_FIELDS.split(',') if f.strip()]
+
+# Outlier mode for targets specifically, overriding BASED_FLAGGER_OUTLIER_MODE:
+# targets are typically fainter fields, where a low outlier is more likely to
+# be noise than a defect, so only high outliers are flagged by default
+BASED_FLAGGER_TARGET_OUTLIER_MODE = 'high'
+
+def based_flag_fields_arg(fields):
+    """
+    basedflagger --flag-fields argument: the fields a calibrator's flags are
+    passed on to. Each flagged calibrator scan also flags those fields' scans
+    between it and that calibrator's previous and next scans.
+    """
+    return f" --flag-fields '{','.join(fields)}'"
+
+# Primary and polang cal flags go to every field; a secondary's go only to the
+# targets paired with it. Targets pass their flags on to nothing.
+BASED_FLAGGER_ALL_FIELDS = list(dict.fromkeys(
+    [bpcal_name] + ([pacal_name] if pacal_name != '' else []) + pcal_names + targets))
+BASED_FLAGGER_ALL_FIELDS_ARG = based_flag_fields_arg(BASED_FLAGGER_ALL_FIELDS)
+
+def apply_based_flags(myms, inpfile, label, returncode=0):
+    """
+    Apply a basedflagger flag list, reporting the before/after flag fraction.
+
+    A calibrator's flag commands select its own scans plus the scans of the
+    other fields its flags are passed on to, so they remove more than the field they were
+    derived from. basedflagger can only estimate its own field's share; this
+    is where the amount actually removed is measured.
+
+    basedflagger is an optional extra pass, so it never stops the calibration:
+    a non-zero `returncode` (the flagger's exit status), a missing list, or a
+    list with no commands in it all leave the flags as they are and say why.
+    flagdata(mode='list') raises on an empty list, and basedflagger creates its
+    list empty before it starts, so an empty list is the normal result for a
+    field with nothing to flag as well as what a failed run leaves behind.
+    """
+    if returncode != 0:
+        print(f'WARNING: BASED flagger [{label}]: exited with status {returncode} '
+              f'-- no flags applied from {inpfile}')
+        return
+
+    if not os.path.isfile(inpfile):
+        print(f'WARNING: BASED flagger [{label}]: {inpfile} not found '
+              f'-- no flags applied')
+        return
+
+    with open(inpfile) as f:
+        n_commands = sum(1 for line in f
+                         if line.strip() and not line.lstrip().startswith('#'))
+    if n_commands == 0:
+        print(f'BASED flagger [{label}]: no baselines flagged ({inpfile} is empty)')
+        return
+
+    before = flagdata(vis=myms, mode='summary')
+    flagdata(vis=myms, mode='list', inpfile=inpfile, flagbackup=False)
+    after = flagdata(vis=myms, mode='summary')
+
+    try:
+        f0 = before['flagged'] / before['total']
+        f1 = after['flagged'] / after['total']
+        print(f'BASED flagger [{label}]: flagged {f0:.4%} -> {f1:.4%} '
+              f'(+{f1 - f0:.4%}, {int(after["flagged"] - before["flagged"]):,} '
+              f'visibilities) from {inpfile}')
+    except (KeyError, TypeError, ZeroDivisionError):
+        print(f'BASED flagger [{label}]: applied {inpfile} '
+              f'(flag summary unavailable)')
+
+def plot_post_based(myms, field, label):
+    """
+    Plot parallel-hand amp and phase vs baseline for `field` straight after
+    its basedflagger flags are applied.
+    """
+    if not DEBUG_BASED_SHADEMS:
+        return
+    shadems_cmd = (f"shadems --dir {VISPLOTS} "
+                   f"--xaxis BASELINE,BASELINE,BASELINE,BASELINE "
+                   f"--yaxis CORRECTED_DATA:amp:XX,CORRECTED_DATA:amp:YY,"
+                   f"CORRECTED_DATA:phase:XX,CORRECTED_DATA:phase:YY "
+                   f"--colour-by ANTENNA1 --cnum 64 "
+                   f"--png 'based_post{label}_{{ms}}_{{field}}_{{label}}.png' "
+                   f"--field {field} {myms}")
+    print(f'DEBUG: plotting amp/phase vs baseline after BASED flagger [{field}]: {shadems_cmd}')
+    subprocess.run([shadems_cmd], shell=True)
+
 
 gapfill = CAL_1GC_FILLGAPS
 myuvrange = CAL_1GC_UVRANGE 
@@ -243,8 +415,36 @@ bandpass(vis=myms,
     interp=['nearest', 'linear'],
     gaintable=[ktab0, gptab0])
 
-flagdata(vis=bptab0, mode='tfcrop', datacolumn='CPARAM', extendflags=EXTEND_AUTO, flagbackup=False)
-flagdata(vis=bptab0, mode='rflag', datacolumn='CPARAM', extendflags=EXTEND_AUTO, flagbackup=False)
+# tfcrop on bandpass amplitude (CPARAM), all correlations
+flagdata(vis=bptab0, mode='tfcrop', datacolumn='CPARAM',
+    maxnpieces=BPCAL_CPARAM_TFCROP_MAXNPIECES,
+    timecutoff=BPCAL_CPARAM_TFCROP_TIMECUTOFF, freqcutoff=BPCAL_CPARAM_TFCROP_FREQCUTOFF,
+    extendflags=BPCAL_CPARAM_EXTENDFLAGS, flagbackup=False)
+
+# L-band only: rflag on bandpass amplitude (CPARAM) over a restricted frequency range
+if BPCAL_CPARAM_LBAND_RFLAG and band == 'L':
+    flagdata(vis=bptab0, mode='rflag', datacolumn='CPARAM', spw=BPCAL_CPARAM_LBAND_RFLAG_SPW,
+        timedevscale=BPCAL_CPARAM_LBAND_RFLAG_TIMEDEVSCALE, freqdevscale=BPCAL_CPARAM_LBAND_RFLAG_FREQDEVSCALE,
+        extendflags=BPCAL_CPARAM_EXTENDFLAGS, flagbackup=False)
+
+# rflag on bandpass amplitude (CPARAM), all correlations
+flagdata(vis=bptab0, mode='rflag', datacolumn='CPARAM',
+    timedevscale=BPCAL_CPARAM_RFLAG_TIMEDEVSCALE, freqdevscale=BPCAL_CPARAM_RFLAG_FREQDEVSCALE,
+    extendflags=BPCAL_CPARAM_EXTENDFLAGS, flagbackup=False)
+
+# tfcrop on bandpass phase only (ARG_Sol1,Sol2)
+if BPCAL_EXTRA_TFCROP:
+    flagdata(vis=bptab0, mode='tfcrop', datacolumn='CPARAM', correlation='ARG_Sol1,Sol2',
+        maxnpieces=BPCAL_ARG_TFCROP_MAXNPIECES,
+        timecutoff=BPCAL_ARG_TFCROP_TIMECUTOFF, freqcutoff=BPCAL_ARG_TFCROP_FREQCUTOFF,
+        extendflags=BPCAL_CPARAM_EXTENDFLAGS, flagbackup=False)
+
+# extend on the bandpass table (CPARAM)
+if BPCAL_CPARAM_EXTEND:
+    flagdata(vis=bptab0, mode='extend', extendpols=BPCAL_CPARAM_EXTENDPOLS,
+        growtime=BPCAL_CPARAM_EXTEND_TIME, growfreq=BPCAL_CPARAM_EXTEND_FREQ,
+        flagbackup=False)
+
 # DEBUGGING: summarize flags
 if DEBUG_PRINT_FLAGS:
     print('DEBUG: PRINTING FLAGS')
@@ -305,19 +505,38 @@ if DEBUG_PRINT_FLAGS:
 
 # ------- Flag primary on CORRECTED_DATA - MODEL_DATA
 
+# rflag on CORRECTED_DATA - MODEL_DATA
 flagdata(vis=myms,
     mode='rflag',
     datacolumn='residual',
     field=bpcal_name,
+    timedevscale=CAL_VIS_RFLAG_TIMEDEVSCALE,
+    freqdevscale=CAL_VIS_RFLAG_FREQDEVSCALE,
     extendflags=EXTEND_AUTO,
     flagbackup=False)
 
+# tfcrop on CORRECTED_DATA - MODEL_DATA
 flagdata(vis=myms,
     mode='tfcrop',
     datacolumn='residual',
     field=bpcal_name,
+    maxnpieces=CAL_VIS_TFCROP_MAXNPIECES,
+    timecutoff=CAL_VIS_TFCROP_TIMECUTOFF,
+    freqcutoff=CAL_VIS_TFCROP_FREQCUTOFF,
     extendflags=EXTEND_AUTO,
     flagbackup=False)
+
+# extend on bpcal
+if CAL_VIS_EXTEND:
+    flagdata(vis=myms,
+        mode='extend',
+        growtime=CAL_VIS_EXTEND_TIME,
+        growfreq=CAL_VIS_EXTEND_FREQ,
+        growaround=CAL_VIS_EXTEND_GROWAROUND,
+        flagneartime=CAL_VIS_EXTEND_FLAGNEARTIME,
+        flagnearfreq=CAL_VIS_EXTEND_FLAGNEARFREQ,
+        extendpols=CAL_VIS_EXTENDPOLS)
+
 # DEBUGGING: summarize flags
 if DEBUG_PRINT_FLAGS:
     print('DEBUG: PRINTING FLAGS')
@@ -335,15 +554,17 @@ flagmanager(vis=myms,
 # ------- BASED flagger (primary)
 
 
-if BASED_FLAGGER:
-    based_cmd = (f"python_dask {TOOLS}/visflagger.py "
+if BASED_FLAGGER and 'primary' in BASED_FLAGGER_FIELDS_LIST:
+    based_cmd = (f"python_dask {TOOLS}/basedflagger.py "
                  f"{myms} {bpcal_name} "
-                 f"--correlation-products XX,YY,XY,YX "
-                 f"--antenna-flag-cap 2 --outlier-mode mixed "
-                 f"--output-suffix _bpcal")
+                 f"--correlation-products {BASED_FLAGGER_CORRELATION_PRODUCTS} "
+                 f"--antenna-flag-cap {BASED_FLAGGER_ANTENNA_FLAG_CAP} --outlier-mode {BASED_FLAGGER_OUTLIER_MODE} "
+                 f"--save-dir {VISPLOTS}/ --output-suffix _bpcal"
+                 + BASED_FLAGGER_PHASE_ARG + BASED_FLAGGER_ALL_FIELDS_ARG)
     print(f'Running BASED flagger on primary: {based_cmd}')
-    subprocess.run([based_cmd], shell=True)
-    flagdata(vis=myms, mode='list', inpfile='baseline_flags_bpcal.txt', flagbackup=False)
+    based_run = subprocess.run([based_cmd], shell=True)
+    apply_based_flags(myms, 'baseline_flags_bpcal.txt', bpcal_name, based_run.returncode)
+    plot_post_based(myms, bpcal_name, '_bpcal')
 
 
 # ---------------------------------------------------------------------------------------- #
@@ -400,8 +621,36 @@ bandpass(vis=myms,
     gainfield=[bpcal_name, bpcal_name],
     interp=['nearest', 'linear'])
 
-flagdata(vis=bptab, mode='tfcrop', datacolumn='CPARAM', extendflags=EXTEND_AUTO, flagbackup=False)
-flagdata(vis=bptab, mode='rflag', datacolumn='CPARAM', extendflags=EXTEND_AUTO, flagbackup=False)
+# tfcrop on bandpass amplitude (CPARAM), all correlations
+flagdata(vis=bptab, mode='tfcrop', datacolumn='CPARAM',
+    maxnpieces=BPCAL_CPARAM_TFCROP_MAXNPIECES,
+    timecutoff=BPCAL_CPARAM_TFCROP_TIMECUTOFF, freqcutoff=BPCAL_CPARAM_TFCROP_FREQCUTOFF,
+    extendflags=BPCAL_CPARAM_EXTENDFLAGS, flagbackup=False)
+
+# L-band only: rflag on bandpass amplitude (CPARAM) over a restricted frequency range
+if BPCAL_CPARAM_LBAND_RFLAG and band == 'L':
+    flagdata(vis=bptab, mode='rflag', datacolumn='CPARAM', spw=BPCAL_CPARAM_LBAND_RFLAG_SPW,
+        timedevscale=BPCAL_CPARAM_LBAND_RFLAG_TIMEDEVSCALE, freqdevscale=BPCAL_CPARAM_LBAND_RFLAG_FREQDEVSCALE,
+        extendflags=BPCAL_CPARAM_EXTENDFLAGS, flagbackup=False)
+
+# rflag on bandpass amplitude (CPARAM), all correlations
+flagdata(vis=bptab, mode='rflag', datacolumn='CPARAM',
+    timedevscale=BPCAL_CPARAM_RFLAG_TIMEDEVSCALE, freqdevscale=BPCAL_CPARAM_RFLAG_FREQDEVSCALE,
+    extendflags=BPCAL_CPARAM_EXTENDFLAGS, flagbackup=False)
+
+# tfcrop on bandpass phase only (ARG_Sol1,Sol2)
+if BPCAL_EXTRA_TFCROP:
+    flagdata(vis=bptab, mode='tfcrop', datacolumn='CPARAM', correlation='ARG_Sol1,Sol2',
+        maxnpieces=BPCAL_ARG_TFCROP_MAXNPIECES,
+        timecutoff=BPCAL_ARG_TFCROP_TIMECUTOFF, freqcutoff=BPCAL_ARG_TFCROP_FREQCUTOFF,
+        extendflags=BPCAL_CPARAM_EXTENDFLAGS, flagbackup=False)
+
+# extend on the bandpass table (CPARAM)
+if BPCAL_CPARAM_EXTEND:
+    flagdata(vis=bptab, mode='extend', extendpols=BPCAL_CPARAM_EXTENDPOLS,
+        growtime=BPCAL_CPARAM_EXTEND_TIME, growfreq=BPCAL_CPARAM_EXTEND_FREQ,
+        flagbackup=False)
+
 # DEBUGGING: summarize flags
 if DEBUG_PRINT_FLAGS:
     print('DEBUG: PRINTING FLAGS')
@@ -577,19 +826,38 @@ if pacal_name != '':
         print('DEBUG: PRINTING FLAGS')
         flagdata(myms, mode='summary')
 
+    # rflag on pacal
     flagdata(vis=myms,
         mode='rflag',
         datacolumn='corrected',
         field=pacal_name,
+        timedevscale=CAL_VIS_RFLAG_TIMEDEVSCALE,
+        freqdevscale=CAL_VIS_RFLAG_FREQDEVSCALE,
         extendflags=EXTEND_AUTO,
         flagbackup=False)
 
+    # tfcrop on pacal
     flagdata(vis=myms,
         mode='tfcrop',
         datacolumn='corrected',
         field=pacal_name,
+        maxnpieces=CAL_VIS_TFCROP_MAXNPIECES,
+        timecutoff=CAL_VIS_TFCROP_TIMECUTOFF,
+        freqcutoff=CAL_VIS_TFCROP_FREQCUTOFF,
         extendflags=EXTEND_AUTO,
         flagbackup=False)
+
+    # extend on pacal
+    if CAL_VIS_EXTEND:
+        flagdata(vis=myms,
+            mode='extend',
+            growtime=CAL_VIS_EXTEND_TIME,
+            growfreq=CAL_VIS_EXTEND_FREQ,
+            growaround=CAL_VIS_EXTEND_GROWAROUND,
+            flagneartime=CAL_VIS_EXTEND_FLAGNEARTIME,
+            flagnearfreq=CAL_VIS_EXTEND_FLAGNEARFREQ,
+            extendpols=CAL_VIS_EXTENDPOLS)
+
     # DEBUGGING: summarize flags
     if DEBUG_PRINT_FLAGS:
         print('DEBUG: PRINTING FLAGS')
@@ -597,16 +865,17 @@ if pacal_name != '':
 
     # ------- BASED flagger (pacal)
 
-
-    if BASED_FLAGGER:
-        based_cmd = (f"python_dask {TOOLS}/visflagger.py "
+    if BASED_FLAGGER and 'pacal' in BASED_FLAGGER_FIELDS_LIST:
+        based_cmd = (f"python_dask {TOOLS}/basedflagger.py "
                      f"{myms} {pacal_name} "
-                     f"--correlation-products XX,YY,XY,YX "
-                     f"--antenna-flag-cap 2 --outlier-mode mixed "
-                     f"--output-suffix _pacal")
+                     f"--correlation-products {BASED_FLAGGER_CORRELATION_PRODUCTS} "
+                     f"--antenna-flag-cap {BASED_FLAGGER_ANTENNA_FLAG_CAP} --outlier-mode {BASED_FLAGGER_OUTLIER_MODE} "
+                     f"--save-dir {VISPLOTS}/ --output-suffix _pacal"
+                     + BASED_FLAGGER_PHASE_ARG + BASED_FLAGGER_ALL_FIELDS_ARG)
         print(f'Running BASED flagger on pacal: {based_cmd}')
-        subprocess.run([based_cmd], shell=True)
-        flagdata(vis=myms, mode='list', inpfile='baseline_flags_pacal.txt', flagbackup=False)
+        based_run = subprocess.run([based_cmd], shell=True)
+        apply_based_flags(myms, 'baseline_flags_pacal.txt', pacal_name, based_run.returncode)
+        plot_post_based(myms, pacal_name, '_pacal')
 
 
 # ----- Loop over secondaries
@@ -634,23 +903,57 @@ for i in range(0,len(pcal_names)):
         print('DEBUG: PRINTING FLAGS')
         flagdata(myms, mode='summary')
 
+    # rflag on secondary
     flagdata(vis=myms,
         mode='rflag',
         datacolumn='corrected',
         field=pcal,
+        timedevscale=CAL_VIS_RFLAG_TIMEDEVSCALE,
+        freqdevscale=CAL_VIS_RFLAG_FREQDEVSCALE,
         extendflags=EXTEND_AUTO,
         flagbackup=False)
 
+    # tfcrop on secondary
     flagdata(vis=myms,
         mode='tfcrop',
         datacolumn='corrected',
         field=pcal,
+        maxnpieces=CAL_VIS_TFCROP_MAXNPIECES,
+        timecutoff=CAL_VIS_TFCROP_TIMECUTOFF,
+        freqcutoff=CAL_VIS_TFCROP_FREQCUTOFF,
         extendflags=EXTEND_AUTO,
         flagbackup=False)
+
+    # extend on secondary
+    if CAL_VIS_EXTEND:
+        flagdata(vis=myms,
+            mode='extend',
+            growtime=CAL_VIS_EXTEND_TIME,
+            growfreq=CAL_VIS_EXTEND_FREQ,
+            growaround=CAL_VIS_EXTEND_GROWAROUND,
+            flagneartime=CAL_VIS_EXTEND_FLAGNEARTIME,
+            flagnearfreq=CAL_VIS_EXTEND_FLAGNEARFREQ,
+            extendpols=CAL_VIS_EXTENDPOLS)
+
     # DEBUGGING: summarize flags
     if DEBUG_PRINT_FLAGS:
         print('DEBUG: PRINTING FLAGS')
         flagdata(myms, mode='summary')
+
+    # ------- BASED flagger (secondary)
+
+    if BASED_FLAGGER and 'secondary' in BASED_FLAGGER_FIELDS_LIST:
+        based_cmd = (f"python_dask {TOOLS}/basedflagger.py "
+                     f"{myms} {pcal} "
+                     f"--correlation-products {BASED_FLAGGER_CORRELATION_PRODUCTS} "
+                     f"--antenna-flag-cap {BASED_FLAGGER_ANTENNA_FLAG_CAP} --outlier-mode {BASED_FLAGGER_OUTLIER_MODE} "
+                     f"--save-dir {VISPLOTS}/ --output-suffix _{pcal}"
+                     + BASED_FLAGGER_PHASE_ARG
+                     + based_flag_fields_arg([t for t, c in zip(targets, target_cal_map) if c == pcal]))
+        print(f'Running BASED flagger on secondary {pcal}: {based_cmd}')
+        based_run = subprocess.run([based_cmd], shell=True)
+        apply_based_flags(myms, f'baseline_flags_{pcal}.txt', pcal, based_run.returncode)
+        plot_post_based(myms, pcal, f'_{pcal}')
 
 # -------------------------------------------------------------------------------------------------------- #
 # -------------------------------------------------------------------------------------------------------- #
@@ -1230,16 +1533,39 @@ if pacal_name == '':
         flagdata(vis=myms,
             mode='rflag',
             datacolumn='corrected',
-            field=target, flagbackup=False)
+            field=target,
+            timedevscale=TARGET_VIS_RFLAG_TIMEDEVSCALE,
+            freqdevscale=TARGET_VIS_RFLAG_FREQDEVSCALE,
+            extendflags=EXTEND_AUTO,
+            flagbackup=False)
 
         flagdata(vis=myms,
             mode='tfcrop',
             datacolumn='corrected',
-            field=target, flagbackup=False)
-        # DEBUGGING: summarize flags
-        if DEBUG_PRINT_FLAGS:
-            print('DEBUG: PRINTING FLAGS')
-            flagdata(myms, mode='summary')
+            field=target,
+            timecutoff=TARGET_VIS_TFCROP_TIMECUTOFF,
+            freqcutoff=TARGET_VIS_TFCROP_FREQCUTOFF,
+            extendflags=EXTEND_AUTO,
+            flagbackup=False)
+
+        if TARGET_VIS_EXTEND:
+            flagdata(vis=myms, mode='extend', growtime=TARGET_VIS_EXTEND_TIME, growfreq=TARGET_VIS_EXTEND_FREQ,
+                growaround=TARGET_VIS_EXTEND_GROWAROUND, flagneartime=TARGET_VIS_EXTEND_FLAGNEARTIME,
+                flagnearfreq=TARGET_VIS_EXTEND_FLAGNEARFREQ, extendpols=TARGET_VIS_EXTENDPOLS,
+                field=target, flagbackup=False)
+
+        # ------- BASED flagger (target)
+
+        if BASED_FLAGGER and 'target' in BASED_FLAGGER_FIELDS_LIST:
+            based_cmd = (f"python_dask {TOOLS}/basedflagger.py "
+                         f"{myms} {target} "
+                         f"--correlation-products {BASED_FLAGGER_CORRELATION_PRODUCTS} "
+                         f"--antenna-flag-cap {BASED_FLAGGER_ANTENNA_FLAG_CAP} --outlier-mode {BASED_FLAGGER_TARGET_OUTLIER_MODE} "
+                         f"--save-dir {VISPLOTS}/ --output-suffix _{target}" + BASED_FLAGGER_PHASE_ARG)
+            print(f'Running BASED flagger on target {target}: {based_cmd}')
+            based_run = subprocess.run([based_cmd], shell=True)
+            apply_based_flags(myms, f'baseline_flags_{target}.txt', target, based_run.returncode)
+            plot_post_based(myms, target, f'_{target}')
 
     # ---- Save flags
 
@@ -1320,16 +1646,39 @@ for i in range(0,len(targets)):
     flagdata(vis=myms,
         mode='rflag',
         datacolumn='corrected',
-        field=target, flagbackup=False)
+        field=target,
+        timedevscale=TARGET_VIS_RFLAG_TIMEDEVSCALE,
+        freqdevscale=TARGET_VIS_RFLAG_FREQDEVSCALE,
+        extendflags=EXTEND_AUTO,
+        flagbackup=False)
 
     flagdata(vis=myms,
         mode='tfcrop',
         datacolumn='corrected',
-        field=target, flagbackup=False)
-    # DEBUGGING: summarize flags
-    if DEBUG_PRINT_FLAGS:
-        print('DEBUG: PRINTING FLAGS')
-        flagdata(myms, mode='summary')
+        field=target,
+        timecutoff=TARGET_VIS_TFCROP_TIMECUTOFF,
+        freqcutoff=TARGET_VIS_TFCROP_FREQCUTOFF,
+        extendflags=EXTEND_AUTO,
+        flagbackup=False)
+
+    if TARGET_VIS_EXTEND:
+        flagdata(vis=myms, mode='extend', growtime=TARGET_VIS_EXTEND_TIME, growfreq=TARGET_VIS_EXTEND_FREQ,
+            growaround=TARGET_VIS_EXTEND_GROWAROUND, flagneartime=TARGET_VIS_EXTEND_FLAGNEARTIME,
+            flagnearfreq=TARGET_VIS_EXTEND_FLAGNEARFREQ, extendpols=TARGET_VIS_EXTENDPOLS,
+            field=target, flagbackup=False)
+
+    # ------- BASED flagger (target)
+
+    if BASED_FLAGGER and 'target' in BASED_FLAGGER_FIELDS_LIST:
+        based_cmd = (f"python_dask {TOOLS}/basedflagger.py "
+                     f"{myms} {target} "
+                     f"--correlation-products {BASED_FLAGGER_CORRELATION_PRODUCTS} "
+                     f"--antenna-flag-cap {BASED_FLAGGER_ANTENNA_FLAG_CAP} --outlier-mode {BASED_FLAGGER_TARGET_OUTLIER_MODE} "
+                     f"--save-dir {VISPLOTS}/ --output-suffix _{target}" + BASED_FLAGGER_PHASE_ARG)
+        print(f'Running BASED flagger on target {target}: {based_cmd}')
+        based_run = subprocess.run([based_cmd], shell=True)
+        apply_based_flags(myms, f'baseline_flags_{target}.txt', target, based_run.returncode)
+        plot_post_based(myms, target, f'_{target}')
 
 # ---- Apply aggressive flags if desired
 if CAL_1GC_AGGRESSIVE_FLAGS and CAL_1GC_BL_FREQS != []:
@@ -1354,3 +1703,40 @@ flagmanager(vis=myms,
 flagmanager(vis=myms,
     mode='save',
     versionname='1GC_flags')
+
+
+# ---- Flag summary
+
+# The flag state once 1GC is done, written per run so the fraction removed can
+# be followed from one reduction to the next. The per-field breakdown is
+# printed as well, since that is where a flagging problem shows up first.
+
+flag_summary = flagdata(vis=myms, mode='summary')
+
+if not os.path.exists(RESULTS):
+    os.makedirs(RESULTS)
+
+flag_summary_path = RESULTS+'/flagsummary_1GC_'+myms+'_'+stamp()+'.json'
+
+def jsonable(obj):
+    """Fall-back encoder for the numpy scalars CASA puts in the summary."""
+    return obj.tolist() if hasattr(obj,'tolist') else str(obj)
+
+with open(flag_summary_path,'w') as j:
+    json.dump(flag_summary, j, indent=4, sort_keys=True, default=jsonable)
+
+print(f'Flag summary written to: {flag_summary_path}')
+
+try:
+    flagged_pc = 100.0*flag_summary['flagged']/flag_summary['total']
+    print(f'Flagged after 1GC: {flagged_pc:.4f}% of '
+          f'{int(flag_summary["total"]):,} visibilities')
+    for field_name, counts in sorted(flag_summary.get('field',{}).items()):
+        if counts['total']:
+            print(f'  {field_name}: '
+                  f'{100.0*counts["flagged"]/counts["total"]:.4f}% '
+                  f'({int(counts["flagged"]):,}/{int(counts["total"]):,})')
+        else:
+            print(f'  {field_name}: no visibilities')
+except (KeyError, TypeError, ZeroDivisionError):
+    print('Flag summary: breakdown unavailable')

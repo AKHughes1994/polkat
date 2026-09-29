@@ -9,6 +9,7 @@ import datetime
 import subprocess
 import sys
 import os
+import numpy as np
 
 
 exec(open('oxkat/config.py').read())
@@ -18,6 +19,45 @@ exec(open('oxkat/casa_read_project_info.py').read())
 if PRE_FIELDS != '':
     target_names = user_targets
     pcal_names = user_pcals
+
+def parang_range_deg(opms):
+    """
+    Parallactic angle range (min, max, delta, degrees) across every row of
+    `opms`, computed directly from the MS: the field's phase centre and the
+    array's own reference position (its first antenna, ITRF), via CASA's
+    measures tool -- the same posangle-between-field-and-zenith method
+    tools/correct_parang.py uses per-antenna, and the same convention
+    waterhole/manual_XF_solver_continuity.compute_parallactic_angle uses for
+    a single mid-epoch value, extended here to every dump time and unwrapped
+    across the +-180 deg branch so a swing through it doesn't corrupt the
+    range.
+    """
+    tb.open(opms + '/FIELD')
+    ra_rad = tb.getcol('PHASE_DIR')[0][0][0]
+    dec_rad = tb.getcol('PHASE_DIR')[1][0][0]
+    tb.close()
+
+    tb.open(opms + '/ANTENNA')
+    ant0_pos = tb.getcol('POSITION')[:, 0]
+    tb.close()
+
+    tb.open(opms)
+    times = np.unique(tb.getcol('TIME'))
+    tb.close()
+
+    me.doframe(me.position('itrf', *[qa.quantity(x, 'm') for x in ant0_pos]))
+    field_dir = me.direction('J2000', qa.quantity(ra_rad, 'rad'), qa.quantity(dec_rad, 'rad'))
+    zenith = me.direction('AZELGEO', '0deg', '90deg')
+
+    chi_deg = np.empty(len(times))
+    for i, t in enumerate(times):
+        me.doframe(me.epoch('utc', qa.quantity(t, 's')))
+        chi_deg[i] = np.degrees(me.posangle(field_dir, zenith).get_value('rad'))
+
+    chi_unwrapped = np.degrees(np.unwrap(np.radians(chi_deg)))
+    pa_min = float(np.min(chi_unwrapped))
+    pa_max = float(np.max(chi_unwrapped))
+    return pa_min, pa_max, pa_max - pa_min
 
 # Initialize list to store timing information
 time_info = []
@@ -48,7 +88,8 @@ for target in target_names:
             tb.close()
             t_start_mjd = times.min() / 86400.0
             t_end_mjd = times.max() / 86400.0
-            time_info.append((opms, target, 'all', t_start_mjd, t_end_mjd))
+            pa_min, pa_max, pa_delta = parang_range_deg(opms)
+            time_info.append((opms, target, 'all', t_start_mjd, t_end_mjd, pa_min, pa_max, pa_delta))
         else:
             mstransform(vis=myms,
                 outputvis=opms,
@@ -68,7 +109,8 @@ for target in target_names:
             t_start_mjd = times.min() / 86400.0
             t_end_mjd = times.max() / 86400.0
             
-            time_info.append((opms, target, 'all', t_start_mjd, t_end_mjd))
+            pa_min, pa_max, pa_delta = parang_range_deg(opms)
+            time_info.append((opms, target, 'all', t_start_mjd, t_end_mjd, pa_min, pa_max, pa_delta))
 
     else:
         print('Target/MS mismatch in project info for '+target+', please check.')
@@ -89,7 +131,8 @@ for opms in primary_ms:
         tb.close()
         t_start_mjd = times.min() / 86400.0
         t_end_mjd = times.max() / 86400.0
-        time_info.append((opms, bpcal_name, scan_str, t_start_mjd, t_end_mjd))
+        pa_min, pa_max, pa_delta = parang_range_deg(opms)
+        time_info.append((opms, bpcal_name, scan_str, t_start_mjd, t_end_mjd, pa_min, pa_max, pa_delta))
     else:
         mstransform(vis=myms,
             outputvis=opms,
@@ -110,7 +153,8 @@ for opms in primary_ms:
         t_start_mjd = times.min() / 86400.0
         t_end_mjd = times.max() / 86400.0
         
-        time_info.append((opms, bpcal_name, scan_str, t_start_mjd, t_end_mjd))
+        pa_min, pa_max, pa_delta = parang_range_deg(opms)
+        time_info.append((opms, bpcal_name, scan_str, t_start_mjd, t_end_mjd, pa_min, pa_max, pa_delta))
 
 
 # Split secondary calibrator fields (per scan)
@@ -134,7 +178,8 @@ for i, pcal in enumerate(pcal_names):
             tb.close()
             t_start_mjd = times.min() / 86400.0
             t_end_mjd = times.max() / 86400.0
-            time_info.append((opms, pcal, scan_str, t_start_mjd, t_end_mjd))
+            pa_min, pa_max, pa_delta = parang_range_deg(opms)
+            time_info.append((opms, pcal, scan_str, t_start_mjd, t_end_mjd, pa_min, pa_max, pa_delta))
         else:
             mstransform(vis=myms,
                 outputvis=opms,
@@ -155,7 +200,8 @@ for i, pcal in enumerate(pcal_names):
             t_start_mjd = times.min() / 86400.0
             t_end_mjd = times.max() / 86400.0
             
-            time_info.append((opms, pcal, scan_str, t_start_mjd, t_end_mjd))
+            pa_min, pa_max, pa_delta = parang_range_deg(opms)
+            time_info.append((opms, pcal, scan_str, t_start_mjd, t_end_mjd, pa_min, pa_max, pa_delta))
 
 
 # Split polarization angle calibrator fields (per scan)
@@ -174,7 +220,8 @@ if pacal_name != '':
             tb.close()
             t_start_mjd = times.min() / 86400.0
             t_end_mjd = times.max() / 86400.0
-            time_info.append((opms, pacal_name, scan_str, t_start_mjd, t_end_mjd))
+            pa_min, pa_max, pa_delta = parang_range_deg(opms)
+            time_info.append((opms, pacal_name, scan_str, t_start_mjd, t_end_mjd, pa_min, pa_max, pa_delta))
         else:
             mstransform(vis=myms,
                 outputvis=opms,
@@ -195,16 +242,18 @@ if pacal_name != '':
             t_start_mjd = times.min() / 86400.0
             t_end_mjd = times.max() / 86400.0
             
-            time_info.append((opms, pacal_name, scan_str, t_start_mjd, t_end_mjd))
+            pa_min, pa_max, pa_delta = parang_range_deg(opms)
+            time_info.append((opms, pacal_name, scan_str, t_start_mjd, t_end_mjd, pa_min, pa_max, pa_delta))
 
 
 # Write timing information to file
 output_file = os.path.join(RESULTS, myms.rstrip('/') + '_time_info.txt')
 with open(output_file, 'w') as f:
     f.write('# MS timing information\n')
-    f.write('# MS_NAME                                          FIELD_NAME            SCAN      START_MJD            END_MJD\n')
+    f.write('# MS_NAME                                          FIELD_NAME            SCAN      START_MJD            END_MJD              PA_MIN_DEG    PA_MAX_DEG    PA_DELTA_DEG\n')
     for entry in time_info:
-        ms_name, field_name, scan, t_start, t_end = entry
-        f.write('%-50s %-21s %-9s %.10f %.10f\n' % (ms_name, field_name, scan, t_start, t_end))
+        ms_name, field_name, scan, t_start, t_end, pa_min, pa_max, pa_delta = entry
+        f.write('%-50s %-21s %-9s %.10f %.10f %-13.4f %-13.4f %-13.4f\n' %
+               (ms_name, field_name, scan, t_start, t_end, pa_min, pa_max, pa_delta))
 
 print('Timing information saved to: ' + output_file)

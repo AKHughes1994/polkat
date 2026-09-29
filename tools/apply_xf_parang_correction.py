@@ -44,6 +44,13 @@ OUTPUTS (per input file):
       (MFS reference lines and the spectral-index fit are omitted: neither
        the MFS fluxes nor the fit configuration live in the txt files.)
 
+OUTPUTS (once per run, for the first file corrected):
+  RESULTS/fitting_plots/<prefix>_<src>_XFsolutions_XFcorr.png
+      diagnostic plot of the Xf TABLE phase itself (not the corrected data's
+      own cross-hand phase): every contributing (field, scan) solution's
+      phase vs frequency, overlaid with the median and 68% CI of the sampled
+      + jittered distribution actually adopted for the correction.
+
 Files already ending in the correction suffix are skipped, as are I-only
 files (no Q/U/V columns).
 

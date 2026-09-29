@@ -17,6 +17,10 @@ def main():
 
     USE_SINGULARITY = cfg.USE_SINGULARITY
 
+    # Set this flag to False to keep the measurement sets; when True, a final job
+    # removes every *.ms and *.ms.flagversions in the working directory
+    DELETE_MS_AT_END = True
+
     gen.preamble()
     print(gen.col()+'Extraction of the polarization flux densities')
     # DISABLED alongside the RMSYNTH_01B_systematics.py step below
@@ -190,11 +194,12 @@ def main():
     # ------------------------------------------------------------------------------
     #
     # Verify every target has a known position before building the job graph.
-    # Matched by fuzzy/normalized similarity (gen.match_field_name()), the same
-    # rule RMSYNTH_01_extract_fluxes.py's read_position_file() uses at runtime --
-    # a target that passes here is guaranteed to resolve the same way there.
-    # read_position_file() hard-fails if it doesn't find a match, so this exists
-    # purely to catch that before a job is ever submitted, not after.
+    # Resolved by the name-matching list first and normalized similarity second
+    # (gen.resolve_field_name() then gen.match_field_name()), the same two
+    # stages RMSYNTH_01_extract_fluxes.py's read_position_file() uses at
+    # runtime -- a target that passes here is guaranteed to resolve the same
+    # way there. read_position_file() hard-fails if it doesn't find a match, so
+    # this exists purely to catch that before a job is ever submitted.
     #
     # ------------------------------------------------------------------------------
 
@@ -212,23 +217,35 @@ def main():
         print(gen.col('ERROR')+f'Position file {position_file} not found')
         sys.exit()
 
+    matching_file = cfg.DATA + '/positions/XRB_name_matching.txt'
+    if not o.exists(matching_file):
+        print(gen.col('WARNING')+f'Name-matching list {matching_file} not found -- '
+              f'names resolved by similarity alone')
+
     print(gen.col('Position matches:'))
     missing_targets = []
     for field in field_list:
         if not field['is_target']:
             continue
-        best_name, best_ratio, matched = gen.match_field_name(field['name'], known_names)
+
+        resolved_name, was_aliased = gen.resolve_field_name(field['name'], matching_file)
+        if was_aliased and any(name.lower() == resolved_name.lower() for name in known_names):
+            print(gen.col(f"  {field['name']}") + f"-> '{resolved_name}' (name list)")
+            continue
+
+        best_name, best_ratio, matched = gen.match_field_name(resolved_name, known_names)
+        via = f" via '{resolved_name}'" if was_aliased else ''
         if matched:
-            print(gen.col(f"  {field['name']}") + f"-> '{best_name}' ({best_ratio:.0%})")
+            print(gen.col(f"  {field['name']}") + f"-> '{best_name}' ({best_ratio:.0%}){via}")
         else:
             closest = f"closest was '{best_name}' at {best_ratio:.0%}" if best_name else 'position file is empty'
-            missing_targets.append((field['name'], closest))
+            missing_targets.append((field['name'], closest + via))
 
     if missing_targets:
-        print(gen.col('ERROR')+f"Target(s) with no position-file match >= 80% similarity in {position_file}:")
+        print(gen.col('ERROR')+f"Target(s) with no entry in {position_file}, by name list or >= 80% similarity:")
         for name, closest in missing_targets:
             print(gen.col('ERROR')+f"  {name}: {closest}")
-        print(gen.col('ERROR')+'Add or fix the target(s) in the position file before re-running RMSYNTH.py')
+        print(gen.col('ERROR')+f'Add or fix the target(s) in the position file, or add the field name to {matching_file}, before re-running RMSYNTH.py')
         sys.exit()
 
     # ------------------------------------------------------------------------------
@@ -275,6 +292,7 @@ def main():
     syscall += 'python-spinifex '+cfg.OXKAT+'/RMSYNTH_03_run_SPINIFEX.py'
     step['syscall'] = syscall
     steps.append(step)
+    spinifex_step_index = step_i
     step_i += 1
 
     # Run RMSynth step depends on ALL extraction jobs
@@ -326,7 +344,40 @@ def main():
     syscall += 'python3 '+cfg.OXKAT+'/RMSYNTH_04_summarize_target.py'
     step['syscall'] = syscall
     steps.append(step)
+    rmsum_step_index = step_i
     step_i += 1
+
+    # Remove all measurement sets once every job that reads them (extraction, SPINIFEX) is done
+    if DELETE_MS_AT_END:
+        step = {}
+        step['step'] = step_i
+        step['comment'] = 'Remove measurement sets (*.ms, *.ms.flagversions)'
+        step['dependency'] = [steps[spinifex_step_index]['id'], steps[rmsum_step_index]['id']]
+        step['glam_config'] = cfg.GLAM_SMALL
+        step['id'] = 'RMMS_'+code
+        syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
+        syscall += f'python3 {cfg.TOOLS}/clean_directory.py --ms-only'
+        step['syscall'] = syscall
+        steps.append(step)
+        rmms_step_index = step_i
+        step_i += 1
+
+    # Record interesting sources / completion, then move the working directory to the
+    # archive. Always the very last job; runs on the host (no container) so the record
+    # and archive paths need not be bind-mounted.
+    if cfg.RMSYNTH_INTERESTING_FILE or cfg.RMSYNTH_TRACKING_FILE or cfg.RMSYNTH_ARCHIVE_DIR:
+        step = {}
+        step['step'] = step_i
+        step['comment'] = 'Record interesting sources and completion, then archive the working directory'
+        if DELETE_MS_AT_END:
+            step['dependency'] = rmms_step_index
+        else:
+            step['dependency'] = [steps[spinifex_step_index]['id'], steps[rmsum_step_index]['id']]
+        step['glam_config'] = cfg.GLAM_SMALL
+        step['id'] = 'ARCHV'+code
+        step['syscall'] = 'python3 '+cfg.OXKAT+'/RMSYNTH_05_record_and_archive.py'
+        steps.append(step)
+        step_i += 1
 
     # DEPRECATED:
     # ALBUS step depends on ALL extraction jobs

@@ -386,27 +386,32 @@ def parse_casa_position(position_str):
         return None, None
 
 
-def read_position_file(position_file, source_name):
+def read_position_file(position_file, source_name, matching_file=None):
     """
     Read source position from text file for target sources.
     Format: FIELD_NAME<TAB>POSITION, one entry per line, where POSITION is
     either CASA HMS/DMS (RA colon-separated, Dec period-separated) or plain
     decimal degrees -- see parse_casa_position().
 
-    source_name is matched against the FIELD_NAME column by normalized
-    similarity, not exact/substring match: MS field names and XRB catalogue
-    names for the same source commonly differ only in incidental punctuation/
-    spacing (e.g. 'MAXI J1820+070' vs 'MAXIJ1820+070'). See
-    gen.match_field_name() / gen._normalize_field_name() for the exact rule
-    (>=80% difflib ratio after stripping spaces/underscores/colons/'+' and
-    lowercasing).
+    source_name is resolved against the FIELD_NAME column in two stages:
 
-    Hard-fails (raises RuntimeError) if no entry reaches that threshold. This
-    mirrors the pre-flight check in setups/RMSYNTH.py, which uses the same
-    matcher and is expected to catch this before a job is ever submitted --
-    reaching this at runtime means something unexpected changed (e.g. the
-    position file was edited after the job was generated), so it does not
-    silently fall back to the MS phase centre.
+    1. The name-matching list (data/positions/XRB_name_matching.txt) maps an
+       MS field name to the catalogue name this file is keyed on. It carries
+       the pairs no normalisation would connect, e.g. 'J1709-3624' ->
+       'IGR J17091-3624'. A name found there is then looked up exactly
+       (case-insensitively).
+    2. Anything the list does not cover falls through to normalized
+       similarity -- see gen.match_field_name() / gen._normalize_field_name()
+       (>=80% difflib ratio after stripping spaces/underscores/colons/'+' and
+       lowercasing), which handles the incidental punctuation cases such as
+       'MAXI J1820+070' vs 'MAXIJ1820+070'.
+
+    Hard-fails (raises RuntimeError) if neither stage resolves the name. This
+    mirrors the pre-flight check in setups/RMSYNTH.py, which uses the same two
+    stages and is expected to catch this before a job is ever submitted --
+    reaching this at runtime means something unexpected changed (e.g. a list
+    was edited after the job was generated), so it does not silently fall back
+    to the MS phase centre.
     """
     if not os.path.exists(position_file):
         raise FileNotFoundError(f"Position file {position_file} not found")
@@ -427,13 +432,37 @@ def read_position_file(position_file, source_name):
         raise RuntimeError(f"Position file {position_file} contains no entries")
 
     names = [name for name, _ in entries]
-    best_name, best_ratio, matched = gen.match_field_name(source_name, names)
+
+    # Stage 1: the name-matching list
+    if matching_file is None:
+        matching_file = cfg.DATA + '/positions/XRB_name_matching.txt'
+    resolved_name, was_aliased = gen.resolve_field_name(source_name, matching_file)
+
+    if was_aliased:
+        msg(f"Name list: '{source_name}' -> '{resolved_name}'")
+        exact = [name for name in names if name.lower() == resolved_name.lower()]
+        if exact:
+            best_name = exact[0]
+            msg(f"Matched '{source_name}' -> '{best_name}' (name list)")
+            position_str = dict(entries)[best_name]
+            ra_deg, dec_deg = parse_casa_position(position_str)
+            if ra_deg is None:
+                raise RuntimeError(f"Failed to parse position '{position_str}' for '{best_name}' in {position_file}")
+            msg(f"Found position in file: RA={ra_deg:.6f} deg, Dec={dec_deg:.6f} deg")
+            return ra_deg, dec_deg
+        msg(f"WARNING: '{resolved_name}' is not in {position_file} -- "
+            f"falling back to similarity matching")
+
+    # Stage 2: normalized similarity, on the resolved name
+    best_name, best_ratio, matched = gen.match_field_name(resolved_name, names)
 
     if not matched:
         raise RuntimeError(
-            f"No entry in {position_file} matched '{source_name}' at >= 80% "
-            f"similarity (closest: '{best_name}' at {best_ratio:.0%}). "
-            f"Add/fix the target in the position file.")
+            f"No entry in {position_file} matched '{source_name}'"
+            f"{f' (name list: {resolved_name})' if was_aliased else ''} at "
+            f">= 80% similarity (closest: '{best_name}' at {best_ratio:.0%}). "
+            f"Add/fix the target in the position file, or add the field name "
+            f"to {matching_file}.")
 
     msg(f"Matched '{source_name}' -> '{best_name}' ({best_ratio:.0%} similarity)")
     position_str = dict(entries)[best_name]
@@ -445,7 +474,7 @@ def read_position_file(position_file, source_name):
     return ra_deg, dec_deg
 
 
-def read_rms_region_file(rms_region_file, source_name):
+def read_rms_region_file(rms_region_file, source_name, matching_file=None):
     """
     Read a manual RMS region override from text file, for sources whose
     default annulus (centred on the fitted position) is unsuitable -- e.g.
@@ -453,6 +482,9 @@ def read_rms_region_file(rms_region_file, source_name):
     Format: FIELD_NAME  CASA_REGION
     where CASA_REGION is any region string accepted by manual_rms_region
     (e.g. circle[[17:27:34.89,-16.13.19.84],75arcsec]).
+
+    The field name is tried as given and, failing that, as the catalogue name
+    the name-matching list gives for it, so a region can be keyed on either.
     Checked before falling back to the default RMS annulus; returns None
     (not False) if the file is missing or the source has no entry, so the
     caller can decide the fallback value.
@@ -460,14 +492,23 @@ def read_rms_region_file(rms_region_file, source_name):
     if not os.path.exists(rms_region_file):
         return None
 
+    if matching_file is None:
+        matching_file = cfg.DATA + '/positions/XRB_name_matching.txt'
+    resolved_name, was_aliased = gen.resolve_field_name(source_name, matching_file)
+
+    wanted = [source_name.lower()]
+    if was_aliased and resolved_name.lower() not in wanted:
+        wanted.append(resolved_name.lower())
+
     with open(rms_region_file, 'r') as f:
         for line in f:
             if line.startswith('#') or not line.strip():
                 continue
             parts = line.split(None, 1)
-            if len(parts) >= 2 and parts[0].lower() == source_name.lower():
+            if len(parts) >= 2 and parts[0].lower() in wanted:
                 region = parts[1].strip()
-                msg(f"Found manual RMS region in file: {region}")
+                msg(f"Found manual RMS region in file (matched "
+                    f"'{parts[0].strip()}'): {region}")
                 return region
 
     return None
@@ -477,8 +518,10 @@ def read_time_info(time_file, field_name, scan=None):
     """
     Read time information from RESULTS directory.
     Parses format:
-    # MS_NAME  FIELD_NAME  SCAN  START_MJD  END_MJD
-    
+    # MS_NAME  FIELD_NAME  SCAN  START_MJD  END_MJD  [PA_MIN_DEG  PA_MAX_DEG  PA_DELTA_DEG]
+    The PA_* columns are optional, for a time_info.txt written before they
+    existed: pa_min/pa_max/pa_delta stay None when they are absent.
+
     Parameters
     ----------
     time_file : str
@@ -487,23 +530,25 @@ def read_time_info(time_file, field_name, scan=None):
         Field name to match
     scan : str, optional
         Scan number to match (for per-scan calibrators)
-        
+
     Returns
     -------
-    dict : Time information with start_mjd, end_mjd, middle_mjd, duration_hours
+    dict : Time information with start_mjd, end_mjd, middle_mjd, duration_hours,
+        pa_min, pa_max, pa_delta (parallactic angle range across the field's
+        own scan(s), degrees; None if not recorded)
     """
     if not os.path.exists(time_file):
         msg(f"WARNING: Time file {time_file} not found")
         return None
-    
+
     msg(f"Reading time info from: {time_file}")
-    
+
     time_data = None
     with open(time_file, 'r') as f:
         for line in f:
             if line.startswith('#') or not line.strip():
                 continue
-            
+
             parts = line.split()
             if len(parts) >= 5:
                 ms_file = parts[0]
@@ -511,7 +556,10 @@ def read_time_info(time_file, field_name, scan=None):
                 scan_file = parts[2]
                 start_mjd = float(parts[3])
                 end_mjd = float(parts[4])
-                
+                pa_min  = float(parts[5]) if len(parts) >= 8 else None
+                pa_max  = float(parts[6]) if len(parts) >= 8 else None
+                pa_delta = float(parts[7]) if len(parts) >= 8 else None
+
                 # Match by field name and optionally by scan
                 if field_name_file.lower() == field_name.lower():
                     if scan is None or scan == scan_file:
@@ -522,19 +570,25 @@ def read_time_info(time_file, field_name, scan=None):
                             'start_mjd': start_mjd,
                             'end_mjd': end_mjd,
                             'middle_mjd': (start_mjd + end_mjd) / 2.0,
-                            'duration_hours': (end_mjd - start_mjd) * 24.0
+                            'duration_hours': (end_mjd - start_mjd) * 24.0,
+                            'pa_min': pa_min,
+                            'pa_max': pa_max,
+                            'pa_delta': pa_delta,
                         }
                         msg(f"Matched field: {field_name_file}, Scan: {scan_file}")
                         break
-    
+
     if time_data:
         msg(f"  Start MJD: {time_data['start_mjd']:.10f}")
         msg(f"  End MJD: {time_data['end_mjd']:.10f}")
         msg(f"  Middle MJD: {time_data['middle_mjd']:.10f}")
         msg(f"  Duration: {time_data['duration_hours']:.4f} hours")
+        if time_data['pa_delta'] is not None:
+            msg(f"  Parallactic angle range: {time_data['pa_min']:.2f} to "
+                f"{time_data['pa_max']:.2f} deg (delta {time_data['pa_delta']:.2f} deg)")
     else:
         msg(f"WARNING: No time info found for source {field_name}")
-    
+
     return time_data
 
 
@@ -1596,6 +1650,10 @@ def extract_polarization_properties(src_name,
         output_dictionary['MFS']['time_ctr_mjd']  = time_info['middle_mjd']
         output_dictionary['MFS']['time_ctr_isot'] = _mjd_to_isot(time_info['middle_mjd'])
         output_dictionary['MFS']['time_dt']       = time_info['duration_hours'] * 3600.0
+    if time_info and time_info.get('pa_delta') is not None:
+        output_dictionary['MFS']['parang_min_deg']   = time_info['pa_min']
+        output_dictionary['MFS']['parang_max_deg']   = time_info['pa_max']
+        output_dictionary['MFS']['parang_delta_deg'] = time_info['pa_delta']
 
     # Spectral index fit (chi2-aware) on the MFS Stokes I reference, stored
     # here so it is captured in the JSON below.
@@ -1611,6 +1669,23 @@ def extract_polarization_properties(src_name,
         mfs['chi2']      = spec_fit['chi2']
         mfs['ndof']      = spec_fit['ndof']
         mfs['chi2_red']  = spec_fit['chi2_red']
+
+    # Total polarisation fraction per channel, sqrt(Q^2+U^2+V^2)/I, with the
+    # peak channel and its approximate S/N kept as scalars alongside alpha.
+    # The per-channel lists stay parallel with the other CHAN arrays, carrying
+    # None where a channel had no usable Stokes data.
+    tot_pol = _total_pol_fraction(output_dictionary['CHAN'])
+    if tot_pol is not None:
+        output_dictionary['CHAN']['total_frac_pol']     = tot_pol['frac_aligned']
+        output_dictionary['CHAN']['total_frac_pol_err'] = tot_pol['frac_err_aligned']
+        output_dictionary['CHAN']['total_frac_pol_snr'] = tot_pol['snr_aligned']
+        mfs['total_frac_pol_peak']           = tot_pol['peak_frac']
+        mfs['total_frac_pol_peak_err']       = tot_pol['peak_frac_err']
+        mfs['total_frac_pol_peak_freq_GHz']  = tot_pol['peak_freq_GHz']
+        mfs['total_frac_pol_peak_snr']       = tot_pol['peak_snr']
+        msg(f"Peak total polarisation fraction: "
+            f"{tot_pol['peak_frac']*100.0:.2f} +/- {tot_pol['peak_frac_err']*100.0:.2f}% "
+            f"at {tot_pol['peak_freq_GHz']:.3f} GHz (S/N ~ {tot_pol['peak_snr']:.1f})")
 
     # Save output with timestamp prefix
     output_file = cfg.RESULTS + f'/{timestamp_prefix}{src_name}_{IDENTIFIER}_polarization.json'
@@ -1748,6 +1823,87 @@ def _mad_ylim(arr, err=None, k=10.0, pad=0.10):
         hi += 1.0
     margin = pad * (hi - lo)
     return (lo - margin, hi + margin)
+
+
+def _total_pol_fraction(chan):
+    """
+    Per-channel total polarisation fraction, sqrt(Q^2 + U^2 + V^2) / I.
+
+    Built from the per-channel Stokes fluxes and rms already in the CHAN dict.
+    Errors propagate from the per-channel rms:
+
+        P    = sqrt(Q^2 + U^2 + V^2)
+        s_P  = sqrt((Q s_Q)^2 + (U s_U)^2 + (V s_V)^2) / P
+        p    = P / I
+        s_p  = p * sqrt((s_P/P)^2 + (s_I/I)^2)
+
+    The per-channel S/N is P / s_P. It is approximate: P is positive-definite
+    and no Ricean debiasing is applied, so a noise-dominated channel reads
+    high in both P and p. The peak is taken over every finite channel, so its
+    S/N is what says whether to believe it.
+
+    Returns
+    -------
+    dict with lists freq_GHz, frac, frac_err, snr (finite channels only) and
+    the scalars peak_frac, peak_frac_err, peak_freq_GHz, peak_snr; or None if
+    the CHAN dict has no polarisation data to work with.
+    """
+    needed = ('freq_GHz', 'I_flux_mJy', 'I_rms_mJy',
+              'Q_flux_mJy', 'U_flux_mJy', 'V_flux_mJy',
+              'Q_rms_mJy', 'U_rms_mJy', 'V_rms_mJy')
+    if not all(key in chan for key in needed):
+        return None
+
+    freq = np.asarray(chan['freq_GHz'], dtype=float)
+    if freq.size == 0:
+        return None
+
+    I  = np.asarray(chan['I_flux_mJy'], dtype=float)
+    Q  = np.asarray(chan['Q_flux_mJy'], dtype=float)
+    U  = np.asarray(chan['U_flux_mJy'], dtype=float)
+    V  = np.asarray(chan['V_flux_mJy'], dtype=float)
+    sI = np.asarray(chan['I_rms_mJy'], dtype=float)
+    sQ = np.asarray(chan['Q_rms_mJy'], dtype=float)
+    sU = np.asarray(chan['U_rms_mJy'], dtype=float)
+    sV = np.asarray(chan['V_rms_mJy'], dtype=float)
+
+    if len({freq.size, I.size, Q.size, U.size, V.size,
+            sI.size, sQ.size, sU.size, sV.size}) != 1:
+        return None
+
+    with np.errstate(divide='ignore', invalid='ignore'):
+        P    = np.sqrt(Q**2 + U**2 + V**2)
+        s_P  = np.sqrt((Q * sQ)**2 + (U * sU)**2 + (V * sV)**2) / P
+        frac = P / I
+        frac_err = np.abs(frac) * np.sqrt((s_P / P)**2 + (sI / I)**2)
+        snr  = P / s_P
+
+    good = (np.isfinite(frac) & np.isfinite(frac_err) & np.isfinite(snr)
+            & (I > 0) & (P > 0))
+    if not good.any():
+        return None
+
+    frac_good = frac[good]
+    peak = int(np.argmax(frac_good))
+
+    def aligned(arr):
+        """Full-length list for the JSON, None where a channel is unusable, so
+        it stays parallel with the other CHAN arrays."""
+        return [float(v) if g else None for v, g in zip(arr, good)]
+
+    return {
+        'freq_GHz':         freq[good].tolist(),
+        'frac':             frac_good.tolist(),
+        'frac_err':         frac_err[good].tolist(),
+        'snr':              snr[good].tolist(),
+        'frac_aligned':     aligned(frac),
+        'frac_err_aligned': aligned(frac_err),
+        'snr_aligned':      aligned(snr),
+        'peak_frac':        float(frac_good[peak]),
+        'peak_frac_err':    float(frac_err[good][peak]),
+        'peak_freq_GHz':    float(freq[good][peak]),
+        'peak_snr':         float(snr[good][peak]),
+    }
 
 
 def _fit_alpha_chi2(freq, flux, rms, mfs_flux, mfs_rms, mfs_freq):
@@ -1927,6 +2083,76 @@ def plot_stokes_spectrum(output_dictionary, src_name, timestamp_prefix):
     plt.savefig(plot_file, dpi=150, bbox_inches='tight')
     plt.close()
     msg(f'Saved {suffix} spectrum plot to: {plot_file}')
+
+
+def plot_total_pol_fraction(output_dictionary, src_name, timestamp_prefix):
+    """
+    Plot the per-channel total polarisation fraction, sqrt(Q^2+U^2+V^2)/I,
+    and save to RESULTS/fitting_plots.
+
+    Layout  : 1x1, fraction as a percentage against frequency.
+    Y-range : MAD-based, data-driven, as on the Stokes panels (_mad_ylim).
+    Markers : the peak channel is ringed and annotated with its fraction and
+              approximate S/N (see _total_pol_fraction).
+    """
+    chan = output_dictionary.get('CHAN', {})
+    if not chan or len(chan.get('freq_GHz', [])) == 0:
+        return
+
+    tot = _total_pol_fraction(chan)
+    if tot is None:
+        msg('No usable channel polarisation data -- skipping total fraction plot')
+        return
+
+    plot_dir = os.path.join(cfg.RESULTS, 'fitting_plots')
+    os.makedirs(plot_dir, exist_ok=True)
+
+    freq     = np.asarray(tot['freq_GHz'], dtype=float)
+    frac     = np.asarray(tot['frac'], dtype=float) * 100.0
+    frac_err = np.asarray(tot['frac_err'], dtype=float) * 100.0
+
+    fig, ax = plt.subplots(1, 1, figsize=(12, 4.5))
+
+    ax.errorbar(freq, frac, yerr=frac_err,
+                fmt='o', markersize=3, capsize=2, color='tab:purple',
+                elinewidth=0.8, linewidth=0,
+                label=r'$\sqrt{Q^2+U^2+V^2}\,/\,I$')
+
+    # MFS total fraction as a horizontal reference, when the MFS Stokes are there
+    mfs = output_dictionary.get('MFS', {})
+    if all(k in mfs for k in ('I_flux_mJy', 'Q_flux_mJy', 'U_flux_mJy', 'V_flux_mJy')):
+        mfs_I = mfs['I_flux_mJy']
+        if mfs_I:
+            mfs_frac = 100.0 * np.sqrt(mfs['Q_flux_mJy']**2 + mfs['U_flux_mJy']**2
+                                        + mfs['V_flux_mJy']**2) / mfs_I
+            ax.axhline(y=mfs_frac, color='k', linestyle='--', linewidth=1.5,
+                       label=f'MFS: {mfs_frac:.2f}%')
+
+    ax.plot(tot['peak_freq_GHz'], tot['peak_frac'] * 100.0,
+            marker='o', markersize=11, markerfacecolor='none',
+            markeredgecolor='crimson', markeredgewidth=1.5, linewidth=0,
+            label=(f"peak: {tot['peak_frac']*100.0:.2f} "
+                   f"$\\pm$ {tot['peak_frac_err']*100.0:.2f}% "
+                   f"at {tot['peak_freq_GHz']:.3f} GHz (S/N ~ {tot['peak_snr']:.1f})"))
+
+    ax.set_ylim(_mad_ylim(frac, err=frac_err))
+    ax.set_xlabel('Frequency (GHz)', fontsize=11)
+    ax.set_ylabel('Total polarisation fraction (%)', fontsize=10)
+    ax.set_title(f'{src_name}  —  Total Polarisation Fraction', fontsize=12)
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=8, loc='upper right')
+    ax.tick_params(direction='in', which='both', top=True, right=True)
+    for spine in ax.spines.values():
+        spine.set_linewidth(1.2)
+
+    plt.tight_layout()
+
+    plot_file = os.path.join(
+        plot_dir,
+        f'{timestamp_prefix}{src_name}_total_pol_fraction.png')
+    plt.savefig(plot_file, dpi=150, bbox_inches='tight')
+    plt.close()
+    msg(f'Saved total polarisation fraction plot to: {plot_file}')
 
 
 def main():
@@ -2113,6 +2339,7 @@ def main():
                 use_plin = use_plin)
             create_polang_raw_file(project_info, timed_name, output_dict, timestamp_prefix)
             plot_stokes_spectrum(output_dict, timed_name, timestamp_prefix)
+            plot_total_pol_fraction(output_dict, timed_name, timestamp_prefix)
             # Trailing '*' before .txt also catches the per-channel estimate/check_pos
             # files from fit_channel, which append _{ch_num} after the name.
             for temp_file in glob.glob(f'check_pos_*_{timed_name}*.txt'):
@@ -2138,6 +2365,7 @@ def main():
             use_plin = use_plin)
         create_polang_raw_file(project_info, source_name, output_dict, timestamp_prefix)
         plot_stokes_spectrum(output_dict, source_name, timestamp_prefix)
+        plot_total_pol_fraction(output_dict, source_name, timestamp_prefix)
         # Trailing '*' before .txt also catches the per-channel estimate/check_pos
         # files from fit_channel, which append _{ch_num} after the name.
         for temp_file in glob.glob(f'check_pos_*_{source_name}*.txt'):

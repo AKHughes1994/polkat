@@ -12,6 +12,59 @@ myoutputchans = int(PRE_NCHANS)
 mytimebins = PRE_TIMEBIN
 
 
+# ------- Target selection
+#
+# Targets are limited to the sources named in the first column of the XRB
+# name-matching list. Any other target field is left out of the averaged MS,
+# and out of the target lists in project_info that the rest of the pipeline
+# reads, so nothing downstream looks for a field that is not there.
+# Calibrators are never excluded here.
+
+XRB_NAME_LIST = DATA+'/positions/XRB_name_matching.txt'
+
+known_targets = set()
+if os.path.isfile(XRB_NAME_LIST):
+    with open(XRB_NAME_LIST) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#'):
+                known_targets.add(line.split()[0].lower())
+    print(f'Target list: {len(known_targets)} name(s) read from {XRB_NAME_LIST}')
+else:
+    print(f'WARNING: {XRB_NAME_LIST} not found -- keeping every target field')
+
+# Names are compared without regard to case or surrounding whitespace
+if known_targets:
+    keep_target = [name.strip().lower() in known_targets for name in target_names]
+else:
+    keep_target = [True]*len(target_names)
+
+dropped_names = [n for n, k in zip(target_names, keep_target) if not k]
+dropped_ids = [i for i, k in zip(targets, keep_target) if not k]
+
+if dropped_names:
+    print(f'Excluding {len(dropped_names)} target field(s) absent from the '
+          f'name list: {dropped_names}')
+    if not any(keep_target):
+        print('WARNING: no target field matched the name list -- the averaged '
+              'MS will hold calibrators only')
+
+    # Build an explicit field selection. With PRE_FIELDS set, the excluded
+    # targets are removed from what the user asked for; otherwise every field
+    # but those targets is selected.
+    if myfields != '':
+        requested = [f.strip() for f in myfields.split(',') if f.strip()]
+        myfields = ','.join([f for f in requested if f not in dropped_ids])
+    else:
+        cal_ids = [bpcal]+pcals
+        if pacal not in ('', 'None'):
+            cal_ids.append(pacal)
+        kept_ids = [i for i, k in zip(targets, keep_target) if k]
+        myfields = ','.join(list(dict.fromkeys(cal_ids+kept_ids)))
+
+    print(f'mstransform field selection: {myfields}')
+
+
 master_ms = glob.glob('*.ms')[0]
 opms = master_ms.replace('.ms','_'+str(myoutputchans)+'ch.ms')
 
@@ -79,6 +132,17 @@ with open('project_info.json','r') as j:
 
 project_info['working_names'] = names.tolist()
 project_info['working_ids'] = ids.tolist()
+
+# Drop the excluded targets from the parallel target lists, so the field a
+# later stage reads from project_info is one the averaged MS contains
+if dropped_names:
+    for key in ('target_names','target_ids','target_dirs','target_cal_map','target_ms'):
+        values = project_info.get(key,[])
+        if len(values) == len(keep_target):
+            project_info[key] = [v for v,k in zip(values,keep_target) if k]
+        else:
+            print(f'WARNING: project_info["{key}"] has {len(values)} entries for '
+                  f'{len(keep_target)} target(s) -- left untouched')
 
 with open('project_info.json','w') as j:
     json.dump(project_info, j, indent=4, sort_keys = True)

@@ -785,6 +785,28 @@ CAL_2GC_FILE = DATA+'/quartical/2GC_complex.yaml'
 
 # ------------------------------------------------------------------------
 #
+# RMSYNTH end-of-run records and archiving (RMSYNTH_05_record_and_archive.py)
+#
+# All three are absolute paths; leave any of them blank ('') to skip that part.
+# They are read and written from the host (not inside a container), so they do
+# not need to be on the singularity BINDPATH.
+
+# Plain-text file (created if missing, appended to otherwise) listing every
+# target epoch from every run that is either bright (MFS Stokes I > 10 mJy) or
+# polarised (peak-channel P/I > 1% at >= 10 sigma), with the reason
+RMSYNTH_INTERESTING_FILE = ''
+
+# Directory under which the entire working directory is moved at the end of the
+# run, into <RMSYNTH_ARCHIVE_DIR>/<obsid>/ (an existing <obsid> directory there is
+# deleted first). The obsid is the leading number of the master MS name.
+RMSYNTH_ARCHIVE_DIR = ''
+
+# Plain-text file (created if missing, appended to otherwise) with one line per
+# completed obsid: completion time and any interesting sources from that run
+RMSYNTH_TRACKING_FILE = ''
+
+# ------------------------------------------------------------------------
+#
 # 3GC peeling settings
 #
 
@@ -979,7 +1001,7 @@ RMSYN_SPEC_INDEX_SNR_THRESH = 25    # Minimum MFS Stokes I S/N to attempt the sp
 RMSYN_SPEC_INDEX_MAD_CLIP  = 10     # Iterative MAD outlier rejection threshold (in sigma) applied
                                     # to channels during the spectral index power-law fit.
 
-RMSYN_MAX_I_DRIFT_PIX      = True  # Maximum pixel drift allowed for a Stokes I fitted position
+RMSYN_MAX_I_DRIFT_PIX      = False  # Maximum pixel drift allowed for a Stokes I fitted position
                                     # before the fit is re-run with the position fixed.
                                     # False = no drift check; float = threshold in pixels.
 

@@ -43,9 +43,22 @@ def safe_remove(patterns, exclude_patterns=None):
 
 # ================== COMMAND LINE ARGUMENTS ==================
 
+# --ms-only: remove only the measurement sets and their flag versions, then exit.
+# Intended as the final step of the whole run (end of RMSYNTH), since RMSYNTH
+# still reads the MS; the per-field patterns below are not applied.
+if '--ms-only' in sys.argv[1:]:
+    print("Removing measurement sets...")
+    safe_remove([
+        f"{cfg.CWD}/*.ms",
+        f"{cfg.CWD}/*.ms.flagversions",
+    ])
+    sys.exit(0)
+
 if len(sys.argv) < 2:
     print("Usage: python3 clean_directory.py <source_name>")
+    print("       python3 clean_directory.py --ms-only")
     print("  source_name: Name of the source to match in filenames")
+    print("  --ms-only:   Remove only *.ms and *.ms.flagversions in the working directory")
     print(f"\nReceived arguments: {sys.argv}")
     print(f"Number of arguments: {len(sys.argv)}")
     sys.exit(1)
@@ -71,6 +84,11 @@ patterns = [
     f"{cfg.CWD}/*{source_name}*.parmdb",
     f"{cfg.CWD}/*{source_name}*.skel",
     f"{cfg.CWD}/*.html",
+    f"{cfg.CWD}/LICENSE",
+    f"{cfg.CWD}/README.md",
+    f"{cfg.CWD}/ragavi*log",
+    f"{cfg.CWD}/tri*.log",
+    f"{cfg.CWD}/submit*.log",
     #f"{cfg.IMAGES}/{source_name}/*datablind*",
     f"{cfg.IMAGES}/{source_name}/*datamask*0*",
     f"{cfg.IMAGES}/{source_name}/*uniform-0*",
@@ -89,6 +107,7 @@ patterns = [
     f"{cfg.IMAGES}/{source_name}/*pcalmask-MFS-*model*",
     f"{cfg.IMAGES}/{source_name}/*pcalmask-MFS-*dirty*",
     f"{cfg.IMAGES}/{source_name}/*pcalmask-MFS-*psf*",
+    f"{cfg.IMAGES}/{source_name}/*fulluv-0*",
     f"{cfg.IMAGES}/{source_name}/*snapmask*",
     f"{cfg.IMAGES}/{source_name}/*_mask*",
     f"{cfg.IMAGES}/{source_name}/*diagnostic-MFS*",

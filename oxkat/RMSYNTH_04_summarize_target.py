@@ -27,6 +27,15 @@
 #           time_dt                 -- exposure time (s)
 #           freq_GHz                -- MFS central frequency
 #           I_RA_deg, I_DEC_deg     -- fitted position (degrees)
+#       ['pol_image_type']          -- 'Plin' or 'Ptot' (names the P keys below)
+#       ['CHAN'] (per-channel lists, one entry per successfully fitted channel):
+#           freq_GHz                -- channel frequency
+#           I_flux_mJy, I_err_mJy   -- Stokes I +/- error
+#           <P>_flux_mJy, <P>_err_mJy -- polarized intensity +/- error (<P> = pol_image_type);
+#                                      used for the peak per-channel P/I. The reported
+#                                      channel is the index into these lists, which skips
+#                                      flagged/failed channels, so it is not the WSCLEAN
+#                                      channel number -- the frequency identifies it.
 #
 #   RESULTS/*<target>*_pcalmask_rmsynth_RMclean.json
 #       phiPeakPIfit_rm2       -- RM (rad/m^2), post RM-CLEAN
@@ -60,9 +69,6 @@ import json
 import os.path as o
 import sys
 
-from astropy.coordinates import SkyCoord
-from astropy import units as u
-
 sys.path.append(o.abspath(o.join(o.dirname(sys.modules[__name__].__file__), "..")))
 
 from oxkat import generate_jobs as gen
@@ -93,6 +99,32 @@ def representative_frac_pol(rmclean, rmsynth):
     return amp / ifreq0 * 100.0
 
 
+def peak_chan_frac_pol(pol):
+    """Channel with the highest P/I (%). Returns (index, freq_GHz, frac, frac_err) or None."""
+    chan   = pol.get('CHAN', {})
+    ptype  = pol.get('pol_image_type')
+    P      = chan.get(f'{ptype}_flux_mJy')
+    P_err  = chan.get(f'{ptype}_err_mJy')
+    I      = chan.get('I_flux_mJy')
+    I_err  = chan.get('I_err_mJy')
+    freqs  = chan.get('freq_GHz')
+    if not (ptype and P and P_err and I and I_err and freqs):
+        return None
+
+    best = None
+    for idx, (p, dp, i, di) in enumerate(zip(P, P_err, I, I_err)):
+        if i is None or p is None or i <= 0:
+            continue
+        frac = p / i
+        if best is None or frac > best[2]:
+            frac_err = abs(frac) * ((dp / p)**2 + (di / i)**2)**0.5 if p != 0 else dp / i
+            best = (idx, freqs[idx], frac, frac_err)
+    if best is None:
+        return None
+    idx, freq, frac, frac_err = best
+    return idx, freq, frac * 100.0, frac_err * 100.0
+
+
 def write_rmsynth_block(line, rmclean, rmsynth):
     line('RM (rad/m^2)', fmt(rmclean.get('phiPeakPIfit_rm2'), rmclean.get('dPhiObserved_rm2')))
     line('Polarization angle (deg)', fmt(rmclean.get('polAngleFit_deg'), rmclean.get('dPolAngleFitObserved_deg')))
@@ -105,7 +137,8 @@ def write_rmsynth_block(line, rmclean, rmsynth):
 def summarize_epoch(out, line, pol_json_path):
 
     with open(pol_json_path) as f:
-        mfs = json.load(f).get('MFS', {})
+        pol = json.load(f)
+    mfs = pol.get('MFS', {})
 
     rmclean_path = pol_json_path.replace(f'_{IDENTIFIER}_polarization.json',
                                           f'_{IDENTIFIER}_rmsynth_RMclean.json')
@@ -123,6 +156,12 @@ def summarize_epoch(out, line, pol_json_path):
     if ra_deg is not None and ra_deg < 0:
         ra_deg += 360.0
     dec_deg = mfs.get('I_DEC_deg')
+
+    # astropy is imported here rather than at module level so that
+    # RMSYNTH_05_record_and_archive.py can import this module's helpers
+    # with a plain (host) python3 that has only the standard library
+    from astropy.coordinates import SkyCoord
+    from astropy import units as u
 
     hmsdms = None
     if ra_deg is not None and dec_deg is not None:
@@ -143,6 +182,14 @@ def summarize_epoch(out, line, pol_json_path):
     line('Central frequency (GHz)', fmt(mfs.get('freq_GHz')))
     if rmclean or rmsynth:
         write_rmsynth_block(line, rmclean, rmsynth)
+    peak = peak_chan_frac_pol(pol)
+    ptype = pol.get('pol_image_type', 'P')
+    if peak is not None:
+        idx, freq, frac, frac_err = peak
+        line(f'Peak channel {ptype}/I (index, GHz)', f'{idx}, {freq}')
+        line(f'Peak channel {ptype}/I (%)', fmt(frac, frac_err))
+    else:
+        line(f'Peak channel {ptype}/I', 'N/A')
     line('Position (deg)', f'{fmt(ra_deg)}, {fmt(dec_deg)}')
     line('Position (hmsdms)', hmsdms if hmsdms is not None else 'N/A')
 
