@@ -228,23 +228,99 @@ def compute_3c286_evpa(freq_ghz):
     """
     Compute frequency-dependent EVPA for 3C286 (J1331+3030).
 
-    Reference: Perley & Butler (2013) / Hugo & Perley (2024)
+    Reference: Perley et al. (2026, ApJS 283, 82), Section 8.1, Eqs. 9-10.
 
-    EVPA(ν) [deg] =
-        32.64 - 85.37λ²                              for ν ∈ [1.7, 12] GHz
-        29.53 + λ²(4005.88(log₁₀ν)³ - 39.38)        for ν < 1.7 GHz
+    This REPLACES the older Perley & Butler (2013) lambda^2 form
+    (32.64 - 85.37*lambda^2 above 1.7 GHz, etc.) that polkat previously
+    used. That 2013 fit did not include data below 8 GHz and was
+    extrapolated down to UHF; Perley et al. (2026) explicitly re-derive
+    the model from 0.5 GHz upward using MeerKAT UHF data with proper
+    ionospheric (ALBUS G01) correction, and note that "the EVPA
+    continues to decline from 33 deg at frequencies <6 GHz" beyond what
+    the 2013 fit captured. Fits the smoothed data to better than 0.3 deg.
+
+    EVPA(nu) [deg] = a0 + a1*x + a2*x^2 + a3*x^3,  x = log10(nu_GHz)
+
+        0.5 <= nu_GHz <= 1.0 :  26.0 + 57.0 x + 615 x^2 + 3790 x^3   (Eq. 9)
+        1.0 <  nu_GHz <= 50  :  26.1 + 17.1 x - 16.1 x^2 + 5.75 x^3  (Eq. 10)
+
+    Valid range: 0.5-50 GHz. Channels outside this range are returned
+    as NaN rather than silently extrapolated.
     """
-    c = 2.99792458e8
-    freq_hz = freq_ghz * 1e9
-    lambda_m = c / freq_hz
-    lambda_sq = lambda_m ** 2
-    evpa_deg = np.zeros_like(freq_ghz)
-    high_freq_mask = freq_ghz >= 1.7
-    evpa_deg[high_freq_mask] = 32.64 - 85.37 * lambda_sq[high_freq_mask]
-    low_freq_mask = freq_ghz < 1.7
-    if np.any(low_freq_mask):
-        log_nu_cubed = np.log10(freq_ghz[low_freq_mask]) ** 3
-        evpa_deg[low_freq_mask] = 29.53 + lambda_sq[low_freq_mask] * (4005.88 * log_nu_cubed - 39.38)
+    freq_ghz = np.asarray(freq_ghz, dtype=float)
+    x = np.log10(freq_ghz)
+    evpa_deg = np.full_like(freq_ghz, np.nan)
+
+    low_mask = (freq_ghz >= 0.5) & (freq_ghz <= 1.0)
+    high_mask = (freq_ghz > 1.0) & (freq_ghz <= 50.0)
+
+    evpa_deg[low_mask] = (26.0 + 57.0 * x[low_mask]
+                           + 615.0 * x[low_mask] ** 2
+                           + 3790.0 * x[low_mask] ** 3)
+    evpa_deg[high_mask] = (26.1 + 17.1 * x[high_mask]
+                            - 16.1 * x[high_mask] ** 2
+                            + 5.75 * x[high_mask] ** 3)
+
+    out_of_range = ~(low_mask | high_mask)
+    if np.any(out_of_range):
+        print(f"WARNING: compute_3c286_evpa: {int(np.sum(out_of_range))} "
+              f"channel(s) outside the validated 0.5-50 GHz range "
+              f"(Perley et al. 2026) -> NaN")
+
+    return evpa_deg
+
+
+def compute_3c138_evpa(freq_ghz):
+    """
+    Compute frequency-dependent EVPA for 3C138 (J0521+1638).
+
+    Reference: Perley et al. (2026, ApJS 283, 82), Section 8.2, Eqs. 11-12.
+
+    No equivalent function previously existed in polkat for 3C138 — it
+    was calibrated against a single constant XF_TARGET_POLANG regardless
+    of frequency (see the flat-target fallback branch), which cannot
+    reproduce 3C138's known EVPA curvature below ~1 GHz.
+
+    EVPA(nu) [deg] = a0 + a1 x + a2 x^2 + a3 x^3 + a4 x^4, x = log10(nu_GHz)
+
+        0.5 <= nu_GHz <= 1.0 : -21.9 + 71.1 x - 1435 x^2
+                                - 11110 x^3 - 23190 x^4          (Eq. 11)
+        1.0 <  nu_GHz <= 4.0 : -22.0 + 95.4 x -  340 x^2
+                                +   534 x^3 -   308 x^4          (Eq. 12)
+
+    IMPORTANT: unlike 3C286, this fit is ONLY valid below 4 GHz. Above
+    ~4 GHz, 3C138 shows strong oscillatory EVPA behaviour from beating
+    between its polarized nuclear and jet components, and has flared
+    repeatedly since 2002 (again in 2025) -- the paper explicitly warns
+    this source "is not normally recommended for polarization
+    calibration" at higher frequencies. Below 4 GHz the low-frequency
+    behaviour is described as unaffected by the flaring and consistent
+    with Perley & Butler (2013a). Channels outside [0.5, 4.0] GHz are
+    returned as NaN. Fits the observed data to better than 0.3 deg.
+    """
+    freq_ghz = np.asarray(freq_ghz, dtype=float)
+    x = np.log10(freq_ghz)
+    evpa_deg = np.full_like(freq_ghz, np.nan)
+
+    low_mask = (freq_ghz >= 0.5) & (freq_ghz <= 1.0)
+    high_mask = (freq_ghz > 1.0) & (freq_ghz <= 4.0)
+
+    evpa_deg[low_mask] = (-21.9 + 71.1 * x[low_mask]
+                           - 1435.0 * x[low_mask] ** 2
+                           - 11110.0 * x[low_mask] ** 3
+                           - 23190.0 * x[low_mask] ** 4)
+    evpa_deg[high_mask] = (-22.0 + 95.4 * x[high_mask]
+                            - 340.0 * x[high_mask] ** 2
+                            + 534.0 * x[high_mask] ** 3
+                            - 308.0 * x[high_mask] ** 4)
+
+    out_of_range = ~(low_mask | high_mask)
+    if np.any(out_of_range):
+        print(f"WARNING: compute_3c138_evpa: {int(np.sum(out_of_range))} "
+              f"channel(s) outside the validated 0.5-4.0 GHz range "
+              f"(Perley et al. 2026) -> NaN. 3C138 is not a reliable "
+              f"polarization-angle calibrator above ~4 GHz.")
+
     return evpa_deg
 
 
@@ -1677,15 +1753,39 @@ if '3c286' in pacal_name.lower() or 'j1331' in pacal_name.lower():
                label=f'Config value: {XF_TARGET_POLANG}°')
     ax.set_xlabel('Frequency [GHz]')
     ax.set_ylabel('EVPA [deg]')
-    ax.set_title('3C286 Frequency-Dependent EVPA Model (Perley & Butler 2013)')
+    ax.set_title('3C286 Frequency-Dependent EVPA Model (Perley, Butler et al. 2026)')
     ax.legend()
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.savefig(os.path.join(xfdir, '3c286_evpa_model.png'), dpi=150)
     plt.close(fig)
     print(f"Saved: {xfdir}/3c286_evpa_model.png\n" + "=" * 70)
+
+elif '3c138' in pacal_name.lower() or 'j0521' in pacal_name.lower():
+    print("\n" + "=" * 70)
+    print("DETECTED 3C138 (J0521+1638) — APPLYING FREQUENCY-DEPENDENT EVPA MODEL")
+    print("=" * 70)
+    target_polang_array = compute_3c138_evpa(freq_ghz)
+    print(f"EVPA range: {target_polang_array.min():.2f}° — {target_polang_array.max():.2f}°")
+    print(f"EVPA at band centre ({np.median(freq_ghz):.2f} GHz): "
+          f"{np.median(target_polang_array):.2f}°")
+
+    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+    ax.plot(freq_ghz, target_polang_array, 'b-', linewidth=2, label='3C138 EVPA model')
+    ax.axhline(XF_TARGET_POLANG, color='red', linestyle='--', linewidth=1.5, alpha=0.7,
+               label=f'Config value: {XF_TARGET_POLANG}°')
+    ax.set_xlabel('Frequency [GHz]')
+    ax.set_ylabel('EVPA [deg]')
+    ax.set_title('3C138 Frequency-Dependent EVPA Model (Perley, Butler et al. 2026)')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(xfdir, '3c138_evpa_model.png'), dpi=150)
+    plt.close(fig)
+    print(f"Saved: {xfdir}/3c138_evpa_model.png\n" + "=" * 70)
+
 else:
-    print(f"\nUsing constant EVPA from config: {XF_TARGET_POLANG}° (not 3C286/J1331)")
+    print(f"\nUsing constant EVPA from config: {XF_TARGET_POLANG}° (not 3C286/J1331 or 3C138/J0521)")
     target_polang_array = np.full_like(freq_ghz, XF_TARGET_POLANG)
 
 # ============================
@@ -1999,6 +2099,8 @@ for scan_idx, scan in enumerate(scan_numbers):
 # Also build a target_polang array on the xftab frequency grid
 if '3c286' in pacal_name.lower() or 'j1331' in pacal_name.lower():
     target_polang_xf = compute_3c286_evpa(chan_freq_xf_ghz)
+elif '3c138' in pacal_name.lower() or 'j0521' in pacal_name.lower():
+    target_polang_xf = compute_3c138_evpa(chan_freq_xf_ghz)
 else:
     target_polang_xf = np.full(n_xf_chan, XF_TARGET_POLANG)
 
