@@ -3,6 +3,10 @@
 import numpy as np
 import glob, json
 
+# Flush immediately, so tailing this stage's log shows target selection as it happens
+import functools
+print = functools.partial(print, flush=True)
+
 exec(open('oxkat/config.py').read())
 exec(open('oxkat/casa_read_project_info.py').read())
 
@@ -29,9 +33,10 @@ if os.path.isfile(XRB_NAME_LIST):
             line = line.strip()
             if line and not line.startswith('#'):
                 known_targets.add(line.split()[0].lower())
-    print(f'Target list: {len(known_targets)} name(s) read from {XRB_NAME_LIST}')
+    print(f'\nTarget list: {len(known_targets)} name(s) read from {XRB_NAME_LIST}\n')
+    print(f'\nName list contents: {sorted(known_targets)}\n')
 else:
-    print(f'WARNING: {XRB_NAME_LIST} not found -- keeping every target field')
+    print(f'\nWARNING: {XRB_NAME_LIST} not found -- keeping every target field\n')
 
 # Names are compared without regard to case or surrounding whitespace
 if known_targets:
@@ -41,13 +46,20 @@ else:
 
 dropped_names = [n for n, k in zip(target_names, keep_target) if not k]
 dropped_ids = [i for i, k in zip(targets, keep_target) if not k]
+kept_names = [n for n, k in zip(target_names, keep_target) if k]
+
+n_total = len(target_names)
+n_kept = len(kept_names)
+frac_kept = (n_kept/n_total) if n_total else 0.0
+print(f'\n{n_kept} out of {n_total} target field(s) in the MS are in the name '
+      f'list ({frac_kept:.1%}): {kept_names}\n')
 
 if dropped_names:
-    print(f'Excluding {len(dropped_names)} target field(s) absent from the '
-          f'name list: {dropped_names}')
+    print(f'\nExcluding {len(dropped_names)} target field(s) absent from the '
+          f'name list: {dropped_names}\n')
     if not any(keep_target):
-        print('WARNING: no target field matched the name list -- the averaged '
-              'MS will hold calibrators only')
+        print('\nWARNING: no target field matched the name list -- the averaged '
+              'MS will hold calibrators only\n')
 
     # Build an explicit field selection. With PRE_FIELDS set, the excluded
     # targets are removed from what the user asked for; otherwise every field
@@ -62,7 +74,7 @@ if dropped_names:
         kept_ids = [i for i, k in zip(targets, keep_target) if k]
         myfields = ','.join(list(dict.fromkeys(cal_ids+kept_ids)))
 
-    print(f'mstransform field selection: {myfields}')
+    print(f'\nmstransform field selection: {myfields}\n')
 
 
 master_ms = glob.glob('*.ms')[0]
@@ -136,13 +148,15 @@ project_info['working_ids'] = ids.tolist()
 # Drop the excluded targets from the parallel target lists, so the field a
 # later stage reads from project_info is one the averaged MS contains
 if dropped_names:
+    print(f'\nproject_info: trimming target lists to the {len(kept_names)} kept '
+          f'field(s), dropping {dropped_names}\n')
     for key in ('target_names','target_ids','target_dirs','target_cal_map','target_ms'):
         values = project_info.get(key,[])
         if len(values) == len(keep_target):
             project_info[key] = [v for v,k in zip(values,keep_target) if k]
         else:
-            print(f'WARNING: project_info["{key}"] has {len(values)} entries for '
-                  f'{len(keep_target)} target(s) -- left untouched')
+            print(f'\nWARNING: project_info["{key}"] has {len(values)} entries for '
+                  f'{len(keep_target)} target(s) -- left untouched\n')
 
 with open('project_info.json','w') as j:
     json.dump(project_info, j, indent=4, sort_keys = True)

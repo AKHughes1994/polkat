@@ -52,7 +52,8 @@ def parang_range_deg(opms):
     chi_deg = np.empty(len(times))
     for i, t in enumerate(times):
         me.doframe(me.epoch('utc', qa.quantity(t, 's')))
-        chi_deg[i] = np.degrees(me.posangle(field_dir, zenith).get_value('rad'))
+        # casatools' me.posangle returns a quantity dict, not a casacore Quantity
+        chi_deg[i] = qa.convert(me.posangle(field_dir, zenith), 'deg')['value']
 
     chi_unwrapped = np.degrees(np.unwrap(np.radians(chi_deg)))
     pa_min = float(np.min(chi_unwrapped))

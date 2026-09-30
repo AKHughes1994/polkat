@@ -785,28 +785,6 @@ CAL_2GC_FILE = DATA+'/quartical/2GC_complex.yaml'
 
 # ------------------------------------------------------------------------
 #
-# RMSYNTH end-of-run records and archiving (RMSYNTH_05_record_and_archive.py)
-#
-# All three are absolute paths; leave any of them blank ('') to skip that part.
-# They are read and written from the host (not inside a container), so they do
-# not need to be on the singularity BINDPATH.
-
-# Plain-text file (created if missing, appended to otherwise) listing every
-# target epoch from every run that is either bright (MFS Stokes I > 10 mJy) or
-# polarised (peak-channel P/I > 1% at >= 10 sigma), with the reason
-RMSYNTH_INTERESTING_FILE = ''
-
-# Directory under which the entire working directory is moved at the end of the
-# run, into <RMSYNTH_ARCHIVE_DIR>/<obsid>/ (an existing <obsid> directory there is
-# deleted first). The obsid is the leading number of the master MS name.
-RMSYNTH_ARCHIVE_DIR = ''
-
-# Plain-text file (created if missing, appended to otherwise) with one line per
-# completed obsid: completion time and any interesting sources from that run
-RMSYNTH_TRACKING_FILE = ''
-
-# ------------------------------------------------------------------------
-#
 # 3GC peeling settings
 #
 
@@ -1016,6 +994,29 @@ RMSYN_SUPER_RESOLUTION     = True   # Enable super-resolution deconvolution (--s
 
 RMCLEAN_CUTOFF             = -9     # CLEAN stopping threshold; negative = multiples of the noise (-c)
 RMCLEAN_WINDOW             = -4     # CLEAN window half-width; negative = multiples of RMSF half-width (-w)
+
+# --- End-of-run records and archiving (RMSYNTH_05_record_and_archive.py) ---
+#
+# All three are absolute paths; leave any of them blank ('') to skip that part.
+# They are read and written from the host (not inside a container), so they do
+# not need to be on the singularity BINDPATH.
+
+# Plain-text file (created if missing, appended to otherwise) listing every
+# target epoch from every run that is bright (MFS Stokes I > 10 mJy), polarised
+# (peak-channel P/I > 1% at >= 10 sigma), and/or spans a large parallactic
+# angle range across its own scan(s) (> 10 deg -- a lot of parallactic angle
+# is being averaged together), with the reason(s)
+RMSYNTH_INTERESTING_FILE = '/mnt/scratchhdd/tkat_reprocessing/tracking/mahrez_interesting.txt'
+
+# Directory under which the entire working directory is moved at the end of the
+# run, into <RMSYNTH_ARCHIVE_DIR>/<obsid>/ (an existing <obsid> directory there is
+# deleted first). The obsid is the leading number of the master MS name.
+RMSYNTH_ARCHIVE_DIR = '/mnt/scratchhdd/tkat_reprocessing/final_products'
+
+# Plain-text file (created if missing, appended to otherwise) with one line per
+# completed obsid: completion time and any interesting sources from that run
+RMSYNTH_TRACKING_FILE = '/mnt/scratchhdd/tkat_reprocessing/tracking/mahrez_tracking.txt'
+
 
 # ------------------------------------------------------------------------
 #

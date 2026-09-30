@@ -38,12 +38,16 @@
 #           generates that stage's job scripts, submits them (or runs them
 #           directly, in "node" mode), and waits for every job to finish
 #           before starting the next stage.
-#        c. Stops at the first stage that fails for that MS and moves on to
-#           the next MS -- one bad MS never blocks the others.
+#        c. Stops at the first stage that fails for that MS, records which
+#           stage that was in the failures file, and moves on to the next
+#           MS -- one bad MS never blocks the others.
 #   5. After each MS, checks the tracking file again: if RMSYNTH's last step
-#      added this obsid, that MS is counted as passed; otherwise, failed.
-#   6. Once every MS has been tried, prints how many passed and lists the
-#      ones that failed.
+#      added this obsid, that MS is counted as passed. If not, it's counted as
+#      failed -- unless STAGES was deliberately shortened to stop before
+#      RMSYNTH (e.g. for a quick test) and every stage that did run actually
+#      succeeded, in which case it's counted as PARTIAL, not failed.
+#   6. Once every MS has been tried, prints how many passed, failed, and
+#      stopped early, and lists the failed and partial ones by name.
 # ------------------------------------------------------------------ #
 set -uo pipefail
 
@@ -51,14 +55,15 @@ set -uo pipefail
 # INPUTS -- fill these in, then run the script with no arguments
 # ------------------------------------------------------------------ #
 
-INFRA=''      # 'idia', 'hippo', or 'node'
-MS_DIR=''     # directory containing the *.ms to process
-TRACKING=''   # tracking file; must match RMSYNTH_TRACKING_FILE in the pipeline's oxkat/config.py
-PIPELINE=''   # pipeline directory to run, e.g. 'polkat_tkat_reprocessing'
+INFRA='node'      # 'idia', 'hippo', or 'node'
+MS_DIR='/mnt/extraspace/tkat_reprocessing'     # directory containing the *.ms to process
+TRACKING='/mnt/scratchhdd/tkat_reprocessing/tracking/mahrez_tracking.txt'   # tracking file; must match RMSYNTH_TRACKING_FILE in the pipeline's oxkat/config.py
+PIPELINE='/mnt/scratchhdd/tkat_reprocessing/polkat_tkat_reprocessing'   # pipeline directory to run, e.g. 'polkat_tkat_reprocessing'
+WORK='/mnt/scratchhdd/tkat_reprocessing/working_dir'       # scratch working directory, rebuilt from scratch for every MS -- must be dedicated to this script, not shared with anything else
 POLL=${POLL:-300}   # slurm queue poll interval in seconds, overridable via POLL=... in the environment
 
 # Refuse to start unless every input above has actually been filled in.
-REQUIRED=(INFRA MS_DIR TRACKING PIPELINE)
+REQUIRED=(INFRA MS_DIR TRACKING PIPELINE WORK)
 MISSING=()
 for name in "${REQUIRED[@]}"; do
   [[ -z ${!name} ]] && MISSING+=("$name")
@@ -67,6 +72,14 @@ if [[ ${#MISSING[@]} -gt 0 ]]; then
   echo "You need to specify: ${MISSING[*]} -- edit the globals at the top of $0" >&2
   exit 1
 fi
+
+# All path-like inputs must be absolute: this script cd's into $WORK partway
+# through a run, so a relative path given here would silently resolve against
+# the wrong directory from that point on.
+PATH_INPUTS=(MS_DIR TRACKING PIPELINE WORK)
+for name in "${PATH_INPUTS[@]}"; do
+  [[ ${!name} = /* ]] || { echo "$name must be an absolute path (got: '${!name}')" >&2; exit 1; }
+done
 
 # MODE decides how each pipeline stage is run further down: submitted to
 # slurm's job queue (idia, hippo) and waited on, or just run directly on
@@ -77,21 +90,31 @@ case $INFRA in
   *)          echo "INFRA must be 'idia', 'hippo', or 'node' (got: '$INFRA')" >&2; exit 1 ;;
 esac
 
-# Directories fixed relative to this script: WORK is the one shared scratch
-# area, rebuilt from scratch for every MS; STATE keeps each MS's own logs and
-# submitted job IDs around after WORK has been wiped for the next MS.
+# ROOT is fixed to this script's own location; STATE keeps each MS's own logs
+# and submitted job IDs around after WORK has been wiped for the next MS. WORK
+# itself is the INPUTS global above, not derived from ROOT, so it can live
+# anywhere (a different disk, a different scratch area) independent of where
+# this script and its state directory happen to sit.
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-WORK="$ROOT/working_dir"
-STATE="$ROOT/.run_all_ms"
+STATE="$ROOT/run_all_ms_logs"
 
 # The 4 pipeline stages, in the order they must run, and which script each
 # stage's setup step is expected to generate to submit that stage's jobs.
+# Comment out trailing entries for a quick partial test run (e.g. just
+# 0_GET_INFO) -- see STAGES_INCLUDE_RMSYNTH below for what that changes.
 STAGES=(
   "setups/0_GET_INFO.py|submit_info_job.sh"
-  "setups/1GC.py|submit_1GC_jobs.sh"
-  "setups/2GC.py|submit_2GC_jobs.sh"
-  "setups/RMSYNTH.py|submit_rmsynth_jobs.sh"
+  #"setups/1GC.py|submit_1GC_jobs.sh"
+  #"setups/2GC.py|submit_2GC_jobs.sh"
+  #"setups/RMSYNTH.py|submit_rmsynth_jobs.sh"
 )
+
+# TRACKING is only ever written by RMSYNTH's own last step, so a run that
+# doesn't include that stage can never end up in TRACKING even if every stage
+# it did run succeeded. The main loop uses this to tell that apart from an
+# actual failure, instead of reporting a deliberate partial run as FAILED.
+STAGES_INCLUDE_RMSYNTH=false
+[[ " ${STAGES[*]} " == *"RMSYNTH.py"* ]] && STAGES_INCLUDE_RMSYNTH=true
 
 log() { echo "[$(date '+%F %T')] $*"; }
 
@@ -121,6 +144,8 @@ cfg_value() {
 
 # Resolves to an absolute path even if the file doesn't exist yet (TRACKING is
 # created on first write), so it can be compared against config.py's value.
+# 2>/dev/null: discard readlink's stderr if it fails, so the || fallback below
+# can run silently instead of also printing an error.
 canon() { readlink -f -- "$1" 2>/dev/null || echo "$1"; }
 
 CFG_ARCHIVE_DIR=$(cfg_value RMSYNTH_ARCHIVE_DIR)
@@ -147,6 +172,11 @@ if [[ $(canon "$TRACKING") != $(canon "$CFG_TRACKING_FILE") ]]; then
   exit 1
 fi
 
+# Sits next to TRACKING (e.g. .../mahrez_tracking.txt -> .../mahrez_tracking_failed.txt).
+# Unlike TRACKING, nothing else reads this -- it's purely this script's own
+# record of which stage each failed MS got stuck on, appended to like TRACKING.
+FAILED_FILE="$(dirname -- "$TRACKING")/$(basename -- "$TRACKING" .txt)_failed.txt"
+
 # The leading number of an MS's filename, used as that observation's unique
 # ID everywhere below (the tracking file, the per-MS state directory, ...).
 obsid() {
@@ -162,6 +192,15 @@ in_tracking() {
     /^#/ { next }
     { gsub(/[ \t]/, "", $1); if ($1 == id) found = 1 }
     END { exit !found }' "$TRACKING"
+}
+
+# Appends one line to FAILED_FILE recording which stage a run got stuck on,
+# same append-if-missing-header shape as TRACKING.
+record_failure() {
+  local id=$1 msname=$2 stage=$3 reason=$4
+  mkdir -p -- "$(dirname -- "$FAILED_FILE")"
+  [[ -f $FAILED_FILE ]] || echo '# obsid | ms_name | failed_utc | stage | reason' > "$FAILED_FILE"
+  echo "$id | $msname | $(date -u '+%Y-%m-%dT%H:%M:%S') | $stage | $reason" >> "$FAILED_FILE"
 }
 
 # ------------------------------------------------------------------ #
@@ -198,8 +237,19 @@ if [[ -f $TRACKING ]]; then
 else
   echo "  Tracking file  : $TRACKING (does not exist yet -- nothing has been run)"
 fi
+echo "  Failures file  : $FAILED_FILE (which stage a failed MS got stuck on)"
 echo "  Archive dir    : $CFG_ARCHIVE_DIR (from config.py -- each MS's products move here)"
-echo "  Stages         : 0_GET_INFO -> 1GC -> 2GC -> RMSYNTH"
+stage_names=()
+for entry in "${STAGES[@]}"; do
+  name=${entry%%|*}; name=${name#setups/}; name=${name%.py}
+  stage_names+=("$name")
+done
+stages_display=$(printf ' -> %s' "${stage_names[@]}"); stages_display=${stages_display# -> }
+if [[ $STAGES_INCLUDE_RMSYNTH == true ]]; then
+  echo "  Stages         : $stages_display"
+else
+  echo "  Stages         : $stages_display  (no RMSYNTH -- will never reach TRACKING, reported as PARTIAL not FAILED)"
+fi
 [[ $MODE == slurm ]] && echo "  Queue poll     : every ${POLL}s"
 echo
 echo "  Found ${#ALL_MS[@]} MS file(s): ${#DONE[@]} already in tracking, ${#TODO[@]} to run"
@@ -304,7 +354,30 @@ run_stage_node() {
 }
 
 clear_work() {
-  [[ $WORK == "$ROOT/working_dir" ]] || { log "refusing to clear $WORK"; exit 1; }
+  # WORK is a user-supplied global now, not a fixed path under this script, so
+  # this is the actual safety gate before the recursive delete below.
+  [[ $WORK != / ]] || { log "refusing to clear $WORK"; exit 1; }
+
+  # Refuse if WORK is the same as, contains, or is inside PIPELINE or MS_DIR
+  # -- wiping either would lose the pipeline checkout or the raw MS data.
+  local other
+  for other in "$PIPELINE" "$MS_DIR"; do
+    case "$other/" in
+      "$WORK"/*) log "refusing to clear $WORK: it contains $other"; exit 1 ;;
+    esac
+    case "$WORK/" in
+      "$other"/*) log "refusing to clear $WORK: it is inside $other"; exit 1 ;;
+    esac
+  done
+
+  # ROOT (this script's own directory) is only checked one way: WORK sitting
+  # inside ROOT is the normal, documented layout ("place this script one
+  # level above working_dir"), so only refuse the reverse -- WORK containing,
+  # and so deleting, ROOT itself.
+  case "$ROOT/" in
+    "$WORK"/*) log "refusing to clear $WORK: it contains $ROOT"; exit 1 ;;
+  esac
+
   mkdir -p "$WORK"
   find "$WORK" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
 }
@@ -312,8 +385,13 @@ clear_work() {
 # Runs every stage for one MS inside working_dir; returns non-zero at the first
 # stage that fails
 run_ms() {
-  local ms=$1 i setup subs
-  local state="$STATE/$(obsid "$ms")"
+  local ms=$1 i setup subs stage
+  local id=$(obsid "$ms")
+  local state="$STATE/$id"
+  # Wipe any state left over from a previous attempt at this obsid first, so
+  # there's only ever one set of logs per MS -- a stale log from a stage that
+  # isn't even reached this time (e.g. it now fails earlier) never lingers.
+  rm -rf -- "$state"
   mkdir -p "$state"
   clear_work
   cp -a "$PIPELINE/." "$WORK/"
@@ -323,12 +401,25 @@ run_ms() {
   for ((i=0; i<${#STAGES[@]}; i++)); do
     setup=${STAGES[i]%%|*}
     subs=${STAGES[i]##*|}
+    stage=${setup#setups/}
+    stage=${stage%.py}
     log "  stage $i: $setup"
-    python3 "$setup" "$INFRA" > "$state/setup_stage$i.log" 2>&1 \
-      || { log "  $setup failed (see $state/setup_stage$i.log)"; return 1; }
-    [[ -f ./$subs ]] || { log "  $subs not generated"; return 1; }
+    python3 "$setup" "$INFRA" > "$state/setup_stage$i.log" 2>&1 || {
+      log "  $setup failed (see $state/setup_stage$i.log)"
+      record_failure "$id" "${ms##*/}" "$stage" "setup script failed, see $state/setup_stage$i.log"
+      return 1
+    }
+    [[ -f ./$subs ]] || {
+      log "  $subs not generated"
+      record_failure "$id" "${ms##*/}" "$stage" "$subs not generated"
+      return 1
+    }
     if [[ $MODE == slurm ]]; then
-      run_stage_slurm "$subs" "$state/stage$i.jobids" || { log "  stage $i failed"; return 1; }
+      run_stage_slurm "$subs" "$state/stage$i.jobids" || {
+        log "  stage $i failed"
+        record_failure "$id" "${ms##*/}" "$stage" "job(s) did not complete"
+        return 1
+      }
     else
       run_stage_node "$subs" || log "  $subs exited non-zero, continuing"
     fi
@@ -342,6 +433,7 @@ run_ms() {
 mkdir -p "$STATE"
 PASSED=()
 FAILED=()
+PARTIAL=()
 n=0
 
 for ms in "${TODO[@]}"; do
@@ -349,10 +441,20 @@ for ms in "${TODO[@]}"; do
   id=$(obsid "$ms")
   log "=== [$n/${#TODO[@]}] $id: ${ms##*/} ==="
   run_ms "$ms"
+  ran_ok=$?
   cd "$ROOT" || exit 1
+  # Pass/fail is still decided by whether TRACKING now has this obsid, since
+  # only RMSYNTH's last step writes it -- but run_ms's own exit code is now
+  # checked too, to tell "every stage that ran actually succeeded, RMSYNTH
+  # just wasn't one of them" (STAGES was deliberately shortened, e.g. for a
+  # quick test) apart from "a stage genuinely failed". Either way this loop
+  # moves straight on to the next MS; there's no retry or abort here.
   if in_tracking "$id"; then
     log "=== $id complete ==="
     PASSED+=("$id")
+  elif [[ $ran_ok -eq 0 && $STAGES_INCLUDE_RMSYNTH == false ]]; then
+    log "=== $id stopped after the configured stage(s) -- STAGES doesn't include RMSYNTH, so it was never going to reach TRACKING. Not a failure. ==="
+    PARTIAL+=("$id  ${ms##*/}")
   else
     log "=== $id FAILED (not in tracking) ==="
     FAILED+=("$id  ${ms##*/}")
@@ -360,7 +462,10 @@ for ms in "${TODO[@]}"; do
 done
 
 echo
-log "Finished: ${#PASSED[@]} completed, ${#FAILED[@]} failed"
+log "Finished: ${#PASSED[@]} completed, ${#FAILED[@]} failed, ${#PARTIAL[@]} stopped early (STAGES incomplete)"
 for f in "${FAILED[@]}"; do
-  echo "  FAILED  $f"
+  echo "  FAILED   $f"
+done
+for f in "${PARTIAL[@]}"; do
+  echo "  PARTIAL  $f  (ran the configured stage(s) OK; STAGES doesn't include RMSYNTH)"
 done
