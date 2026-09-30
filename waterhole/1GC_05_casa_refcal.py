@@ -8,6 +8,7 @@ import time
 import datetime
 import subprocess
 import sys
+import json
 import numpy as np
 
 # Flush immediately for better logging
@@ -27,15 +28,7 @@ def stamp():
     return now
     
 
-# ---------------------------------------------------------------------------- #
-# ---------------------------------------------------------------------------- #
-# --------------------------- FLAGGING PARAMETERS ---------------------------- #
-# ---------------------------------------------------------------------------- #
-# ---------------------------------------------------------------------------- #
-
-# The values below are the settled defaults from a long investigation into a
-# break in the Stokes I spectrum above ~1.6 GHz in L-band. Simply raising
-# BPCAL_CPARAM_RFLAG_FREQDEVSCALE to 7.0 turned out to be what fixes it.
+# ------- Parameters
 
 DEBUG_PRINT_FLAGS = False
 
@@ -48,32 +41,25 @@ TARGET_VIS_RFLAG_TIMEDEVSCALE = 5.0   # rflag threshold (sigma), time direction
 TARGET_VIS_RFLAG_FREQDEVSCALE = 5.0   # rflag threshold (sigma), freq direction
 TARGET_VIS_TFCROP_TIMECUTOFF  = 4.0   # tfcrop threshold (sigma), time direction
 TARGET_VIS_TFCROP_FREQCUTOFF  = 3.0   # tfcrop threshold (sigma), freq direction
-TARGET_VIS_EXTEND             = False  # whether the mode='extend' pass runs
-TARGET_VIS_EXTENDPOLS         = False  # mode='extend' extendpols
+TARGET_VIS_EXTEND             = True  # whether the mode='extend' pass runs
+TARGET_VIS_EXTENDPOLS         = True  # mode='extend' extendpols
 TARGET_VIS_EXTEND_TIME        = 90.0  # mode='extend' growtime (% already flagged)
 TARGET_VIS_EXTEND_FREQ        = 90.0  # mode='extend' growfreq (% already flagged)
-TARGET_VIS_EXTEND_GROWAROUND  = False  # mode='extend' growaround
-TARGET_VIS_EXTEND_FLAGNEARTIME = False  # mode='extend' flagneartime
-TARGET_VIS_EXTEND_FLAGNEARFREQ = False  # mode='extend' flagnearfreq
+TARGET_VIS_EXTEND_GROWAROUND  = True  # mode='extend' growaround
+TARGET_VIS_EXTEND_FLAGNEARTIME = True  # mode='extend' flagneartime
+TARGET_VIS_EXTEND_FLAGNEARFREQ = True  # mode='extend' flagnearfreq
 
 # B0/B bandpass table (CPARAM) rflag/tfcrop thresholds
-BPCAL_CPARAM_RFLAG_TIMEDEVSCALE = 5.0   # rflag threshold (sigma), time direction
-BPCAL_CPARAM_RFLAG_FREQDEVSCALE = 7.0 if band == 'L' else 5.0   # rflag threshold (sigma), freq direction
-BPCAL_CPARAM_TFCROP_TIMECUTOFF  = 4.0   # tfcrop threshold (sigma), time direction
-BPCAL_CPARAM_TFCROP_FREQCUTOFF  = 3.0   # tfcrop threshold (sigma), freq direction
-BPCAL_CPARAM_TFCROP_MAXNPIECES  = 7     # tfcrop maxnpieces, amplitude pass
-BPCAL_CPARAM_EXTENDFLAGS        = False # rflag/tfcrop 'extendflags' on CPARAM
-
-# Extra L-band-only CPARAM rflag over a restricted frequency range, run just
-# before the main CPARAM rflag on both the B0 and B tables
-BPCAL_CPARAM_LBAND_RFLAG              = False
-BPCAL_CPARAM_LBAND_RFLAG_SPW          = '*:0.5GHz~1.6GHz'
-BPCAL_CPARAM_LBAND_RFLAG_TIMEDEVSCALE = 5.0   # rflag threshold (sigma), time direction
-BPCAL_CPARAM_LBAND_RFLAG_FREQDEVSCALE = 5.0   # rflag threshold (sigma), freq direction
+BPCAL_CPARAM_RFLAG_TIMEDEVSCALE = 6.0   # rflag threshold (sigma), time direction
+BPCAL_CPARAM_RFLAG_FREQDEVSCALE = 7.0   # rflag threshold (sigma), freq direction
+BPCAL_CPARAM_TFCROP_TIMECUTOFF  = 5.0   # tfcrop threshold (sigma), time direction
+BPCAL_CPARAM_TFCROP_FREQCUTOFF  = 4.0   # tfcrop threshold (sigma), freq direction
+BPCAL_CPARAM_TFCROP_MAXNPIECES  = 3     # tfcrop maxnpieces, amplitude pass
+BPCAL_CPARAM_EXTENDFLAGS        = True # rflag/tfcrop 'extendflags' on CPARAM
 
 # Extra CPARAM pass: tfcrop on bandpass phase only (ARG_Sol1,Sol2)
-BPCAL_EXTRA_TFCROP = False
-BPCAL_ARG_TFCROP_MAXNPIECES = 3     # tfcrop maxnpieces, phase-only (ARG) pass
+BPCAL_EXTRA_TFCROP = True
+BPCAL_ARG_TFCROP_MAXNPIECES = 1     # tfcrop maxnpieces, phase-only (ARG) pass
 BPCAL_ARG_TFCROP_TIMECUTOFF = 5.0   # tfcrop threshold (sigma), time direction
 BPCAL_ARG_TFCROP_FREQCUTOFF = 5.0   # tfcrop threshold (sigma), freq direction
 
@@ -90,129 +76,23 @@ CAL_VIS_RFLAG_TIMEDEVSCALE = 5.0   # rflag threshold (sigma), time direction
 CAL_VIS_RFLAG_FREQDEVSCALE = 5.0   # rflag threshold (sigma), freq direction
 CAL_VIS_TFCROP_TIMECUTOFF  = 4.0   # tfcrop threshold (sigma), time direction
 CAL_VIS_TFCROP_FREQCUTOFF  = 3.0   # tfcrop threshold (sigma), freq direction
-CAL_VIS_TFCROP_MAXNPIECES  = 7     # tfcrop maxnpieces
-CAL_VIS_EXTEND             = False  # whether the mode='extend' pass runs
-CAL_VIS_EXTENDPOLS         = False  # mode='extend' extendpols
-CAL_VIS_EXTEND_TIME        = 90.0  # mode='extend' growtime (% already flagged)
-CAL_VIS_EXTEND_FREQ        = 90.0  # mode='extend' growfreq (% already flagged)
-CAL_VIS_EXTEND_GROWAROUND  = False # mode='extend' growaround
-CAL_VIS_EXTEND_FLAGNEARTIME = False # mode='extend' flagneartime
-CAL_VIS_EXTEND_FLAGNEARFREQ = False # mode='extend' flagnearfreq
+CAL_VIS_TFCROP_MAXNPIECES  = 3     # tfcrop maxnpieces
+CAL_VIS_EXTEND             = True  # whether the mode='extend' pass runs
+CAL_VIS_EXTENDPOLS         = True  # mode='extend' extendpols
+CAL_VIS_EXTEND_TIME        = 80.0  # mode='extend' growtime (% already flagged)
+CAL_VIS_EXTEND_FREQ        = 80.0  # mode='extend' growfreq (% already flagged)
+CAL_VIS_EXTEND_GROWAROUND  = True # mode='extend' growaround
+CAL_VIS_EXTEND_FLAGNEARTIME = True # mode='extend' flagneartime
+CAL_VIS_EXTEND_FLAGNEARFREQ = True # mode='extend' flagnearfreq
 
-# Andrew's custom hacky flagger (tools/basedflagger.py) -- extra pass run on the
-# primary (after its first-stage flag), the polang cal, each secondary, and
-# each target. Off by default.
-BASED_FLAGGER = False
+# BASED flagger (tools/basedflagger.py) -- amplitude-vs-baseline outlier pass on
+# the visibilities, run on the primary only, after the .B table's own
+# tfcrop/rflag passes. Detection is per scan and per correlation; the flag
+# commands it writes select on antenna and spw alone.
+BASED_FLAGGER = True
 BASED_FLAGGER_CORRELATION_PRODUCTS = 'XX,YY,XY,YX'
 BASED_FLAGGER_ANTENNA_FLAG_CAP = 2
 BASED_FLAGGER_OUTLIER_MODE = 'mixed'
-
-# Test phase as well as amplitude. basedflagger runs the phase pass on the
-# parallel hands only, whatever correlations are selected above.
-BASED_FLAGGER_PHASE = True
-
-# The --phase switch is appended to every basedflagger call from one place.
-BASED_FLAGGER_PHASE_ARG = ' --phase' if BASED_FLAGGER_PHASE else ''
-
-# DEBUGGING: shadems amp/phase vs baseline of the field basedflagger just ran
-# on, once its flags are applied -- i.e. the CORRECTED_DATA it tested, before
-# any later solve or applycal overwrites it.
-DEBUG_BASED_SHADEMS = True
-
-# Which fields to run BASED flagger on: comma-separated combination of
-# 'primary', 'pacal', 'secondary', 'target'
-BASED_FLAGGER_FIELDS = 'primary,pacal'
-BASED_FLAGGER_FIELDS_LIST = [f.strip().lower() for f in BASED_FLAGGER_FIELDS.split(',') if f.strip()]
-
-# Outlier mode for targets specifically, overriding BASED_FLAGGER_OUTLIER_MODE:
-# targets are typically fainter fields, where a low outlier is more likely to
-# be noise than a defect, so only high outliers are flagged by default
-BASED_FLAGGER_TARGET_OUTLIER_MODE = 'high'
-
-def based_flag_fields_arg(fields):
-    """
-    basedflagger --flag-fields argument: the fields a calibrator's flags are
-    passed on to. Each flagged calibrator scan also flags those fields' scans
-    between it and that calibrator's previous and next scans.
-    """
-    return f" --flag-fields '{','.join(fields)}'"
-
-# Primary and polang cal flags go to every field; a secondary's go only to the
-# targets paired with it. Targets pass their flags on to nothing.
-BASED_FLAGGER_ALL_FIELDS = list(dict.fromkeys(
-    [bpcal_name] + ([pacal_name] if pacal_name != '' else []) + pcal_names + targets))
-BASED_FLAGGER_ALL_FIELDS_ARG = based_flag_fields_arg(BASED_FLAGGER_ALL_FIELDS)
-
-def apply_based_flags(myms, inpfile, label, returncode=0):
-    """
-    Apply a basedflagger flag list, reporting the before/after flag fraction.
-
-    A calibrator's flag commands select its own scans plus the scans of the
-    other fields its flags are passed on to, so they remove more than the field they were
-    derived from. basedflagger can only estimate its own field's share; this
-    is where the amount actually removed is measured.
-
-    basedflagger is an optional extra pass, so it never stops the calibration:
-    a non-zero `returncode` (the flagger's exit status), a missing list, or a
-    list with no commands in it all leave the flags as they are and say why.
-    flagdata(mode='list') raises on an empty list, and basedflagger creates its
-    list empty before it starts, so an empty list is the normal result for a
-    field with nothing to flag as well as what a failed run leaves behind.
-    """
-    if returncode != 0:
-        print(f'WARNING: BASED flagger [{label}]: exited with status {returncode} '
-              f'-- no flags applied from {inpfile}')
-        return
-
-    if not os.path.isfile(inpfile):
-        print(f'WARNING: BASED flagger [{label}]: {inpfile} not found '
-              f'-- no flags applied')
-        return
-
-    with open(inpfile) as f:
-        n_commands = sum(1 for line in f
-                         if line.strip() and not line.lstrip().startswith('#'))
-    if n_commands == 0:
-        print(f'BASED flagger [{label}]: no baselines flagged ({inpfile} is empty)')
-        return
-
-    before = flagdata(vis=myms, mode='summary')
-    flagdata(vis=myms, mode='list', inpfile=inpfile, flagbackup=False)
-    after = flagdata(vis=myms, mode='summary')
-
-    try:
-        f0 = before['flagged'] / before['total']
-        f1 = after['flagged'] / after['total']
-        print(f'BASED flagger [{label}]: flagged {f0:.4%} -> {f1:.4%} '
-              f'(+{f1 - f0:.4%}, {int(after["flagged"] - before["flagged"]):,} '
-              f'visibilities) from {inpfile}')
-    except (KeyError, TypeError, ZeroDivisionError):
-        print(f'BASED flagger [{label}]: applied {inpfile} '
-              f'(flag summary unavailable)')
-
-def plot_post_based(myms, field, label):
-    """
-    Plot parallel-hand amp and phase vs baseline for `field` straight after
-    its basedflagger flags are applied.
-    """
-    if not DEBUG_BASED_SHADEMS:
-        return
-    shadems_cmd = (f"shadems --dir {VISPLOTS} "
-                   f"--xaxis BASELINE,BASELINE,BASELINE,BASELINE "
-                   f"--yaxis CORRECTED_DATA:amp:XX,CORRECTED_DATA:amp:YY,"
-                   f"CORRECTED_DATA:phase:XX,CORRECTED_DATA:phase:YY "
-                   f"--colour-by ANTENNA1 --cnum 64 "
-                   f"--png 'based_post{label}_{{ms}}_{{field}}_{{label}}.png' "
-                   f"--field {field} {myms}")
-    print(f'DEBUG: plotting amp/phase vs baseline after BASED flagger [{field}]: {shadems_cmd}')
-    subprocess.run([shadems_cmd], shell=True)
-
-
-# ---------------------------------------------------------------------------- #
-# ---------------------------------------------------------------------------- #
-# ------------------------- CALIBRATION PARAMETERS --------------------------- #
-# ---------------------------------------------------------------------------- #
-# ---------------------------------------------------------------------------- #
 
 gapfill = CAL_1GC_FILLGAPS
 myuvrange = CAL_1GC_UVRANGE
@@ -227,48 +107,6 @@ if primary_uvrange != '':
     primary_uvrange_use = primary_uvrange
 else:
     primary_uvrange_use = myuvrange
-
-# Delay (K) handling for the polarisation angle calibrator and the secondaries.
-# When on, no K is solved on those fields and the primary's delays are applied
-# to them instead, so the K tables hold primary solutions only.
-DELAY_FROM_PRIMARY = False
-
-# interp for the K table wherever it is applied -- solves and applycal alike,
-# including the cross-hand (KCROSS/Xf) path.
-DELAY_INTERP_OWN = 'nearest'      # field applying its own delays
-DELAY_INTERP_CARRIED = 'linear'   # delays carried over from another field
-
-def delay_interp(applied_to, solutions_from):
-    """
-    interp for a K table holding `solutions_from`'s delays, applied to
-    `applied_to`.
-
-    A field applying its own delays has a solution at its own scans, so it
-    snaps to the nearest. Delays carried over from another field have to span
-    the gap in time between the two, so they are interpolated.
-    """
-    return DELAY_INTERP_OWN if solutions_from == applied_to else DELAY_INTERP_CARRIED
-
-def delay_field(field):
-    """
-    Which field's K solutions to apply to `field`.
-
-    With DELAY_FROM_PRIMARY the K tables carry no entry for the secondaries or
-    the polang cal, so every field takes the primary's delays.
-    """
-    return bpcal_name if DELAY_FROM_PRIMARY else field
-
-
-# ---------------------------------------------------------------------------- #
-# ---------------------------------------------------------------------------- #
-# ------------------------------- WORKFLOW ----------------------------------- #
-# ---------------------------------------------------------------------------- #
-# ---------------------------------------------------------------------------- #
-
-if DELAY_FROM_PRIMARY:
-    print(f'Delays: solving K on the primary ({bpcal_name}) only; secondaries '
-          f'and polang cal take those solutions, applied with '
-          f'interp={DELAY_INTERP_CARRIED}')
 
 
 # ------- Setup names
@@ -285,6 +123,8 @@ dftab0  = GAINTABLES+'/cal_1GC_'+myms+'.Df0'
 
 ktab = GAINTABLES+'/cal_1GC_'+myms+'.K'
 bptab = GAINTABLES+'/cal_1GC_'+myms+'.B'
+bptab1 = GAINTABLES+'/cal_1GC_'+myms+'.B1'   # snapshot of .B0 after its first tfcrop
+bptab2 = GAINTABLES+'/cal_1GC_'+myms+'.B2'   # snapshot of .B after its first tfcrop
 gptab = GAINTABLES+'/cal_1GC_'+myms+'.Gp'
 gtab = GAINTABLES+'/cal_1GC_'+myms+'.G'
 ftab = GAINTABLES+'/cal_1GC_'+myms+'.F'
@@ -326,7 +166,8 @@ if primary_tag == '1934':
     # MeerKAT specific crystalball models for 1939 from B.Hugo: https://archive-gw-1.kat.ac.za/public/repository/10.48479/hhhy-4r55/index.htmlV
     if band == 'L':
         syscall = f"crystalball {myms} -f {bpcal_name} -sm {DATA}/crystalball/fitted.PKS1934.LBand.wsclean.cat.txt"
-        subprocess.run([syscall],shell=True)
+        # subprocess.run([syscall],shell=True)
+        pass 
 
     elif band == 'UHF':
         syscall = f"crystalball {myms} -f {bpcal_name} -sm {DATA}/crystalball/fitted.PKS1934.UBand.wsclean.cat.txt"
@@ -400,6 +241,9 @@ if pacal_name != '' and pacal_name != bpcal_name and pacal_name not in pcal_name
         reffreq='1000MHz',
         usescratch=True)
 
+# Bad Antenna:
+flagdata(vis=myms, antenna='m007;m016;m048', flagbackup=False)
+
 # --------------------------------------------------------------- #
 # --------------------------------------------------------------- #
 # --------------------------- STAGE 0 ----------------------- #
@@ -432,11 +276,13 @@ gaincal(vis=myms,
     calmode='p',
     minsnr=3,
     gainfield=[bpcal_name],
-    interp=[delay_interp(bpcal_name, bpcal_name)],
+    interp=['nearest'],
     gaintable=[ktab0])
 
 
 # ------- B0 (primary; apply K0, Gp0)
+
+flagdata(vis=myms, mode='summary', spw='*:1.6GHz~1.8GHz')
 
 bandpass(vis=myms,
     field=bpcal_name,
@@ -451,37 +297,53 @@ bandpass(vis=myms,
     bandtype='B',
     fillgaps=gapfill,
     gainfield=[bpcal_name, bpcal_name],
-    interp=[delay_interp(bpcal_name, bpcal_name), 'linear'],
+    interp=['nearest', 'linear'],
     gaintable=[ktab0, gptab0])
 
-# tfcrop on bandpass amplitude (CPARAM), all correlations
-flagdata(vis=bptab0, mode='tfcrop', datacolumn='CPARAM',
+flagdata(vis=myms, mode='summary', spw='*:1.6GHz~1.8GHz')
+
+# Flagging order kept identical to the .B table below, so B0 and B can be compared 1-to-1.
+flagdata(vis=bptab0,
+    mode='tfcrop',
+    datacolumn='CPARAM',
     maxnpieces=BPCAL_CPARAM_TFCROP_MAXNPIECES,
-    timecutoff=BPCAL_CPARAM_TFCROP_TIMECUTOFF, freqcutoff=BPCAL_CPARAM_TFCROP_FREQCUTOFF,
-    extendflags=BPCAL_CPARAM_EXTENDFLAGS, flagbackup=False)
+    timecutoff=BPCAL_CPARAM_TFCROP_TIMECUTOFF,
+    freqcutoff=BPCAL_CPARAM_TFCROP_FREQCUTOFF,
+    extendflags=BPCAL_CPARAM_EXTENDFLAGS,
+    flagbackup=False)
 
-# L-band only: rflag on bandpass amplitude (CPARAM) over a restricted frequency range
-if BPCAL_CPARAM_LBAND_RFLAG and band == 'L':
-    flagdata(vis=bptab0, mode='rflag', datacolumn='CPARAM', spw=BPCAL_CPARAM_LBAND_RFLAG_SPW,
-        timedevscale=BPCAL_CPARAM_LBAND_RFLAG_TIMEDEVSCALE, freqdevscale=BPCAL_CPARAM_LBAND_RFLAG_FREQDEVSCALE,
-        extendflags=BPCAL_CPARAM_EXTENDFLAGS, flagbackup=False)
+# Snapshot the tfcrop-only state of .B0 for comparison against the later passes.
+if os.path.isdir(bptab1):
+    shutil.rmtree(bptab1)
+shutil.copytree(bptab0, bptab1)
 
-# rflag on bandpass amplitude (CPARAM), all correlations
-flagdata(vis=bptab0, mode='rflag', datacolumn='CPARAM',
-    timedevscale=BPCAL_CPARAM_RFLAG_TIMEDEVSCALE, freqdevscale=BPCAL_CPARAM_RFLAG_FREQDEVSCALE,
-    extendflags=BPCAL_CPARAM_EXTENDFLAGS, flagbackup=False)
+flagdata(vis=bptab0,
+    mode='rflag',
+    datacolumn='CPARAM',
+    extendflags=BPCAL_CPARAM_EXTENDFLAGS,
+    timedevscale=BPCAL_CPARAM_RFLAG_TIMEDEVSCALE,
+    freqdevscale=BPCAL_CPARAM_RFLAG_FREQDEVSCALE,
+    flagbackup=False)
 
 # tfcrop on bandpass phase only (ARG_Sol1,Sol2)
 if BPCAL_EXTRA_TFCROP:
-    flagdata(vis=bptab0, mode='tfcrop', datacolumn='CPARAM', correlation='ARG_Sol1,Sol2',
+    flagdata(vis=bptab0,
+        mode='tfcrop',
+        datacolumn='CPARAM',
         maxnpieces=BPCAL_ARG_TFCROP_MAXNPIECES,
-        timecutoff=BPCAL_ARG_TFCROP_TIMECUTOFF, freqcutoff=BPCAL_ARG_TFCROP_FREQCUTOFF,
-        extendflags=BPCAL_CPARAM_EXTENDFLAGS, flagbackup=False)
+        correlation='ARG_Sol1,Sol2',
+        timecutoff=BPCAL_ARG_TFCROP_TIMECUTOFF,
+        freqcutoff=BPCAL_ARG_TFCROP_FREQCUTOFF,
+        extendflags=BPCAL_CPARAM_EXTENDFLAGS,
+        flagbackup=False)
 
 # extend on the bandpass table (CPARAM)
 if BPCAL_CPARAM_EXTEND:
-    flagdata(vis=bptab0, mode='extend', extendpols=BPCAL_CPARAM_EXTENDPOLS,
-        growtime=BPCAL_CPARAM_EXTEND_TIME, growfreq=BPCAL_CPARAM_EXTEND_FREQ,
+    flagdata(vis=bptab0,
+        mode='extend',
+        extendpols=BPCAL_CPARAM_EXTENDPOLS,
+        growtime=BPCAL_CPARAM_EXTEND_TIME,
+        growfreq=BPCAL_CPARAM_EXTEND_FREQ,
         flagbackup=False)
 
 # DEBUGGING: summarize flags
@@ -502,7 +364,7 @@ gaincal(vis=myms,
     calmode='a',
     minsnr=3,
     gainfield=[bpcal_name, bpcal_name, bpcal_name],
-    interp=[delay_interp(bpcal_name, bpcal_name), 'linear', 'linear'],
+    interp=['nearest', 'linear', 'linear'],
     gaintable=[ktab0, gptab0, bptab0])
 
 
@@ -518,11 +380,14 @@ polcal(vis=myms,
     combine='scan',
     gaintable=[ktab0, gptab0, bptab0, gtab0],
     gainfield=[bpcal_name, bpcal_name, bpcal_name, bpcal_name],
-    interp=[delay_interp(bpcal_name, bpcal_name), 'linear', 'linear', 'linear'],
+    interp=['nearest', 'linear', 'linear', 'linear'],
     append=False)
 
-flagdata(vis=dftab0, mode='clip', clipminmax=[0.0,0.1], flagbackup=False, datacolumn='CPARAM')
-
+flagdata(vis=dftab0,
+    mode='clip',
+    clipminmax=[0.0,0.1],
+    flagbackup=False,
+    datacolumn='CPARAM')
 # DEBUGGING: summarize flags
 if DEBUG_PRINT_FLAGS:
     print('DEBUG: PRINTING FLAGS')
@@ -530,23 +395,40 @@ if DEBUG_PRINT_FLAGS:
 
 # ------- Correct primary data with K0, Gp0, B0, G0, Df0
 
+flagdata(vis=myms, mode='summary', spw='*:1.5GHz~1.8GHz')
+flagdata(vis=myms, mode='summary', spw='')
+
 applycal(vis=myms,
     gaintable=[ktab0, gptab0, bptab0, gtab0, dftab0],
     field=bpcal_name,
     parang=False,
     gainfield=[bpcal_name, bpcal_name, bpcal_name, bpcal_name, bpcal_name],
-    interp=[delay_interp(bpcal_name, bpcal_name), 'linear', 'linear', 'linear', 'linear'],
+    interp=['nearest', 'linear', 'linear', 'linear', 'linear'],
     flagbackup=False)
+
+# ------- Amp vs baseline/freq on the primary, right after K0/Gp0/B0/G0/Df0 apply
+
+if BASED_FLAGGER:
+    for based_xaxis, based_tag in (('BASELINE,BASELINE', 'baseline'),
+                                   ('FREQ,FREQ', 'freq'), 
+                                   ('TIME,TIME', 'time')):
+        shadems_cmd = (f"shadems --dir {VISPLOTS} "
+                       f"--xaxis {based_xaxis} "
+                       f"--yaxis CORRECTED_DATA:amp:XX,CORRECTED_DATA:amp:YY "
+                       f"--colour-by ANTENNA1 --cnum 64 "
+                       f"--png 'based_poststage0apply_{based_tag}_{{ms}}_{{field}}_{{label}}.png' "
+                       f"--field {bpcal_name} {myms}")
+        print(f'Plotting amp vs {based_tag} right after stage 0 applycal: {shadems_cmd}')
+        subprocess.run([shadems_cmd], shell=True)
 
 # DEBUGGING: summarize flags
 if DEBUG_PRINT_FLAGS:
-    print('DEBUG: PRINTING FLAGS')
     flagdata(myms, mode='summary')
 
+flagdata(vis=myms, mode='summary', spw='')
 
 # ------- Flag primary on CORRECTED_DATA - MODEL_DATA
 
-# rflag on CORRECTED_DATA - MODEL_DATA
 flagdata(vis=myms,
     mode='rflag',
     datacolumn='residual',
@@ -556,18 +438,21 @@ flagdata(vis=myms,
     extendflags=EXTEND_AUTO,
     flagbackup=False)
 
-# tfcrop on CORRECTED_DATA - MODEL_DATA
 flagdata(vis=myms,
     mode='tfcrop',
     datacolumn='residual',
     field=bpcal_name,
+    # freqfit='time',
     maxnpieces=CAL_VIS_TFCROP_MAXNPIECES,
     timecutoff=CAL_VIS_TFCROP_TIMECUTOFF,
     freqcutoff=CAL_VIS_TFCROP_FREQCUTOFF,
     extendflags=EXTEND_AUTO,
     flagbackup=False)
 
-# extend on bpcal
+#flagdata(vis=myms, mode='summary', spw='*:1.6GHz~1.8GHz')
+
+#flagdata(vis=myms, mode='summary', spw='*:1.6GHz~1.8GHz')
+
 if CAL_VIS_EXTEND:
     flagdata(vis=myms,
         mode='extend',
@@ -577,6 +462,92 @@ if CAL_VIS_EXTEND:
         flagneartime=CAL_VIS_EXTEND_FLAGNEARTIME,
         flagnearfreq=CAL_VIS_EXTEND_FLAGNEARFREQ,
         extendpols=CAL_VIS_EXTENDPOLS)
+
+
+# ------- Amp vs baseline/freq on the primary, before the BASED flagger
+
+if BASED_FLAGGER:
+    for based_xaxis, based_tag in (('BASELINE,BASELINE', 'baseline'),
+                                   ('FREQ,FREQ', 'freq'), 
+                                   ('TIME,TIME', 'time')):
+        shadems_cmd = (f"shadems --dir {VISPLOTS} "
+                       f"--xaxis {based_xaxis} "
+                       f"--yaxis CORRECTED_DATA:amp:XX,CORRECTED_DATA:amp:YY "
+                       f"--colour-by ANTENNA1 --cnum 64 "
+                       f"--png 'based_preflag_{based_tag}_{{ms}}_{{field}}_{{label}}.png' "
+                       f"--field {bpcal_name} {myms}")
+        print(f'Plotting amp vs {based_tag} before BASED flagger: {shadems_cmd}')
+        subprocess.run([shadems_cmd], shell=True)
+
+
+# ------- BASED flagger (primary only)
+#
+# Runs once K0, Gp0, B0, G0 and Df0 are on the visibilities and the residual
+# rflag/tfcrop/extend passes are done, so it sees calibrated CORRECTED_DATA
+# with the obvious badness already removed. It looks for baselines whose
+# amplitude distribution is broadened relative to the array norm, which the
+# residual-based passes above do not target.
+#
+# basedflagger.py only writes a flag command list -- flagdata applies it here.
+# Those commands select on antenna and spw alone, with no field or scan term,
+# so they apply to every field in the MS rather than just the primary they were
+# derived from. The before/after summary is the only measurement of how much
+# was actually removed; basedflagger's own tally is an estimate for this field.
+#
+# Sits before the flagmanager save below, so 'bpcal_residual_flags' captures
+# this pass too and remains a complete restore point.
+
+# DISABLED for this run -- B0 basedflagger pass commented out.
+# if BASED_FLAGGER:
+#     # basedflagger.py names its output 'baseline_flags<suffix>.txt' in the CWD,
+#     # so the suffix is defined once here and both the call and the apply below
+#     # are built from it.
+#     based_suffix = '_bpcal'
+#     based_inpfile = f'baseline_flags{based_suffix}.txt'
+#     based_cmd = (f"python_dask {TOOLS}/basedflagger.py "
+#                  f"{myms} {bpcal_name} "
+#                  f"--correlation-products {BASED_FLAGGER_CORRELATION_PRODUCTS} "
+#                  f"--antenna-flag-cap {BASED_FLAGGER_ANTENNA_FLAG_CAP} "
+#                  f"--outlier-mode {BASED_FLAGGER_OUTLIER_MODE} "
+#                  f"--save-dir {VISPLOTS}/ --log-dir {LOGS}/ "
+#                  f"--output-suffix {based_suffix}")
+#     print(f'Running BASED flagger on primary: {based_cmd}')
+#     subprocess.run([based_cmd], shell=True)
+#
+#     if os.path.isfile(based_inpfile):
+#         based_before = flagdata(vis=myms, mode='summary')
+#         flagdata(vis=myms, mode='list', inpfile=based_inpfile, flagbackup=False)
+#         based_after = flagdata(vis=myms, mode='summary')
+#         try:
+#             f0 = based_before['flagged'] / based_before['total']
+#             f1 = based_after['flagged'] / based_after['total']
+#             print(f'BASED flagger [{bpcal_name}]: flagged {f0:.4%} -> {f1:.4%} '
+#                   f'(+{f1 - f0:.4%}, '
+#                   f'{int(based_after["flagged"] - based_before["flagged"]):,} '
+#                   f'visibilities) from {based_inpfile}')
+#         except (KeyError, TypeError, ZeroDivisionError):
+#             print(f'BASED flagger [{bpcal_name}]: applied {based_inpfile} '
+#                   f'(flag summary unavailable)')
+#     else:
+#         print(f'BASED flagger [{bpcal_name}]: {based_inpfile} not produced -- '
+#               f'nothing applied')
+#
+#     # Amp vs baseline and amp vs freq on the primary, post-flag.
+#     for based_xaxis, based_tag in (('BASELINE,BASELINE', 'baseline'),
+#                                    ('FREQ,FREQ', 'freq'),
+#                                    ('TIME,TIME', 'time')):
+#         shadems_cmd = (f"shadems --dir {VISPLOTS} "
+#                        f"--xaxis {based_xaxis} "
+#                        f"--yaxis CORRECTED_DATA:amp:XX,CORRECTED_DATA:amp:YY "
+#                        f"--colour-by ANTENNA1 --cnum 64 "
+#                        f"--png 'based_postflag_{based_tag}_{{ms}}_{{field}}_{{label}}.png' "
+#                        f"--field {bpcal_name} {myms}")
+#         print(f'Plotting amp vs {based_tag} after BASED flagger: {shadems_cmd}')
+#         subprocess.run([shadems_cmd], shell=True)
+
+
+flagdata(vis=myms, mode='summary', spw='*:1.5GHz~1.8GHz')
+flagdata(vis=myms, mode='summary', spw='')
 
 # DEBUGGING: summarize flags
 if DEBUG_PRINT_FLAGS:
@@ -591,20 +562,6 @@ flagmanager(vis=myms,
         mode='save',
         versionname='bpcal_residual_flags')
 
-# ------- BASED flagger (primary)
-
-if BASED_FLAGGER and 'primary' in BASED_FLAGGER_FIELDS_LIST:
-    based_cmd = (f"python_dask {TOOLS}/basedflagger.py "
-                 f"{myms} {bpcal_name} "
-                 f"--correlation-products {BASED_FLAGGER_CORRELATION_PRODUCTS} "
-                 f"--antenna-flag-cap {BASED_FLAGGER_ANTENNA_FLAG_CAP} --outlier-mode {BASED_FLAGGER_OUTLIER_MODE} "
-                 f"--save-dir {VISPLOTS}/ --output-suffix _bpcal"
-                 + BASED_FLAGGER_PHASE_ARG + BASED_FLAGGER_ALL_FIELDS_ARG)
-    print(f'Running BASED flagger on primary: {based_cmd}')
-    based_run = subprocess.run([based_cmd], shell=True)
-    apply_based_flags(myms, 'baseline_flags_bpcal.txt', bpcal_name, based_run.returncode)
-    plot_post_based(myms, bpcal_name, '_bpcal')
-
 
 # ---------------------------------------------------------------------------------------- #
 # ---------------------------------------------------------------------------------------- #
@@ -613,7 +570,12 @@ if BASED_FLAGGER and 'primary' in BASED_FLAGGER_FIELDS_LIST:
 # ---------------------------------------------------------------------------------------- #
 
 
-# ------- K (primary; no prior calibration)
+# ------- K (primary)
+# Cyclical solve DISABLED: K, Gp, B are currently solved as a plain chain (K, then
+# Gp applying K, then B applying K and Gp), which mirrors the stage-0 chain exactly
+# so B0 and B can be compared 1-to-1. To restore the cyclical solve -- each of K, Gp,
+# B solved with the other two applied, using the stage-0 (0-suffix) tables wherever
+# the working-table version does not exist yet -- swap the commented blocks below.
 
 gaincal(vis=myms,
     field=bpcal_name,
@@ -623,6 +585,9 @@ gaincal(vis=myms,
     refant=str(ref_ant),
     gaintype='K',
     solint='inf')
+    #gaintable=[gptab0, bptab0],
+    #gainfield=[bpcal_name, bpcal_name],
+    #interp=['linear', 'linear'])
 
 
 # -------- Gp (primary; apply K) -- Type G, phase-only
@@ -639,7 +604,11 @@ gaincal(vis=myms,
     minsnr=3,
     gaintable=[ktab],
     gainfield=[bpcal_name],
-    interp=[delay_interp(bpcal_name, bpcal_name)])
+    interp=['nearest'])
+    # --- cyclical: also apply B0 from stage 0 (replaces the three lines above) ---
+    #gaintable=[ktab, bptab0],
+    #gainfield=[bpcal_name, bpcal_name],
+    #interp=['nearest', 'linear'])
 
 
 # ------- B (primary; apply K, Gp)
@@ -658,36 +627,51 @@ bandpass(vis=myms,
     fillgaps=gapfill,
     gaintable=[ktab, gptab],
     gainfield=[bpcal_name, bpcal_name],
-    interp=[delay_interp(bpcal_name, bpcal_name), 'linear'])
+    interp=['nearest', 'linear'])
 
-# tfcrop on bandpass amplitude (CPARAM), all correlations
-flagdata(vis=bptab, mode='tfcrop', datacolumn='CPARAM',
+# Flagging order: tfcrop -> rflag -> tfcrop on phase only. Kept identical to the .B0
+# table above, so B0 and B can be compared 1-to-1.
+flagdata(vis=bptab,
+    mode='tfcrop',
+    datacolumn='CPARAM',
     maxnpieces=BPCAL_CPARAM_TFCROP_MAXNPIECES,
-    timecutoff=BPCAL_CPARAM_TFCROP_TIMECUTOFF, freqcutoff=BPCAL_CPARAM_TFCROP_FREQCUTOFF,
-    extendflags=BPCAL_CPARAM_EXTENDFLAGS, flagbackup=False)
+    timecutoff=BPCAL_CPARAM_TFCROP_TIMECUTOFF,
+    freqcutoff=BPCAL_CPARAM_TFCROP_FREQCUTOFF,
+    extendflags=BPCAL_CPARAM_EXTENDFLAGS,
+    flagbackup=False)
 
-# L-band only: rflag on bandpass amplitude (CPARAM) over a restricted frequency range
-if BPCAL_CPARAM_LBAND_RFLAG and band == 'L':
-    flagdata(vis=bptab, mode='rflag', datacolumn='CPARAM', spw=BPCAL_CPARAM_LBAND_RFLAG_SPW,
-        timedevscale=BPCAL_CPARAM_LBAND_RFLAG_TIMEDEVSCALE, freqdevscale=BPCAL_CPARAM_LBAND_RFLAG_FREQDEVSCALE,
-        extendflags=BPCAL_CPARAM_EXTENDFLAGS, flagbackup=False)
+# Snapshot the tfcrop-only state of .B for comparison against the later passes.
+if os.path.isdir(bptab2):
+    shutil.rmtree(bptab2)
+shutil.copytree(bptab, bptab2)
 
-# rflag on bandpass amplitude (CPARAM), all correlations
-flagdata(vis=bptab, mode='rflag', datacolumn='CPARAM',
-    timedevscale=BPCAL_CPARAM_RFLAG_TIMEDEVSCALE, freqdevscale=BPCAL_CPARAM_RFLAG_FREQDEVSCALE,
-    extendflags=BPCAL_CPARAM_EXTENDFLAGS, flagbackup=False)
+flagdata(vis=bptab,
+    mode='rflag',
+    datacolumn='CPARAM',
+    extendflags=BPCAL_CPARAM_EXTENDFLAGS,
+    timedevscale=BPCAL_CPARAM_RFLAG_TIMEDEVSCALE,
+    freqdevscale=BPCAL_CPARAM_RFLAG_FREQDEVSCALE,
+    flagbackup=False)
 
 # tfcrop on bandpass phase only (ARG_Sol1,Sol2)
 if BPCAL_EXTRA_TFCROP:
-    flagdata(vis=bptab, mode='tfcrop', datacolumn='CPARAM', correlation='ARG_Sol1,Sol2',
+    flagdata(vis=bptab,
+        mode='tfcrop',
+        datacolumn='CPARAM',
         maxnpieces=BPCAL_ARG_TFCROP_MAXNPIECES,
-        timecutoff=BPCAL_ARG_TFCROP_TIMECUTOFF, freqcutoff=BPCAL_ARG_TFCROP_FREQCUTOFF,
-        extendflags=BPCAL_CPARAM_EXTENDFLAGS, flagbackup=False)
+        correlation='ARG_Sol1,Sol2',
+        timecutoff=BPCAL_ARG_TFCROP_TIMECUTOFF,
+        freqcutoff=BPCAL_ARG_TFCROP_FREQCUTOFF,
+        extendflags=BPCAL_CPARAM_EXTENDFLAGS,
+        flagbackup=False)
 
 # extend on the bandpass table (CPARAM)
 if BPCAL_CPARAM_EXTEND:
-    flagdata(vis=bptab, mode='extend', extendpols=BPCAL_CPARAM_EXTENDPOLS,
-        growtime=BPCAL_CPARAM_EXTEND_TIME, growfreq=BPCAL_CPARAM_EXTEND_FREQ,
+    flagdata(vis=bptab,
+        mode='extend',
+        extendpols=BPCAL_CPARAM_EXTENDPOLS,
+        growtime=BPCAL_CPARAM_EXTEND_TIME,
+        growfreq=BPCAL_CPARAM_EXTEND_FREQ,
         flagbackup=False)
 
 # DEBUGGING: summarize flags
@@ -709,7 +693,7 @@ gaincal(vis=myms,
     minsnr=3,
     gaintable=[ktab, gptab, bptab],
     gainfield=[bpcal_name, bpcal_name, bpcal_name],
-    interp=[delay_interp(bpcal_name, bpcal_name), 'linear', 'linear'])
+    interp=['nearest', 'linear', 'linear'])
 
 
 # -------- Solve for Df (primary; apply K, Gp, B, Ga)
@@ -724,14 +708,92 @@ polcal(vis=myms,
     combine='scan',
     gaintable=[ktab, gptab, bptab, gtab],
     gainfield=[bpcal_name, bpcal_name, bpcal_name, bpcal_name],
-    interp=[delay_interp(bpcal_name, bpcal_name), 'linear', 'linear', 'linear'])
+    interp=['nearest', 'linear', 'linear', 'linear'])
 
-flagdata(vis=dftab, mode='clip', clipminmax=[0.0,0.1], flagbackup=False, datacolumn='CPARAM')
+flagdata(vis=dftab,
+    mode='clip',
+    clipminmax=[0.0,0.1],
+    flagbackup=False,
+    datacolumn='CPARAM')
 
 # DEBUGGING: summarize flags
 if DEBUG_PRINT_FLAGS:
     print('DEBUG: PRINTING FLAGS')
     flagdata(myms, mode='summary')
+
+
+# ------- Correct primary data with K, Gp, B, Ga, Df
+
+applycal(vis=myms,
+    gaintable=[ktab, gptab, bptab, gtab, dftab],
+    field=bpcal_name,
+    parang=False,
+    gainfield=[bpcal_name, bpcal_name, bpcal_name, bpcal_name, bpcal_name],
+    interp=['nearest', 'linear', 'linear', 'linear', 'linear'],
+    flagbackup=False)
+
+
+# ------- Amp vs baseline/freq on the primary, before the round 2 BASED flagger
+
+if BASED_FLAGGER:
+    for based_xaxis, based_tag in (('BASELINE,BASELINE', 'baseline'),
+                                   ('FREQ,FREQ', 'freq'),
+                                   ('TIME,TIME', 'time')):
+        shadems_cmd = (f"shadems --dir {VISPLOTS} "
+                       f"--xaxis {based_xaxis} "
+                       f"--yaxis CORRECTED_DATA:amp:XX,CORRECTED_DATA:amp:YY "
+                       f"--colour-by ANTENNA1 --cnum 64 "
+                       f"--png 'based_preflag_round2_{based_tag}_{{ms}}_{{field}}_{{label}}.png' "
+                       f"--field {bpcal_name} {myms}")
+        print(f'Plotting amp vs {based_tag} before round 2 BASED flagger: {shadems_cmd}')
+        subprocess.run([shadems_cmd], shell=True)
+
+
+# ------- BASED flagger (primary only)
+
+if BASED_FLAGGER:
+    based_suffix = '_bpcal_round2'
+    based_inpfile = f'baseline_flags{based_suffix}.txt'
+    based_cmd = (f"python_dask {TOOLS}/basedflagger.py "
+                 f"{myms} {bpcal_name} "
+                 f"--correlation-products {BASED_FLAGGER_CORRELATION_PRODUCTS} "
+                 f"--antenna-flag-cap {BASED_FLAGGER_ANTENNA_FLAG_CAP} "
+                 f"--outlier-mode {BASED_FLAGGER_OUTLIER_MODE} "
+                 f"--save-dir {VISPLOTS}/ --log-dir {LOGS}/ "
+                 f"--output-suffix {based_suffix}")
+    print(f'Running BASED flagger on primary (round 2): {based_cmd}')
+    subprocess.run([based_cmd], shell=True)
+
+    if os.path.isfile(based_inpfile):
+        based_before = flagdata(vis=myms, mode='summary')
+        flagdata(vis=myms, mode='list', inpfile=based_inpfile, flagbackup=False)
+        based_after = flagdata(vis=myms, mode='summary')
+        try:
+            f0 = based_before['flagged'] / based_before['total']
+            f1 = based_after['flagged'] / based_after['total']
+            print(f'BASED flagger [{bpcal_name}, round 2]: flagged {f0:.4%} -> {f1:.4%} '
+                  f'(+{f1 - f0:.4%}, '
+                  f'{int(based_after["flagged"] - based_before["flagged"]):,} '
+                  f'visibilities) from {based_inpfile}')
+        except (KeyError, TypeError, ZeroDivisionError):
+            print(f'BASED flagger [{bpcal_name}, round 2]: applied {based_inpfile} '
+                  f'(flag summary unavailable)')
+    else:
+        print(f'BASED flagger [{bpcal_name}, round 2]: {based_inpfile} not produced -- '
+              f'nothing applied')
+
+    # Amp vs baseline and amp vs freq on the primary, post-flag.
+    for based_xaxis, based_tag in (('BASELINE,BASELINE', 'baseline'),
+                                   ('FREQ,FREQ', 'freq'),
+                                   ('TIME,TIME', 'time')):  
+        shadems_cmd = (f"shadems --dir {VISPLOTS} "
+                       f"--xaxis {based_xaxis} "
+                       f"--yaxis CORRECTED_DATA:amp:XX,CORRECTED_DATA:amp:YY "
+                       f"--colour-by ANTENNA1 --cnum 64 "
+                       f"--png 'based_round2_{based_tag}_{{ms}}_{{field}}_{{label}}.png' "
+                       f"--field {bpcal_name} {myms}")
+        print(f'Plotting amp vs {based_tag} after BASED flagger (round 2): {shadems_cmd}')
+        subprocess.run([shadems_cmd], shell=True)
 
 
 # -------------------------------------------------------------------------------------------------------- #
@@ -756,7 +818,7 @@ if pacal_name != '':
         minsnr=3,
         gaintable=[ktab, bptab, dftab],
         gainfield=[bpcal_name, bpcal_name, bpcal_name],
-        interp=[delay_interp(pacal_name, bpcal_name), 'linear', 'linear'],
+        interp=['linear', 'linear', 'linear'],
         append=True)
 
     # ------- G0 (polcal; apply B, Df, K from primary, Gp0 from polcal) -- Type T, amp-only
@@ -773,24 +835,23 @@ if pacal_name != '':
         minsnr=3,
         gaintable=[ktab, bptab, dftab, gptab0],
         gainfield=[bpcal_name, bpcal_name, bpcal_name, pacal_name],
-        interp=[delay_interp(pacal_name, bpcal_name), 'linear', 'linear', 'linear'],
+        interp=['linear', 'linear', 'linear', 'linear'],
         append=True)
 
     # ------- K0 (polcal; apply B, Df from primary, Gp0, G0 from polcal)
 
-    if not DELAY_FROM_PRIMARY:
-        gaincal(vis=myms,
-            field=pacal_name,
-            caltable=ktab0,
-            # uvrange=myuvrange,
-            # spw=myspw,
-            refant=str(ref_ant),
-            gaintype='K',
-            solint='inf',
-            gaintable=[bptab, dftab, gptab0, gtab0],
-            gainfield=[bpcal_name, bpcal_name, pacal_name, pacal_name],
-            interp=['linear', 'linear', 'linear', 'linear'],
-            append=True)
+    gaincal(vis=myms,
+        field=pacal_name,
+        caltable=ktab0,
+        # uvrange=myuvrange,
+        # spw=myspw,
+        refant=str(ref_ant),
+        gaintype='K',
+        solint='inf',
+        gaintable=[bptab, dftab, gptab0, gtab0],
+        gainfield=[bpcal_name, bpcal_name, pacal_name, pacal_name],
+        interp=['linear', 'linear', 'linear', 'linear'],
+        append=True)
 
 # ----- Loop over secondaries
 
@@ -817,7 +878,7 @@ for i in range(0,len(pcal_names)):
         minsnr=3,
         gaintable=[ktab, bptab, dftab],
         gainfield=[bpcal_name, bpcal_name, bpcal_name],
-        interp=[delay_interp(pcal, bpcal_name), 'linear', 'linear'],
+        interp=['nearest', 'linear', 'linear'],
         append=True)
 
     # ------- G0 (pcal; apply B, Df, K from primary, Gp0 from pcal) -- Type T, amp-only
@@ -834,34 +895,33 @@ for i in range(0,len(pcal_names)):
         minsnr=3,
         gaintable=[ktab, bptab, dftab, gptab0],
         gainfield=[bpcal_name, bpcal_name, bpcal_name, pcal],
-        interp=[delay_interp(pcal, bpcal_name), 'linear', 'linear', 'linear'],
+        interp=['nearest', 'linear', 'linear', 'linear'],
         append=True)
 
     # ------- K0 (pcal; apply B, Df from primary, Gp0, G0 from pcal)
 
-    if not DELAY_FROM_PRIMARY:
-        gaincal(vis=myms,
-            field=pcal,
-            caltable=ktab0,
-            # uvrange=myuvrange,
-            # spw=myspw,
-            refant=str(ref_ant),
-            gaintype='K',
-            solint='inf',
-            gaintable=[bptab, dftab, gptab0, gtab0],
-            gainfield=[bpcal_name, bpcal_name, pcal, pcal],
-            interp=['linear', 'linear', 'linear', 'linear'],
-            append=True)
+    gaincal(vis=myms,
+        field=pcal,
+        caltable=ktab0,
+        # uvrange=myuvrange,
+        # spw=myspw,
+        refant=str(ref_ant),
+        gaintype='K',
+        solint='inf',
+        gaintable=[bptab, dftab, gptab0, gtab0],
+        gainfield=[bpcal_name, bpcal_name, pcal, pcal],
+        interp=['linear', 'linear', 'linear', 'linear'],
+        append=True)
 
 if pacal_name != '':
     # -------- Applycal (polcal; B, Df from primary, K0, Gp0, G0 from polcal) and Flag
-    
+
     applycal(vis=myms,
         gaintable=[ktab0, bptab, gptab0, gtab0, dftab],
         field=pacal_name,
         parang=False,
-        gainfield=[delay_field(pacal_name), bpcal_name, pacal_name, pacal_name, bpcal_name],
-        interp=[delay_interp(pacal_name, delay_field(pacal_name)), 'linear', 'linear', 'linear', 'linear'],
+        gainfield=[pacal_name, bpcal_name, pacal_name, pacal_name, bpcal_name],
+        interp=['nearest', 'linear', 'linear', 'linear', 'linear'],
         flagbackup=False)
 
     # DEBUGGING: summarize flags
@@ -869,7 +929,7 @@ if pacal_name != '':
         print('DEBUG: PRINTING FLAGS')
         flagdata(myms, mode='summary')
 
-    # rflag on pacal
+
     flagdata(vis=myms,
         mode='rflag',
         datacolumn='corrected',
@@ -879,7 +939,6 @@ if pacal_name != '':
         extendflags=EXTEND_AUTO,
         flagbackup=False)
 
-    # tfcrop on pacal
     flagdata(vis=myms,
         mode='tfcrop',
         datacolumn='corrected',
@@ -890,7 +949,6 @@ if pacal_name != '':
         extendflags=EXTEND_AUTO,
         flagbackup=False)
 
-    # extend on pacal
     if CAL_VIS_EXTEND:
         flagdata(vis=myms,
             mode='extend',
@@ -899,26 +957,13 @@ if pacal_name != '':
             growaround=CAL_VIS_EXTEND_GROWAROUND,
             flagneartime=CAL_VIS_EXTEND_FLAGNEARTIME,
             flagnearfreq=CAL_VIS_EXTEND_FLAGNEARFREQ,
-            extendpols=CAL_VIS_EXTENDPOLS)
+            extendpols=CAL_VIS_EXTENDPOLS,
+            flagbackup=False)
 
     # DEBUGGING: summarize flags
     if DEBUG_PRINT_FLAGS:
         print('DEBUG: PRINTING FLAGS')
         flagdata(myms, mode='summary')
-
-    # ------- BASED flagger (pacal)
-
-    if BASED_FLAGGER and 'pacal' in BASED_FLAGGER_FIELDS_LIST:
-        based_cmd = (f"python_dask {TOOLS}/basedflagger.py "
-                     f"{myms} {pacal_name} "
-                     f"--correlation-products {BASED_FLAGGER_CORRELATION_PRODUCTS} "
-                     f"--antenna-flag-cap {BASED_FLAGGER_ANTENNA_FLAG_CAP} --outlier-mode {BASED_FLAGGER_OUTLIER_MODE} "
-                     f"--save-dir {VISPLOTS}/ --output-suffix _pacal"
-                     + BASED_FLAGGER_PHASE_ARG + BASED_FLAGGER_ALL_FIELDS_ARG)
-        print(f'Running BASED flagger on pacal: {based_cmd}')
-        based_run = subprocess.run([based_cmd], shell=True)
-        apply_based_flags(myms, 'baseline_flags_pacal.txt', pacal_name, based_run.returncode)
-        plot_post_based(myms, pacal_name, '_pacal')
 
 
 # ----- Loop over secondaries
@@ -938,16 +983,14 @@ for i in range(0,len(pcal_names)):
         gaintable=[ktab0, bptab, gptab0, gtab0, dftab],
         field=pcal,
         parang=False,
-        gainfield=[delay_field(pcal), bpcal_name, pcal, pcal, bpcal_name],
-        interp=[delay_interp(pcal, delay_field(pcal)), 'linear', 'linear', 'linear', 'linear'],
+        gainfield=[pcal, bpcal_name, pcal, pcal, bpcal_name],
+        interp=['nearest', 'linear', 'linear', 'linear', 'linear'],
         flagbackup=False)
-
     # DEBUGGING: summarize flags
     if DEBUG_PRINT_FLAGS:
         print('DEBUG: PRINTING FLAGS')
         flagdata(myms, mode='summary')
 
-    # rflag on secondary
     flagdata(vis=myms,
         mode='rflag',
         datacolumn='corrected',
@@ -957,7 +1000,6 @@ for i in range(0,len(pcal_names)):
         extendflags=EXTEND_AUTO,
         flagbackup=False)
 
-    # tfcrop on secondary
     flagdata(vis=myms,
         mode='tfcrop',
         datacolumn='corrected',
@@ -968,7 +1010,6 @@ for i in range(0,len(pcal_names)):
         extendflags=EXTEND_AUTO,
         flagbackup=False)
 
-    # extend on secondary
     if CAL_VIS_EXTEND:
         flagdata(vis=myms,
             mode='extend',
@@ -978,26 +1019,10 @@ for i in range(0,len(pcal_names)):
             flagneartime=CAL_VIS_EXTEND_FLAGNEARTIME,
             flagnearfreq=CAL_VIS_EXTEND_FLAGNEARFREQ,
             extendpols=CAL_VIS_EXTENDPOLS)
-
     # DEBUGGING: summarize flags
     if DEBUG_PRINT_FLAGS:
         print('DEBUG: PRINTING FLAGS')
         flagdata(myms, mode='summary')
-
-    # ------- BASED flagger (secondary)
-
-    if BASED_FLAGGER and 'secondary' in BASED_FLAGGER_FIELDS_LIST:
-        based_cmd = (f"python_dask {TOOLS}/basedflagger.py "
-                     f"{myms} {pcal} "
-                     f"--correlation-products {BASED_FLAGGER_CORRELATION_PRODUCTS} "
-                     f"--antenna-flag-cap {BASED_FLAGGER_ANTENNA_FLAG_CAP} --outlier-mode {BASED_FLAGGER_OUTLIER_MODE} "
-                     f"--save-dir {VISPLOTS}/ --output-suffix _{pcal}"
-                     + BASED_FLAGGER_PHASE_ARG
-                     + based_flag_fields_arg([t for t, c in zip(targets, target_cal_map) if c == pcal]))
-        print(f'Running BASED flagger on secondary {pcal}: {based_cmd}')
-        based_run = subprocess.run([based_cmd], shell=True)
-        apply_based_flags(myms, f'baseline_flags_{pcal}.txt', pcal, based_run.returncode)
-        plot_post_based(myms, pcal, f'_{pcal}')
 
 # -------------------------------------------------------------------------------------------------------- #
 # -------------------------------------------------------------------------------------------------------- #
@@ -1021,7 +1046,7 @@ if pacal_name != '':
         minsnr=3,
         gaintable=[ktab, bptab, dftab],
         gainfield=[bpcal_name, bpcal_name, bpcal_name],
-        interp=[delay_interp(pacal_name, bpcal_name), 'linear', 'linear'],
+        interp=['nearest', 'linear', 'linear'],
         append=True)
 
     # ------- G (polcal; apply B, Df, K from primary, Gp from polcal) -- Type T, amp-only
@@ -1038,26 +1063,25 @@ if pacal_name != '':
         minsnr=3,
         gaintable=[ktab, bptab, dftab, gptab],
         gainfield=[bpcal_name, bpcal_name, bpcal_name, pacal_name],
-        interp=[delay_interp(pacal_name, bpcal_name), 'linear', 'linear', 'linear'],
+        interp=['nearest', 'linear', 'linear', 'linear'],
         append=True)
 
     # ------- K (polcal; apply B, Df from primary, Gp, G from polcal)
+    
+    gaincal(vis=myms,
+        field=pacal_name,
+        caltable=ktab,
+        # uvrange=myuvrange,
+        # spw=myspw,
+        refant=str(ref_ant),
+        gaintype='K',
+        solint='inf',
+        gaintable=[bptab, dftab, gptab, gtab],
+        gainfield=[bpcal_name, bpcal_name, pacal_name, pacal_name],
+        interp=['linear', 'linear', 'linear', 'linear'],
+        append=True)
 
-    if not DELAY_FROM_PRIMARY:
-        gaincal(vis=myms,
-            field=pacal_name,
-            caltable=ktab,
-            # uvrange=myuvrange,
-            # spw=myspw,
-            refant=str(ref_ant),
-            gaintype='K',
-            solint='inf',
-            gaintable=[bptab, dftab, gptab, gtab],
-            gainfield=[bpcal_name, bpcal_name, pacal_name, pacal_name],
-            interp=['linear', 'linear', 'linear', 'linear'],
-            append=True)
 
-            
 for i in range(0,len(pcal_names)):
 
     pcal = pcal_names[i]
@@ -1081,7 +1105,7 @@ for i in range(0,len(pcal_names)):
         minsnr=3,
         gaintable=[ktab, bptab, dftab],
         gainfield=[bpcal_name, bpcal_name, bpcal_name],
-        interp=[delay_interp(pcal, bpcal_name), 'linear', 'linear'],
+        interp=['nearest', 'linear', 'linear'],
         append=True)
 
     # ------- G (pcal; apply B, Df, K from primary, Gp from pcal) -- Type T, amp-only
@@ -1098,24 +1122,23 @@ for i in range(0,len(pcal_names)):
         minsnr=3,
         gaintable=[ktab, bptab, dftab, gptab],
         gainfield=[bpcal_name, bpcal_name, bpcal_name, pcal],
-        interp=[delay_interp(pcal, bpcal_name), 'linear', 'linear', 'linear'],
+        interp=['nearest', 'linear', 'linear', 'linear'],
         append=True)
 
     # ------- K (pcal; apply B, Df from primary, Gp, G from pcal)
 
-    if not DELAY_FROM_PRIMARY:
-        gaincal(vis=myms,
-            field=pcal,
-            caltable=ktab,
-            # uvrange=myuvrange,
-            # spw=myspw,
-            refant=str(ref_ant),
-            gaintype='K',
-            solint='inf',
-            gaintable=[bptab, dftab, gptab, gtab],
-            gainfield=[bpcal_name, bpcal_name, pcal, pcal],
-            interp=['linear', 'linear', 'linear', 'linear'],
-            append=True)
+    gaincal(vis=myms,
+        field=pcal,
+        caltable=ktab,
+        # uvrange=myuvrange,
+        # spw=myspw,
+        refant=str(ref_ant),
+        gaintype='K',
+        solint='inf',
+        gaintable=[bptab, dftab, gptab, gtab],
+        gainfield=[bpcal_name, bpcal_name, pcal, pcal],
+        interp=['linear', 'linear', 'linear', 'linear'],
+        append=True)
 
 # --- Apply fluxscaling to G but only if there are calibration fields other than the primary
 if len([pcal for pcal in pcal_names if pcal != bpcal_name]) > 0 or pacal_name != '':
@@ -1183,8 +1206,8 @@ if pacal_name != '':
             gaintype='KCROSS',
             parang = True,
             gaintable=[ktab, gptab, bptab, gtab],
-            gainfield=[delay_field(pacal_name), pacal_name, bpcal_name, pacal_name],
-            interp = [delay_interp(pacal_name, delay_field(pacal_name)),'linear','linear','linear'],
+            gainfield=[pacal_name, pacal_name, bpcal_name, pacal_name],
+            interp = ['linear','linear','linear','linear'],
             append = False)
 
         # If skipping KCROSS, immediately move it to bad name and never use it
@@ -1210,9 +1233,13 @@ if pacal_name != '':
                 combine='scan',
                 gaintable=[ktab, gptab, bptab, gtab, kcross],
                 gainfield=[bpcal_name, bpcal_name, bpcal_name, bpcal_name, pacal_name],
-                interp=[delay_interp(bpcal_name, bpcal_name), 'linear', 'linear', 'linear', 'linear'])
+                interp=['nearest', 'linear', 'linear', 'linear', 'linear'])
 
-            flagdata(vis=dftab6, mode='clip', clipminmax=[0.0,0.1], flagbackup=False, datacolumn='CPARAM')
+            flagdata(vis=dftab6,
+                mode='clip',
+                clipminmax=[0.0,0.1],
+                flagbackup=False,
+                datacolumn='CPARAM')
 
             # Active Df is now the KCROSS-informed table
             dftab = dftab6
@@ -1224,8 +1251,8 @@ if pacal_name != '':
         else:
             print("  Solving for Xf (cross-hand phase) with KCROSS")
         xf_gaintable = [ktab, gptab, bptab, gtab, dftab] + ([] if XF_SKIP_KCROSS else [kcross])
-        xf_gainfield = [delay_field(pacal_name), pacal_name, bpcal_name, pacal_name, bpcal_name] + ([] if XF_SKIP_KCROSS else [pacal_name])
-        xf_interp = [delay_interp(pacal_name, delay_field(pacal_name)),'linear','linear','linear','linear'] + ([] if XF_SKIP_KCROSS else ['linear'])
+        xf_gainfield = [pacal_name, pacal_name, bpcal_name, pacal_name, bpcal_name] + ([] if XF_SKIP_KCROSS else [pacal_name])
+        xf_interp = ['linear','linear','linear','linear','linear'] + ([] if XF_SKIP_KCROSS else ['linear'])
         
         polcal(vis = myms,
             field = pacal_name,
@@ -1329,8 +1356,8 @@ if pacal_name != '':
                     gaintype='KCROSS',
                     parang = True,
                     gaintable=[ktab, gptab, bptab, gtab],
-                    gainfield=[delay_field(pacal_name), pacal_name, bpcal_name, pacal_name],
-                    interp = [delay_interp(pacal_name, delay_field(pacal_name)),'linear','linear','linear'],
+                    gainfield=[pacal_name, pacal_name, bpcal_name, pacal_name],
+                    interp = ['linear','linear','linear','linear'],
                     append = False)
 
                 # dftab already points at dftab6 from the first KCROSS-informed solve
@@ -1346,9 +1373,13 @@ if pacal_name != '':
                     combine='scan',
                     gaintable=[ktab, gptab, bptab, gtab, kcross],
                     gainfield=[bpcal_name, bpcal_name, bpcal_name, bpcal_name, pacal_name],
-                    interp=[delay_interp(bpcal_name, bpcal_name), 'linear', 'linear', 'linear', 'linear'])
+                    interp=['nearest', 'linear', 'linear', 'linear', 'linear'])
 
-                flagdata(vis=dftab, mode='clip', clipminmax=[0.0,0.1], flagbackup=False, datacolumn='CPARAM')
+                flagdata(vis=dftab,
+                    mode='clip',
+                    clipminmax=[0.0,0.1],
+                    flagbackup=False,
+                    datacolumn='CPARAM')
 
             # Remake Xf table with only continuous scans
             print(f"  Remaking Xf table using only continuous scans: {continuous_scans}")
@@ -1450,7 +1481,7 @@ applycal(vis = myms,
     field = bpcal_name,
     parang = False,
     gainfield = [bpcal_name, bpcal_name, bpcal_name, bpcal_name, bpcal_name],
-    interp = [delay_interp(bpcal_name, bpcal_name),'linear','linear','linear','linear'],
+    interp = ['nearest','linear','linear','linear','linear'],
     flagbackup=False)
 
 
@@ -1489,8 +1520,8 @@ if pacal_name == '':
             gaintable = [ktab, gptab, bptab, ftab, dftab] + override_cross_table,
             field = pcal,
             parang = override_parang_cal,
-            gainfield = [delay_field(pcal), pcal, bpcal_name, pcal, bpcal_name] + override_cross_field,
-            interp = [delay_interp(pcal, delay_field(pcal)),'linear','linear','linear','linear'] + override_cross_interp,
+            gainfield = [pcal, pcal, bpcal_name, pcal, bpcal_name] + override_cross_field,
+            interp = ['nearest','linear','linear','linear','linear'] + override_cross_interp,
             flagbackup=False)
 
     # ------- Targets
@@ -1503,8 +1534,8 @@ if pacal_name == '':
                 gaintable = [ktab, gptab, bptab, ftab, dftab] + override_cross_table,
                 field=target,
                 parang=override_parang_target,
-                gainfield = [delay_field(related_pcal), related_pcal, bpcal_name, related_pcal, bpcal_name] + override_cross_field,
-                interp = [delay_interp(target, delay_field(related_pcal)),'linear','linear','linear','linear'] + override_cross_interp,
+                gainfield = [related_pcal, related_pcal, bpcal_name, related_pcal, bpcal_name] + override_cross_field,
+                interp = ['nearest','linear','linear','linear','linear'] + override_cross_interp,
                 flagbackup=False)
 
         # Flag target
@@ -1532,19 +1563,6 @@ if pacal_name == '':
                 flagnearfreq=TARGET_VIS_EXTEND_FLAGNEARFREQ, extendpols=TARGET_VIS_EXTENDPOLS,
                 field=target, flagbackup=False)
 
-        # ------- BASED flagger (target)
-
-        if BASED_FLAGGER and 'target' in BASED_FLAGGER_FIELDS_LIST:
-            based_cmd = (f"python_dask {TOOLS}/basedflagger.py "
-                         f"{myms} {target} "
-                         f"--correlation-products {BASED_FLAGGER_CORRELATION_PRODUCTS} "
-                         f"--antenna-flag-cap {BASED_FLAGGER_ANTENNA_FLAG_CAP} --outlier-mode {BASED_FLAGGER_TARGET_OUTLIER_MODE} "
-                         f"--save-dir {VISPLOTS}/ --output-suffix _{target}" + BASED_FLAGGER_PHASE_ARG)
-            print(f'Running BASED flagger on target {target}: {based_cmd}')
-            based_run = subprocess.run([based_cmd], shell=True)
-            apply_based_flags(myms, f'baseline_flags_{target}.txt', target, based_run.returncode)
-            plot_post_based(myms, target, f'_{target}')
-
     # ---- Save flags
 
     flagmanager(vis=myms,
@@ -1566,8 +1584,8 @@ applycal(vis = myms,
         field = pacal_name,
         parang = CAL_1GC_APPLYPARANG_CAL,
         gaintable = [ktab, gptab, bptab, ftab, dftab] + cross_table,
-        gainfield = [delay_field(pacal_name), pacal_name, bpcal_name, pacal_name, bpcal_name] + cross_field,
-        interp = [delay_interp(pacal_name, delay_field(pacal_name)),'linear','linear','linear','linear'] + cross_interp,
+        gainfield = [pacal_name, pacal_name, bpcal_name, pacal_name, bpcal_name] + cross_field,
+        interp = ['nearest','linear','linear','linear','linear'] + cross_interp,
         flagbackup=False)
 
 # ------- Secondaries
@@ -1585,8 +1603,8 @@ for i in range(0,len(pcal_names)):
         field = pcal,
         parang = CAL_1GC_APPLYPARANG_CAL,
         gaintable = [ktab, gptab, bptab, ftab, dftab] + cross_table,
-        gainfield = [delay_field(pcal), pcal, bpcal_name, pcal, bpcal_name] + cross_field,
-        interp = [delay_interp(pcal, delay_field(pcal)),'linear','linear','linear','linear'] + cross_interp,
+        gainfield = [pcal, pcal, bpcal_name, pcal, bpcal_name] + cross_field,
+        interp = ['nearest','linear','linear','linear','linear'] + cross_interp,
         flagbackup=False)
 
 # ------- Targets
@@ -1599,8 +1617,8 @@ for i in range(0,len(targets)):
                 field=target,
                 parang=CAL_1GC_APPLYPARANG,
                 gaintable = [ktab, gptab, bptab, ftab, dftab] + cross_table,
-                gainfield = [delay_field(related_pcal), related_pcal, bpcal_name, related_pcal, bpcal_name] + cross_field,
-                interp = [delay_interp(target, delay_field(related_pcal)),'linear','linear','linear','linear'] + cross_interp,
+                gainfield = [related_pcal, related_pcal, bpcal_name, related_pcal, bpcal_name] + cross_field,
+                interp = ['nearest','linear','linear','linear','linear'] + cross_interp,
                 flagbackup=False)
 
     # Flag target
@@ -1627,19 +1645,6 @@ for i in range(0,len(targets)):
             growaround=TARGET_VIS_EXTEND_GROWAROUND, flagneartime=TARGET_VIS_EXTEND_FLAGNEARTIME,
             flagnearfreq=TARGET_VIS_EXTEND_FLAGNEARFREQ, extendpols=TARGET_VIS_EXTENDPOLS,
             field=target, flagbackup=False)
-
-    # ------- BASED flagger (target)
-
-    if BASED_FLAGGER and 'target' in BASED_FLAGGER_FIELDS_LIST:
-        based_cmd = (f"python_dask {TOOLS}/basedflagger.py "
-                     f"{myms} {target} "
-                     f"--correlation-products {BASED_FLAGGER_CORRELATION_PRODUCTS} "
-                     f"--antenna-flag-cap {BASED_FLAGGER_ANTENNA_FLAG_CAP} --outlier-mode {BASED_FLAGGER_TARGET_OUTLIER_MODE} "
-                     f"--save-dir {VISPLOTS}/ --output-suffix _{target}" + BASED_FLAGGER_PHASE_ARG)
-        print(f'Running BASED flagger on target {target}: {based_cmd}')
-        based_run = subprocess.run([based_cmd], shell=True)
-        apply_based_flags(myms, f'baseline_flags_{target}.txt', target, based_run.returncode)
-        plot_post_based(myms, target, f'_{target}')
 
 # ---- Apply aggressive flags if desired
 if CAL_1GC_AGGRESSIVE_FLAGS and CAL_1GC_BL_FREQS != []:

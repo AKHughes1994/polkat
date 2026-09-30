@@ -106,8 +106,9 @@ for pcal in pcal_names:
 flagmanager(vis=myms,mode='save',versionname='autoflag_cals_data')
 
 
-# Refant selection by post-flagging delay-solve S/N on the primary
-if CAL_1GC_REFANT_SNR_SELECT:
+# Refant selection by post-flagging delay-solve S/N on the primary. Only for
+# CAL_1GC_REF_ANT = 'auto'; a manually specified refant is left in place.
+if CAL_1GC_REFANT_SNR_SELECT and CAL_1GC_REF_ANT == 'auto':
 
     print(f'Solving per-scan delay S/N on the primary ({bpcal_name}) for refant ranking...')
     exec(open(f'{TOOLS}/antenna_delay_snr.py').read())
@@ -130,6 +131,10 @@ if CAL_1GC_REFANT_SNR_SELECT:
     project_info['ref_ant'] = new_ref_ant
     with open('project_info.json', 'w') as f:
         json.dump(project_info, f, indent=4, sort_keys=True)
+
+elif CAL_1GC_REFANT_SNR_SELECT:
+
+    print(f'Keeping user-specified reference antenna(s): {CAL_1GC_REF_ANT}')
 
 
 clearstat()

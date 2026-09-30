@@ -22,6 +22,9 @@ CLUSTER=${1:-idia}
 START=${2:-0}
 POLL=${POLL:-300}
 
+# Each stage is either:
+#   "setup_script.py|submit_script.sh"   -- run setup, then submit
+#   "submit_script.sh"                   -- no setup, just submit
 STAGES=(
   "setups/0_GET_INFO.py|submit_info_job.sh"
   "setups/1GC.py|submit_1GC_jobs.sh"
@@ -75,11 +78,18 @@ wait_for() {
 }
 
 for ((i=START; i<${#STAGES[@]}; i++)); do
-  setup=${STAGES[i]%%|*}
-  subs=${STAGES[i]##*|}
+  entry=${STAGES[i]}
 
-  log "=== stage $i: $setup ==="
-  python3 "$setup" "$CLUSTER" || { log "setup failed"; exit 1; }
+  if [[ $entry == *"|"* ]]; then
+    setup=${entry%%|*}
+    subs=${entry##*|}
+    log "=== stage $i: $setup ==="
+    python3 "$setup" "$CLUSTER" || { log "setup failed"; exit 1; }
+  else
+    subs=$entry
+    log "=== stage $i: (no setup) ==="
+  fi
+
   [[ -f ./$subs ]] || { log "$subs not generated"; exit 1; }
 
   idfile=.stage${i}.jobids

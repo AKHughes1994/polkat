@@ -42,8 +42,25 @@ project_info['working_ids'] = ids.tolist()
 # -----------------------------------------------------------------------
 
 if CAL_1GC_REF_ANT != 'auto':
-    # User has specified a fixed refant — respect it
-    ref_ant = CAL_1GC_REF_ANT
+    # User has specified a fixed refant — respect it, but resolve any name to
+    # its index: CASA's refant in this pipeline's calibration calls only
+    # reliably honours indices, so a name left unresolved leaves refant not
+    # actually set.
+    tb.open(opms + '/ANTENNA')
+    _ant_names = [a.lower() for a in tb.getcol('NAME').tolist()]
+    tb.close()
+
+    _resolved = []
+    for _entry in CAL_1GC_REF_ANT.split(','):
+        _entry = _entry.strip()
+        if _entry.lstrip('-').isdigit():
+            _resolved.append(_entry)
+            continue
+        _name = _entry.lower()
+        if _name not in _ant_names:
+            raise ValueError(f"CAL_1GC_REF_ANT antenna '{_entry}' not found in MS antenna list: {_ant_names}")
+        _resolved.append(str(_ant_names.index(_name)))
+    ref_ant = ','.join(_resolved)
     print(f'fix_project_info: Using user-specified reference antenna: {ref_ant}')
 else:
     # Resolve primary field ID in the working MS via working_names/working_ids

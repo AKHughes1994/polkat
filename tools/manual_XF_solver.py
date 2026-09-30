@@ -20,7 +20,11 @@ and Faraday de-rotation) to the known source EVPA model. The ionospheric RM is
 estimated per scan using Spinifex and folded into the RM trial grid.
 
 WORKFLOW:
-1.  applycal on myms with [K, B, Gp, G, Df] tables (no XF yet)
+1.  applycal on myms with [K, B, Gp, G, Df] tables (no XF yet). The K table is
+    read first to see whether it holds a solution for the polang cal: if it
+    does, its own delays are applied with interp='nearest'; if not (1GC_05 run
+    with DELAY_FROM_PRIMARY, which solves no delay there) the primary's are
+    applied with interp='linear'
 2.  Load IQUV visibilities per scan via weighted average of CORRECTED_DATA
 3.  Compute parallactic angles at each scan's mid-time
 4.  Run Spinifex to estimate ionospheric RM per scan
@@ -47,10 +51,14 @@ WORKFLOW:
 16. Write corrected gains back to xftab (FLAG column preserved from polcal)
 17. Interpolate xftab gains onto full MS channel grid for IQUV diagnostic
     correction and Stokes before/after plots
+18. Optional (XF_APPLY_TO_MS): applycal the same tables plus xftab and
+    re-extract IQUV from CORRECTED_DATA for a CASA-side post-XF comparison
 
 DIAGNOSTIC OUTPUTS (all in GAINPLOTS/manualXF/):
     stokes_perscan.npz              Cached IQUV visibilities
-    3c286_evpa_model.png            EVPA model vs frequency
+    final_corrected_stokes_spectra.npz  Post-XF IQUV spectra
+    3c286_evpa_model.png            EVPA model vs frequency (3C286/J1331 only)
+    3c138_evpa_model.png            EVPA model vs frequency (3C138/J0521 only)
     stokes_spectra_preXF.png        Pre-XF IQUV spectra
     xf_phase_stage1_raw.png         Raw polcal XF phases + EVPA residuals
     xf_phase_stage2_post_pi.png     Post ±π resolution residuals
@@ -58,6 +66,8 @@ DIAGNOSTIC OUTPUTS (all in GAINPLOTS/manualXF/):
     xf_phase_diagnostic.png         4-panel: raw → ±π → clipped → final
     xf_per_channel_rm_histogram.png Per-channel adopted RM distribution
     stokes_spectra_postXF_analytic.png  Post-XF IQUV (analytic correction)
+    stokes_spectra_postXF_casa.png  Post-XF IQUV from CORRECTED_DATA, only
+                                    when XF_APPLY_TO_MS is set
 """
 
 # Standard library imports
@@ -228,23 +238,82 @@ def compute_3c286_evpa(freq_ghz):
     """
     Compute frequency-dependent EVPA for 3C286 (J1331+3030).
 
-    Reference: Perley & Butler (2013) / Hugo & Perley (2024)
+    Reference: Perley et al. (2026, ApJS 283, 82), Section 8.1, Eqs. 9-10.
+    Derived from 0.5 GHz upward using MeerKAT UHF data with ionospheric
+    (ALBUS G01) correction; fits the smoothed data to better than 0.3 deg.
 
-    EVPA(ν) [deg] =
-        32.64 - 85.37λ²                              for ν ∈ [1.7, 12] GHz
-        29.53 + λ²(4005.88(log₁₀ν)³ - 39.38)        for ν < 1.7 GHz
+    EVPA(nu) [deg] = a0 + a1*x + a2*x^2 + a3*x^3,  x = log10(nu_GHz)
+
+        0.5 <= nu_GHz <= 1.0 :  26.0 + 57.0 x + 615 x^2 + 3790 x^3   (Eq. 9)
+        1.0 <  nu_GHz <= 50  :  26.1 + 17.1 x - 16.1 x^2 + 5.75 x^3  (Eq. 10)
+
+    Valid range: 0.5-50 GHz. Channels outside this range are returned
+    as NaN rather than silently extrapolated.
     """
-    c = 2.99792458e8
-    freq_hz = freq_ghz * 1e9
-    lambda_m = c / freq_hz
-    lambda_sq = lambda_m ** 2
-    evpa_deg = np.zeros_like(freq_ghz)
-    high_freq_mask = freq_ghz >= 1.7
-    evpa_deg[high_freq_mask] = 32.64 - 85.37 * lambda_sq[high_freq_mask]
-    low_freq_mask = freq_ghz < 1.7
-    if np.any(low_freq_mask):
-        log_nu_cubed = np.log10(freq_ghz[low_freq_mask]) ** 3
-        evpa_deg[low_freq_mask] = 29.53 + lambda_sq[low_freq_mask] * (4005.88 * log_nu_cubed - 39.38)
+    freq_ghz = np.asarray(freq_ghz, dtype=float)
+    x = np.log10(freq_ghz)
+    evpa_deg = np.full_like(freq_ghz, np.nan)
+
+    low_mask = (freq_ghz >= 0.5) & (freq_ghz <= 1.0)
+    high_mask = (freq_ghz > 1.0) & (freq_ghz <= 50.0)
+
+    evpa_deg[low_mask] = (26.0 + 57.0 * x[low_mask]
+                           + 615.0 * x[low_mask] ** 2
+                           + 3790.0 * x[low_mask] ** 3)
+    evpa_deg[high_mask] = (26.1 + 17.1 * x[high_mask]
+                            - 16.1 * x[high_mask] ** 2
+                            + 5.75 * x[high_mask] ** 3)
+
+    out_of_range = ~(low_mask | high_mask)
+    if np.any(out_of_range):
+        print(f"WARNING: compute_3c286_evpa: {int(np.sum(out_of_range))} "
+              f"channel(s) outside the validated 0.5-50 GHz range "
+              f"(Perley et al. 2026) -> NaN")
+
+    return evpa_deg
+
+
+def compute_3c138_evpa(freq_ghz):
+    """
+    Compute frequency-dependent EVPA for 3C138 (J0521+1638).
+
+    Reference: Perley et al. (2026, ApJS 283, 82), Section 8.2, Eqs. 11-12.
+
+    EVPA(nu) [deg] = a0 + a1 x + a2 x^2 + a3 x^3 + a4 x^4, x = log10(nu_GHz)
+
+        0.5 <= nu_GHz <= 1.0 : -21.9 + 71.1 x - 1435 x^2
+                                - 11110 x^3 - 23190 x^4          (Eq. 11)
+        1.0 <  nu_GHz <= 4.0 : -22.0 + 95.4 x -  340 x^2
+                                +   534 x^3 -   308 x^4          (Eq. 12)
+
+    Valid only below 4 GHz: above that, 3C138 shows oscillatory EVPA from
+    beating between its polarized nuclear and jet components and has
+    flared repeatedly, so it is not a reliable polarization-angle
+    calibrator up there. Channels outside [0.5, 4.0] GHz return NaN.
+    """
+    freq_ghz = np.asarray(freq_ghz, dtype=float)
+    x = np.log10(freq_ghz)
+    evpa_deg = np.full_like(freq_ghz, np.nan)
+
+    low_mask = (freq_ghz >= 0.5) & (freq_ghz <= 1.0)
+    high_mask = (freq_ghz > 1.0) & (freq_ghz <= 4.0)
+
+    evpa_deg[low_mask] = (-21.9 + 71.1 * x[low_mask]
+                           - 1435.0 * x[low_mask] ** 2
+                           - 11110.0 * x[low_mask] ** 3
+                           - 23190.0 * x[low_mask] ** 4)
+    evpa_deg[high_mask] = (-22.0 + 95.4 * x[high_mask]
+                            - 340.0 * x[high_mask] ** 2
+                            + 534.0 * x[high_mask] ** 3
+                            - 308.0 * x[high_mask] ** 4)
+
+    out_of_range = ~(low_mask | high_mask)
+    if np.any(out_of_range):
+        print(f"WARNING: compute_3c138_evpa: {int(np.sum(out_of_range))} "
+              f"channel(s) outside the validated 0.5-4.0 GHz range "
+              f"(Perley et al. 2026) -> NaN. 3C138 is not a reliable "
+              f"polarization-angle calibrator above ~4 GHz.")
+
     return evpa_deg
 
 
@@ -1564,14 +1633,51 @@ dftab = GAINTABLES + '/cal_1GC_' + myms + '.Df'
 
 xftab = GAINTABLES + '/cal_1GC_' + myms + '.Xf'
 
+
+def caltable_has_field(caltable, field_name):
+    """
+    Whether `caltable` holds a solution for `field_name`.
+
+    The caltable stores FIELD_ID, so the ids are mapped back through the MS
+    FIELD subtable rather than compared against project_info, whose ids number
+    the master MS and can disagree with the working MS under PRE_FIELDS.
+    """
+    tb.open(myms + '/FIELD')
+    field_names = list(tb.getcol('NAME'))
+    tb.close()
+
+    tb.open(caltable)
+    field_ids = set(int(i) for i in tb.getcol('FIELD_ID'))
+    tb.close()
+
+    return field_name in {field_names[i] for i in field_ids
+                          if 0 <= i < len(field_names)}
+
+
+# 1GC_05 only solves a delay on the polang cal when DELAY_FROM_PRIMARY is off;
+# otherwise the K table carries the primary's delays alone. Read the table to
+# see which is there: its own solutions sit at its own scans and snap to the
+# nearest, while the primary's have to span the gap in time and are
+# interpolated.
+if caltable_has_field(ktab, pacal_name):
+    k_field = pacal_name
+    k_interp = 'nearest'
+    print(f"Delays: {ktab} has solutions for {pacal_name}; applying its own "
+          f"with interp={k_interp}")
+else:
+    k_field = bpcal_name
+    k_interp = 'linear'
+    print(f"Delays: {ktab} has no solutions for {pacal_name}; applying the "
+          f"primary's ({bpcal_name}) with interp={k_interp}")
+
 # Apply all calibration except XF (which we are solving for) to write
 # CORRECTED_DATA into myms. IQUV will be read from CORRECTED_DATA directly.
 applycal(vis=myms,
          field=pacal_name,
          parang=False,
          gaintable=[ktab, bptab, gptab, gtab, dftab],
-         gainfield=[pacal_name, bpcal_name, pacal_name, pacal_name, bpcal_name],
-         interp=['linear', 'linear', 'linear', 'linear', 'linear'],
+         gainfield=[k_field, bpcal_name, pacal_name, pacal_name, bpcal_name],
+         interp=[k_interp, 'linear', 'linear', 'linear', 'linear'],
          flagbackup=False)
 
 # ============================
@@ -1677,15 +1783,39 @@ if '3c286' in pacal_name.lower() or 'j1331' in pacal_name.lower():
                label=f'Config value: {XF_TARGET_POLANG}°')
     ax.set_xlabel('Frequency [GHz]')
     ax.set_ylabel('EVPA [deg]')
-    ax.set_title('3C286 Frequency-Dependent EVPA Model (Perley & Butler 2013)')
+    ax.set_title('3C286 Frequency-Dependent EVPA Model (Perley, Butler et al. 2026)')
     ax.legend()
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.savefig(os.path.join(xfdir, '3c286_evpa_model.png'), dpi=150)
     plt.close(fig)
     print(f"Saved: {xfdir}/3c286_evpa_model.png\n" + "=" * 70)
+
+elif '3c138' in pacal_name.lower() or 'j0521' in pacal_name.lower():
+    print("\n" + "=" * 70)
+    print("DETECTED 3C138 (J0521+1638) — APPLYING FREQUENCY-DEPENDENT EVPA MODEL")
+    print("=" * 70)
+    target_polang_array = compute_3c138_evpa(freq_ghz)
+    print(f"EVPA range: {target_polang_array.min():.2f}° — {target_polang_array.max():.2f}°")
+    print(f"EVPA at band centre ({np.median(freq_ghz):.2f} GHz): "
+          f"{np.median(target_polang_array):.2f}°")
+
+    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+    ax.plot(freq_ghz, target_polang_array, 'b-', linewidth=2, label='3C138 EVPA model')
+    ax.axhline(XF_TARGET_POLANG, color='red', linestyle='--', linewidth=1.5, alpha=0.7,
+               label=f'Config value: {XF_TARGET_POLANG}°')
+    ax.set_xlabel('Frequency [GHz]')
+    ax.set_ylabel('EVPA [deg]')
+    ax.set_title('3C138 Frequency-Dependent EVPA Model (Perley, Butler et al. 2026)')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(xfdir, '3c138_evpa_model.png'), dpi=150)
+    plt.close(fig)
+    print(f"Saved: {xfdir}/3c138_evpa_model.png\n" + "=" * 70)
+
 else:
-    print(f"\nUsing constant EVPA from config: {XF_TARGET_POLANG}° (not 3C286/J1331)")
+    print(f"\nUsing constant EVPA from config: {XF_TARGET_POLANG}° (not 3C286/J1331 or 3C138/J0521)")
     target_polang_array = np.full_like(freq_ghz, XF_TARGET_POLANG)
 
 # ============================
@@ -1904,8 +2034,8 @@ polcal(vis=myms,
        poltype='Xf',
        combine='',
        gaintable=[ktab, bptab, gptab, gtab, dftab],
-       gainfield=[pacal_name, bpcal_name, pacal_name, pacal_name, bpcal_name],
-       interp=['linear', 'linear', 'linear', 'linear', 'linear'],
+       gainfield=[k_field, bpcal_name, pacal_name, pacal_name, bpcal_name],
+       interp=[k_interp, 'linear', 'linear', 'linear', 'linear'],
        append=False)
 
 print(f"Created XF table: {xftab}")
@@ -1999,6 +2129,8 @@ for scan_idx, scan in enumerate(scan_numbers):
 # Also build a target_polang array on the xftab frequency grid
 if '3c286' in pacal_name.lower() or 'j1331' in pacal_name.lower():
     target_polang_xf = compute_3c286_evpa(chan_freq_xf_ghz)
+elif '3c138' in pacal_name.lower() or 'j0521' in pacal_name.lower():
+    target_polang_xf = compute_3c138_evpa(chan_freq_xf_ghz)
 else:
     target_polang_xf = np.full(n_xf_chan, XF_TARGET_POLANG)
 
@@ -2569,9 +2701,9 @@ if XF_APPLY_TO_MS:
              field=pacal_name,
              parang=False,
              gaintable=[ktab, bptab, gptab, gtab, dftab, xftab],
-             gainfield=[pacal_name, bpcal_name, pacal_name, pacal_name,
+             gainfield=[k_field, bpcal_name, pacal_name, pacal_name,
                         bpcal_name, pacal_name],
-             interp=['linear', 'linear', 'linear', 'linear', 'linear', 'linear'],
+             interp=[k_interp, 'linear', 'linear', 'linear', 'linear', 'linear'],
              flagbackup=False)
 
     print("  Extracting IQUV from CORRECTED_DATA in myms...")
