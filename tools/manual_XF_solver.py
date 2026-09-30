@@ -20,7 +20,11 @@ and Faraday de-rotation) to the known source EVPA model. The ionospheric RM is
 estimated per scan using Spinifex and folded into the RM trial grid.
 
 WORKFLOW:
-1.  applycal on myms with [K, B, Gp, G, Df] tables (no XF yet)
+1.  applycal on myms with [K, B, Gp, G, Df] tables (no XF yet). The K table is
+    read first to see whether it holds a solution for the polang cal: if it
+    does, its own delays are applied with interp='nearest'; if not (1GC_05 run
+    with DELAY_FROM_PRIMARY, which solves no delay there) the primary's are
+    applied with interp='linear'
 2.  Load IQUV visibilities per scan via weighted average of CORRECTED_DATA
 3.  Compute parallactic angles at each scan's mid-time
 4.  Run Spinifex to estimate ionospheric RM per scan
@@ -47,10 +51,14 @@ WORKFLOW:
 16. Write corrected gains back to xftab (FLAG column preserved from polcal)
 17. Interpolate xftab gains onto full MS channel grid for IQUV diagnostic
     correction and Stokes before/after plots
+18. Optional (XF_APPLY_TO_MS): applycal the same tables plus xftab and
+    re-extract IQUV from CORRECTED_DATA for a CASA-side post-XF comparison
 
 DIAGNOSTIC OUTPUTS (all in GAINPLOTS/manualXF/):
     stokes_perscan.npz              Cached IQUV visibilities
-    3c286_evpa_model.png            EVPA model vs frequency
+    final_corrected_stokes_spectra.npz  Post-XF IQUV spectra
+    3c286_evpa_model.png            EVPA model vs frequency (3C286/J1331 only)
+    3c138_evpa_model.png            EVPA model vs frequency (3C138/J0521 only)
     stokes_spectra_preXF.png        Pre-XF IQUV spectra
     xf_phase_stage1_raw.png         Raw polcal XF phases + EVPA residuals
     xf_phase_stage2_post_pi.png     Post ±π resolution residuals
@@ -58,6 +66,8 @@ DIAGNOSTIC OUTPUTS (all in GAINPLOTS/manualXF/):
     xf_phase_diagnostic.png         4-panel: raw → ±π → clipped → final
     xf_per_channel_rm_histogram.png Per-channel adopted RM distribution
     stokes_spectra_postXF_analytic.png  Post-XF IQUV (analytic correction)
+    stokes_spectra_postXF_casa.png  Post-XF IQUV from CORRECTED_DATA, only
+                                    when XF_APPLY_TO_MS is set
 """
 
 # Standard library imports
@@ -229,15 +239,8 @@ def compute_3c286_evpa(freq_ghz):
     Compute frequency-dependent EVPA for 3C286 (J1331+3030).
 
     Reference: Perley et al. (2026, ApJS 283, 82), Section 8.1, Eqs. 9-10.
-
-    This REPLACES the older Perley & Butler (2013) lambda^2 form
-    (32.64 - 85.37*lambda^2 above 1.7 GHz, etc.) that polkat previously
-    used. That 2013 fit did not include data below 8 GHz and was
-    extrapolated down to UHF; Perley et al. (2026) explicitly re-derive
-    the model from 0.5 GHz upward using MeerKAT UHF data with proper
-    ionospheric (ALBUS G01) correction, and note that "the EVPA
-    continues to decline from 33 deg at frequencies <6 GHz" beyond what
-    the 2013 fit captured. Fits the smoothed data to better than 0.3 deg.
+    Derived from 0.5 GHz upward using MeerKAT UHF data with ionospheric
+    (ALBUS G01) correction; fits the smoothed data to better than 0.3 deg.
 
     EVPA(nu) [deg] = a0 + a1*x + a2*x^2 + a3*x^3,  x = log10(nu_GHz)
 
@@ -276,11 +279,6 @@ def compute_3c138_evpa(freq_ghz):
 
     Reference: Perley et al. (2026, ApJS 283, 82), Section 8.2, Eqs. 11-12.
 
-    No equivalent function previously existed in polkat for 3C138 — it
-    was calibrated against a single constant XF_TARGET_POLANG regardless
-    of frequency (see the flat-target fallback branch), which cannot
-    reproduce 3C138's known EVPA curvature below ~1 GHz.
-
     EVPA(nu) [deg] = a0 + a1 x + a2 x^2 + a3 x^3 + a4 x^4, x = log10(nu_GHz)
 
         0.5 <= nu_GHz <= 1.0 : -21.9 + 71.1 x - 1435 x^2
@@ -288,15 +286,10 @@ def compute_3c138_evpa(freq_ghz):
         1.0 <  nu_GHz <= 4.0 : -22.0 + 95.4 x -  340 x^2
                                 +   534 x^3 -   308 x^4          (Eq. 12)
 
-    IMPORTANT: unlike 3C286, this fit is ONLY valid below 4 GHz. Above
-    ~4 GHz, 3C138 shows strong oscillatory EVPA behaviour from beating
-    between its polarized nuclear and jet components, and has flared
-    repeatedly since 2002 (again in 2025) -- the paper explicitly warns
-    this source "is not normally recommended for polarization
-    calibration" at higher frequencies. Below 4 GHz the low-frequency
-    behaviour is described as unaffected by the flaring and consistent
-    with Perley & Butler (2013a). Channels outside [0.5, 4.0] GHz are
-    returned as NaN. Fits the observed data to better than 0.3 deg.
+    Valid only below 4 GHz: above that, 3C138 shows oscillatory EVPA from
+    beating between its polarized nuclear and jet components and has
+    flared repeatedly, so it is not a reliable polarization-angle
+    calibrator up there. Channels outside [0.5, 4.0] GHz return NaN.
     """
     freq_ghz = np.asarray(freq_ghz, dtype=float)
     x = np.log10(freq_ghz)
@@ -1640,14 +1633,51 @@ dftab = GAINTABLES + '/cal_1GC_' + myms + '.Df'
 
 xftab = GAINTABLES + '/cal_1GC_' + myms + '.Xf'
 
+
+def caltable_has_field(caltable, field_name):
+    """
+    Whether `caltable` holds a solution for `field_name`.
+
+    The caltable stores FIELD_ID, so the ids are mapped back through the MS
+    FIELD subtable rather than compared against project_info, whose ids number
+    the master MS and can disagree with the working MS under PRE_FIELDS.
+    """
+    tb.open(myms + '/FIELD')
+    field_names = list(tb.getcol('NAME'))
+    tb.close()
+
+    tb.open(caltable)
+    field_ids = set(int(i) for i in tb.getcol('FIELD_ID'))
+    tb.close()
+
+    return field_name in {field_names[i] for i in field_ids
+                          if 0 <= i < len(field_names)}
+
+
+# 1GC_05 only solves a delay on the polang cal when DELAY_FROM_PRIMARY is off;
+# otherwise the K table carries the primary's delays alone. Read the table to
+# see which is there: its own solutions sit at its own scans and snap to the
+# nearest, while the primary's have to span the gap in time and are
+# interpolated.
+if caltable_has_field(ktab, pacal_name):
+    k_field = pacal_name
+    k_interp = 'nearest'
+    print(f"Delays: {ktab} has solutions for {pacal_name}; applying its own "
+          f"with interp={k_interp}")
+else:
+    k_field = bpcal_name
+    k_interp = 'linear'
+    print(f"Delays: {ktab} has no solutions for {pacal_name}; applying the "
+          f"primary's ({bpcal_name}) with interp={k_interp}")
+
 # Apply all calibration except XF (which we are solving for) to write
 # CORRECTED_DATA into myms. IQUV will be read from CORRECTED_DATA directly.
 applycal(vis=myms,
          field=pacal_name,
          parang=False,
          gaintable=[ktab, bptab, gptab, gtab, dftab],
-         gainfield=[pacal_name, bpcal_name, pacal_name, pacal_name, bpcal_name],
-         interp=['linear', 'linear', 'linear', 'linear', 'linear'],
+         gainfield=[k_field, bpcal_name, pacal_name, pacal_name, bpcal_name],
+         interp=[k_interp, 'linear', 'linear', 'linear', 'linear'],
          flagbackup=False)
 
 # ============================
@@ -2004,8 +2034,8 @@ polcal(vis=myms,
        poltype='Xf',
        combine='',
        gaintable=[ktab, bptab, gptab, gtab, dftab],
-       gainfield=[pacal_name, bpcal_name, pacal_name, pacal_name, bpcal_name],
-       interp=['linear', 'linear', 'linear', 'linear', 'linear'],
+       gainfield=[k_field, bpcal_name, pacal_name, pacal_name, bpcal_name],
+       interp=[k_interp, 'linear', 'linear', 'linear', 'linear'],
        append=False)
 
 print(f"Created XF table: {xftab}")
@@ -2671,9 +2701,9 @@ if XF_APPLY_TO_MS:
              field=pacal_name,
              parang=False,
              gaintable=[ktab, bptab, gptab, gtab, dftab, xftab],
-             gainfield=[pacal_name, bpcal_name, pacal_name, pacal_name,
+             gainfield=[k_field, bpcal_name, pacal_name, pacal_name,
                         bpcal_name, pacal_name],
-             interp=['linear', 'linear', 'linear', 'linear', 'linear', 'linear'],
+             interp=[k_interp, 'linear', 'linear', 'linear', 'linear', 'linear'],
              flagbackup=False)
 
     print("  Extracting IQUV from CORRECTED_DATA in myms...")
