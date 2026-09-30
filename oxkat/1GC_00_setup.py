@@ -153,6 +153,27 @@ def get_refant(master_ms,field_id):
     return ranked_list
 
 
+def resolve_refant(ref_ant_str, ant_names):
+
+    """ Comma-separated refant list (antenna names and/or indices, either
+    mixed) -> the same list with every entry replaced by its antenna index.
+    The CASA calibration calls in this pipeline only reliably honour refant
+    as indices; a name that slips through leaves refant not actually set. """
+
+    resolved = []
+    for entry in ref_ant_str.split(','):
+        entry = entry.strip()
+        if entry.lstrip('-').isdigit():
+            resolved.append(entry)
+            continue
+        name = entry.lower()
+        if name not in ant_names:
+            raise ValueError("CAL_1GC_REF_ANT antenna '"+entry+"' not found in MS antenna list: "+str(ant_names))
+        resolved.append(str(ant_names.index(name)))
+
+    return ','.join(resolved)
+
+
 def get_nchan(master_ms):
 
     """ Returns the number of channels in master_ms.
@@ -785,7 +806,7 @@ def main():
         ref_ant = get_refant(master_ms,primary_id)
         mylogger.info('Ranked reference antenna ordering: '+str(ref_ant))
     else:
-        ref_ant = CAL_1GC_REF_ANT
+        ref_ant = resolve_refant(CAL_1GC_REF_ANT, get_antnames(master_ms))
         mylogger.info('User requested reference antenna ordering: '+str(ref_ant))
 
 

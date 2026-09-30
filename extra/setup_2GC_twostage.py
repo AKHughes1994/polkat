@@ -19,6 +19,11 @@ SET_REFANT       = True
 ADAPTIVE_CHANNELS = True
 DO_DD_SELFCAL    = False
 
+# Path to the QuartiCal YAML for direction-dependent selfcal (used when
+# DO_DD_SELFCAL=True). Should define G+dE (or equivalent DD) terms --
+# distinct from CAL_2GC_YAML_COMPLEX.
+CAL_DDECAL_YAML = cfg.DATA + '/quartical/2GC_complex_2dir.yaml'
+
 # Never True when CAL_1GC_APPLYPARANG is True — 1GC already puts CORRECTED_DATA
 # in the sky frame, so re-applying parang here would double-correct it.
 PARANGMODEL = cfg.CAL_2GC_PARANGMODEL and not cfg.CAL_1GC_APPLYPARANG
@@ -55,6 +60,17 @@ def main():
     print(gen.col()+'2GC (TRICOLOR flagging, imaging & DI phase self-calibration) setup')
     gen.print_spacer()
 
+    # QuartiCal YAML(s) this run depends on must exist before any job is generated.
+    # Stage 1 always uses CAL_2GC_YAML; stage 2 uses the DD-selfcal YAML when
+    # DO_DD_SELFCAL is set, otherwise CAL_2GC_YAML_COMPLEX -- only ever one of
+    # the two, mirroring the branch each is actually used in below.
+    if not o.isfile(cfg.CAL_2GC_YAML):
+        sys.exit(gen.col('QuartiCal YAML')+f'CAL_2GC_YAML is set to {cfg.CAL_2GC_YAML}, which does not exist')
+    if DO_DD_SELFCAL:
+        if not o.isfile(CAL_DDECAL_YAML):
+            sys.exit(gen.col('QuartiCal YAML')+f'DO_DD_SELFCAL is True but {CAL_DDECAL_YAML} does not exist')
+    elif not o.isfile(cfg.CAL_2GC_YAML_COMPLEX):
+        sys.exit(gen.col('QuartiCal YAML')+f'CAL_2GC_YAML_COMPLEX is set to {cfg.CAL_2GC_YAML_COMPLEX}, which does not exist')
 
     # ------------------------------------------------------------------------------
     #
@@ -286,6 +302,8 @@ def main():
                 print(gen.col('Mask')+ 'None')
 
             else:
+                if not o.isfile(mask):
+                    sys.exit(gen.col('Mask')+f'WSC_MASK is set to {mask}, which does not exist')
                 print(gen.col('Mask')+mask)
 
             step = {}
@@ -324,7 +342,7 @@ def main():
                     maxuvl = maxuvl,
                     automask = cfg.WSC_SHALLOWMASK,
                     localrms = cfg.WSC_SHALLOWMASK_LOCALRMS,
-                    autothreshold = cfg.WSC_INTER_AUTOTHRESHOLD,
+                    autothreshold = cfg.WSC_SHALLOWMASK_AUTOTHRESHOLD,
                     nomodel = True,
                     sourcelist = False,
                     absmem = absmem)
@@ -470,10 +488,6 @@ def main():
                 n += 1
 
             if DO_DD_SELFCAL:
-
-                # Path to the QuartiCal YAML for direction-dependent selfcal (used when DO_DD_SELFCAL=True).
-                # Should define G+dE (or equivalent DD) terms — distinct from CAL_2GC_YAML_COMPLEX.
-                CAL_DDECAL_YAML = DATA + '/quartical/2GC_complex_2dir.yaml'
 
                 # Direction-dependent selfcal block (mirrors 3GC_peel workflow).
                 # DIR.reg in the CWD defines the calibration direction to extract.
@@ -712,13 +726,18 @@ def main():
 
             if cfg.WSC_POL != 'I':
 
+                # Only make Plin images
+                only_Plin = True
+                if project_info['polang_name'] == '':
+                    only_Plin = False
+
                 step = {}
                 step['step'] = n
                 step['comment'] = 'Make Polarization Intensity Images for '+targetname
                 step['dependency'] = n - 1
                 step['id'] = 'MKLPI'+code
                 syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
-                syscall += f"python3 {cfg.TOOLS}/make_pol_images.py {cfg.IMAGES} {targetname} True"
+                syscall += f"python3 {cfg.TOOLS}/make_pol_images.py {cfg.IMAGES} {targetname} {only_Plin}"
                 step['syscall'] = syscall
                 steps.append(step)
                 n += 1

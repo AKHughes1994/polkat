@@ -821,7 +821,24 @@ def generate_syscall_wsclean(mslist,
     # Sources with large rotation measures may not want polynomial fitting to the QU channels
     if splitpol and pol != 'I':
         pol_QU  = pol.replace('V','').replace('I','')
-        pol_IV  = pol.replace('Q', '').replace('U','')
+        has_qu  = bool(pol_QU)   # false when pol has no Q/U component at all (e.g. 'IV')
+
+        # -no-negative/-stop-negative only make sense for Stokes I. Grouped with V
+        # in one pass, they would also forbid genuine negative Stokes V flux, which
+        # is a real, physically meaningful sign rather than noise. When either flag
+        # is active, I and V are deconvolved as separate passes instead of one IV
+        # pass, and both flags are stripped from V's pass below -- they are already
+        # baked into every syscall_arr entry via wsclean_syscall_base above, so
+        # removing the substring here is what un-applies them to V alone.
+        if nonegative or stopnegative:
+            iv_groups = [p for p in ('I', 'V') if p in pol]
+        else:
+            pol_IV = pol.replace('Q', '').replace('U','')
+            iv_groups = [pol_IV] if pol_IV else []
+
+        # Index of each I/V group's call(s) within a per-group block of syscall_arr,
+        # i.e. block 0 is QU when present, otherwise the first I/V group starts at 0.
+        _iv_slot0 = 1 if has_qu else 0
 
         spectralpol_IV = ''
         if fitspectralpol != 0:
@@ -832,18 +849,19 @@ def generate_syscall_wsclean(mslist,
         if joinpolarizations and len(pol_QU) >= 2:
             joinpol_QU = '-join-polarizations '
 
-        # When splitpol is active, join-polarizations applies to QU only — not IV
+        # When splitpol is active, join-polarizations applies to QU only — not I/V
         joinpol_IV = ''
 
         k = len(syscall_arr)
-        syscall_arr    += syscall_arr
-        _syscall_names += _syscall_names
+        n_groups = (1 if has_qu else 0) + len(iv_groups)   # QU (if any), plus one pass per I/V group
+        syscall_arr    = syscall_arr * n_groups
+        _syscall_names = _syscall_names * n_groups
 
-        # Resolve the QU deconvolution scaling from qu_automask_scale. IV is never
-        # touched here -- it keeps whatever automask/autothreshold was set in config.
+        # Resolve the QU deconvolution scaling from qu_automask_scale. I/V are never
+        # touched here -- each keeps whatever automask/autothreshold was set in config.
         # qu_automask_scale is always a plain float multiplier on both automask and
         # autothreshold; its sign is a mode switch, magnitude is the scale factor:
-        #   0        : disabled — no changes to QU, IV untouched either way
+        #   0        : disabled — no changes to QU, I/V untouched either way
         #   negative : |value| x automask/autothreshold, nothing else changes
         #   positive : value x automask/autothreshold, and -- if squarechans is
         #              also True -- local-rms is additionally turned on for QU.
@@ -868,37 +886,49 @@ def generate_syscall_wsclean(mslist,
         _qu_local_rms = (_scale > 0) and squarechans
 
         for _k in range(k):
-            # QU: strip --deconvolution-channels (only appropriate for IV)
-            qu_syscall = syscall_arr[_k]
-            if chandeconvolution:
-                qu_syscall = qu_syscall.replace(
-                    f'--deconvolution-channels {chandeconvolution} ', '')
-            # Scale QU auto-mask/auto-threshold unless disabled; IV is left untouched.
-            if not _qu_disabled:
-                _qu_automask      = round(automask * abs(_scale), 1) if automask else automask
-                _qu_autothreshold = round(autothreshold * abs(_scale), 1) if autothreshold else autothreshold
-                # Only substitute if automask/autothreshold was set: with no base
-                # value there's no '-auto-mask {automask} '/'-auto-threshold ...'
-                # substring in qu_syscall to replace, so this is a no-op.
-                if automask and _qu_automask != automask:
+            # QU: strip --deconvolution-channels (only appropriate for I/V). Skipped
+            # entirely when pol has no Q/U component (has_qu is False).
+            if has_qu:
+                qu_syscall = syscall_arr[_k]
+                # -no-negative/-stop-negative can only ever apply to Stokes I; always
+                # stripped from QU, whether or not I is grouped with V in this call.
+                qu_syscall = qu_syscall.replace('-no-negative ', '').replace('-stop-negative ', '')
+                if chandeconvolution:
                     qu_syscall = qu_syscall.replace(
-                        f'-auto-mask {automask} ',
-                        f'-auto-mask {_qu_automask} ')
-                if autothreshold and _qu_autothreshold != autothreshold:
-                    qu_syscall = qu_syscall.replace(
-                        f'-auto-threshold {autothreshold} ',
-                        f'-auto-threshold {_qu_autothreshold} ')
-                # Positive scale + square-channel-joining additionally enables
-                # local-rms for QU -- see NOTE above for the strength/on-ness rule.
-                if _qu_local_rms and not localrms:
-                    _qu_local_rms_strength = cfg.WSC_INTER_LOCALRMS if cfg.WSC_INTER_LOCALRMS else 0.5
-                    qu_syscall = qu_syscall.replace(
-                        '-auto-threshold ',
-                        '-local-rms -local-rms-strength '+str(_qu_local_rms_strength)+' -auto-threshold ')
-            syscall_arr[_k] = qu_syscall + f'-pol {pol_QU} {joinpol_QU} '
-            # IV: strip squared-channel-joining unconditionally (not appropriate for Stokes V)
-            iv_syscall = syscall_arr[_k + k].replace('-squared-channel-joining ', '')
-            syscall_arr[_k + k] = iv_syscall + f'-pol {pol_IV} {spectralpol_IV} {joinpol_IV} '
+                        f'--deconvolution-channels {chandeconvolution} ', '')
+                # Scale QU auto-mask/auto-threshold unless disabled; I/V is left untouched.
+                if not _qu_disabled:
+                    _qu_automask      = round(automask * abs(_scale), 1) if automask else automask
+                    _qu_autothreshold = round(autothreshold * abs(_scale), 1) if autothreshold else autothreshold
+                    # Only substitute if automask/autothreshold was set: with no base
+                    # value there's no '-auto-mask {automask} '/'-auto-threshold ...'
+                    # substring in qu_syscall to replace, so this is a no-op.
+                    if automask and _qu_automask != automask:
+                        qu_syscall = qu_syscall.replace(
+                            f'-auto-mask {automask} ',
+                            f'-auto-mask {_qu_automask} ')
+                    if autothreshold and _qu_autothreshold != autothreshold:
+                        qu_syscall = qu_syscall.replace(
+                            f'-auto-threshold {autothreshold} ',
+                            f'-auto-threshold {_qu_autothreshold} ')
+                    # Positive scale + square-channel-joining additionally enables
+                    # local-rms for QU -- see NOTE above for the strength/on-ness rule.
+                    if _qu_local_rms and not localrms:
+                        _qu_local_rms_strength = cfg.WSC_INTER_LOCALRMS if cfg.WSC_INTER_LOCALRMS else 0.5
+                        qu_syscall = qu_syscall.replace(
+                            '-auto-threshold ',
+                            '-local-rms -local-rms-strength '+str(_qu_local_rms_strength)+' -auto-threshold ')
+                syscall_arr[_k] = qu_syscall + f'-pol {pol_QU} {joinpol_QU} '
+
+            # I/V: strip squared-channel-joining unconditionally (not appropriate for Stokes V).
+            # -no-negative/-stop-negative can only ever apply to Stokes I -- stripped
+            # from every other group here, same as QU above.
+            for _g, group_pol in enumerate(iv_groups):
+                _idx = _k + k * (_iv_slot0 + _g)
+                iv_syscall = syscall_arr[_idx].replace('-squared-channel-joining ', '')
+                if group_pol != 'I':
+                    iv_syscall = iv_syscall.replace('-no-negative ', '').replace('-stop-negative ', '')
+                syscall_arr[_idx] = iv_syscall + f'-pol {group_pol} {spectralpol_IV} {joinpol_IV} '
 
     else:
         joinpol = ''
@@ -921,12 +951,17 @@ def generate_syscall_wsclean(mslist,
 
     # In splitpol mode, if a pol group has only one Stokes parameter WSClean drops
     # the Stokes label from output filenames.  Insert mv commands right after each
-    # affected wsclean call to reinstate it.
+    # affected wsclean call to reinstate it. Every I/V group is single-Stokes
+    # whenever I and V were split into their own passes above.
     if splitpol and pol != 'I':
-        _qu_single = len(pol_QU) == 1
-        _iv_single = len(pol_IV) == 1
+        # k above was reused as the ms-appending loop variable just now, so the
+        # per-group call count is recomputed fresh here (n_groups itself is untouched).
+        _k_per_group = len(syscall_arr) // n_groups
+        _groups = ([(0, pol_QU)] if has_qu else []) + [
+            (_iv_slot0 + _g, _gp) for _g, _gp in enumerate(iv_groups)]
+        _single_groups = [(_gi, _gp) for _gi, _gp in _groups if len(_gp) == 1]
 
-        if _qu_single or _iv_single:
+        if _single_groups:
             def _rename_cmd(name, stokes):
                 parts = []
                 for suf in ('dirty', 'image', 'model', 'residual'):
@@ -938,13 +973,11 @@ def generate_syscall_wsclean(mslist,
                 inner = ' && '.join(parts)
                 return f"bash -c '{inner}'"
 
-            _orig_k   = len(syscall_arr) // 2
             _renames  = {}   # index in syscall_arr -> rename shell command
-            for _j in range(_orig_k):
-                if _qu_single:
-                    _renames[_j] = _rename_cmd(_syscall_names[_j], pol_QU)
-                if _iv_single:
-                    _renames[_j + _orig_k] = _rename_cmd(_syscall_names[_j + _orig_k], pol_IV)
+            for _gi, _gp in _single_groups:
+                for _j in range(_k_per_group):
+                    _renames[_j + _k_per_group * _gi] = _rename_cmd(
+                        _syscall_names[_j + _k_per_group * _gi], _gp)
 
             # Interleave: insert rename command immediately after each wsclean call
             final_arr = []

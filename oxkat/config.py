@@ -429,7 +429,7 @@ elif BAND == 'L':
 
 elif BAND == 'S0':
 
-    CAL_1GC_FREQRANGE = '*:2300~2400MHz'
+    CAL_1GC_FREQRANGE = '*:2000~2100MHz'
     CAL_1GC_UVRANGE = '>300m'
     CAL_1GC_0408_MODEL = ([9.193,0.0,0.0,0.0],[-1.144],'2187MHz') # Defunct, Model now hardcoded into 1GC_0
     CAL_1GC_BAD_FREQS = ['*:1700~1800MHz',    # Lower band edge 
@@ -439,7 +439,7 @@ elif BAND == 'S0':
 
 elif BAND == 'S1':
 
-    CAL_1GC_FREQRANGE = ''
+    CAL_1GC_FREQRANGE = '*:2500~2600MHz'
     CAL_1GC_UVRANGE = '>300m'
     CAL_1GC_0408_MODEL = ([8.244,0.0,0.0,0.0],[-1.138],'2406MHz')    # Defunct, Model now hardcoded into 1GC_0
     CAL_1GC_BAD_FREQS = ['*:1967~2056MHz',    # Lower band edge 
@@ -449,7 +449,7 @@ elif BAND == 'S1':
 
 elif BAND == 'S2':
 
-    CAL_1GC_FREQRANGE = ''
+    CAL_1GC_FREQRANGE = '*:2500~2600MHz'
     CAL_1GC_UVRANGE = '>300m'
     CAL_1GC_0408_MODEL = ([7.468,0.0,0.0,0.0],[-1.133],'2625MHz')    # Defunct, Model now hardcoded into 1GC_0
     CAL_1GC_BAD_FREQS = ['*:2187~2275MHz',    # Lower band edge 
@@ -459,7 +459,7 @@ elif BAND == 'S2':
 
 elif BAND == 'S3':
 
-    CAL_1GC_FREQRANGE = ''
+    CAL_1GC_FREQRANGE = '*:2900~3000MHz'
     CAL_1GC_UVRANGE = '>300m'
     CAL_1GC_0408_MODEL = ([6.822,0.0,0.0,0.0],[-1.128],'2483MHz')   # Defunct, Model now hardcoded into 1GC_0
     CAL_1GC_BAD_FREQS = ['*:2405~2493MHz',    # Lower band edge 
@@ -656,6 +656,7 @@ WSC_LOCALRMS_BLIND      = 0.5    # Local RMS map for masking in the blind image;
 WSC_SHALLOWMASK          = 30.0  # Auto-mask threshold (sigma) for the first deconvolution pass;
                                   # calibrators use 2× this value
 WSC_SHALLOWMASK_LOCALRMS = 0.5   # Local RMS map for the first deconvolution pass; local-rms strength
+WSC_SHALLOWMASK_AUTOTHRESHOLD = 1.0  # Auto-threshold (sigma) for the first deconvolution pass
 
 # --- Model modification before predict (two-stage self-calibration only) ---
 # If True, runs mod_model_selfcal.py after fix_nan_models.py before each predict step
@@ -668,7 +669,7 @@ MOD_MODEL_SELFCAL = False
 # Has no effect in the standard single-round 2GC workflow.
 WSC_INTER_LOCALRMS      = 0.33   # Local RMS map for intermediate image masking; local-rms strength
 WSC_INTER_AUTOMASK      = 3.0    # Auto-mask threshold (sigma) for intermediate image
-WSC_INTER_AUTOTHRESHOLD = 1.0    # Auto-threshold (sigma) for intermediate image and shallow clean
+WSC_INTER_AUTOTHRESHOLD = 1.0    # Auto-threshold (sigma) for intermediate image
 
 # --- Masking: final image ---
 # Standard 2GC: applied to both self-calibration imaging passes.
@@ -689,7 +690,7 @@ WSC_LOCALRMS      = False    # Local RMS map for adaptive masking during main de
 #   '<value>m'  — a physical length in metres; converted to wavelengths per band (frequency-dependent)
 #   '<value>'   — already in wavelengths; used directly with no frequency scaling
 WSC_BASELINE_CUT = True
-WSC_BASELINE_CUTLENGTH = '600m'  # Default: exclude baselines shorter than 750 m
+WSC_BASELINE_CUTLENGTH = '500m'  # Default: exclude baselines shorter than 500 m for imaging
 
 if WSC_BASELINE_CUT:
     _cutlen = str(WSC_BASELINE_CUTLENGTH).strip()

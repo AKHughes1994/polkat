@@ -461,13 +461,18 @@ def main():
             n += 1
 
         if cfg.WSC_POL != 'I':
+            # Only make Plin images
+            only_Plin = True
+            if project_info['polang_name'] == '':
+                only_Plin = False
+
             step = {}
             step['step']       = n
             step['comment']    = f'Make polarization intensity images for {fieldname}'
             step['dependency'] = n - 1
             step['id']         = 'MKLPI' + code
             syscall  = CONTAINER_RUNNER + PYTHON3_CONTAINER + ' ' if USE_SINGULARITY else ''
-            syscall += f'python3 {cfg.TOOLS}/make_pol_images.py {cfg.IMAGES} {fieldname} True'
+            syscall += f'python3 {cfg.TOOLS}/make_pol_images.py {cfg.IMAGES} {fieldname} {only_Plin}'
             step['syscall'] = syscall
             steps.append(step)
             n += 1

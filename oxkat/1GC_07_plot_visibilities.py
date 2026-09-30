@@ -14,6 +14,26 @@ from oxkat import generate_jobs as gen
 from oxkat import config as cfg
 
 
+def drop_phase_axes(plot):
+    """
+    Remove the phase y-axes from a shadems plot specification.
+
+    Each y-axis is paired with the x-axis in the same position, so a dropped
+    phase axis takes its x-axis with it. Returns None if the specification is
+    left with nothing to plot.
+    """
+    xpart, ypart = plot.split('--yaxis')
+    xaxes = xpart.replace('--xaxis', '').strip().split(',')
+    yaxes = ypart.strip().split(',')
+
+    kept = [(x, y) for x, y in zip(xaxes, yaxes) if ':phase:' not in y]
+    if not kept:
+        return None
+
+    return ('--xaxis '+','.join(x for x, y in kept)
+            +' --yaxis '+','.join(y for x, y in kept))
+
+
 def main():
 
 
@@ -66,18 +86,23 @@ def main():
              '--xaxis CORRECTED_DATA:real:XY,CORRECTED_DATA:real:YX --yaxis CORRECTED_DATA:imag:XY,CORRECTED_DATA:imag:YX',
         '--xaxis FREQ,FREQ,FREQ,FREQ --yaxis CORRECTED_DATA:amp:XX,CORRECTED_DATA:amp:YY,CORRECTED_DATA:phase:XX,CORRECTED_DATA:phase:YY',
         '--xaxis TIME,TIME,TIME,TIME --yaxis CORRECTED_DATA:amp:XX,CORRECTED_DATA:amp:YY,CORRECTED_DATA:phase:XX,CORRECTED_DATA:phase:YY',
-        '--xaxis BASELINE,BASELINE --yaxis CORRECTED_DATA:amp:XX,CORRECTED_DATA:amp:YY',
+        '--xaxis BASELINE,BASELINE,BASELINE,BASELINE --yaxis CORRECTED_DATA:amp:XX,CORRECTED_DATA:amp:YY,CORRECTED_DATA:phase:XX,CORRECTED_DATA:phase:YY',
         '--xaxis FREQ,FREQ --yaxis CORRECTED_DATA:amp:YX,CORRECTED_DATA:amp:XY',
-        '--xaxis BASELINE,BASELINE --yaxis CORRECTED_DATA:amp:YX,CORRECTED_DATA:amp:XY',
+        '--xaxis BASELINE,BASELINE,BASELINE,BASELINE --yaxis CORRECTED_DATA:amp:YX,CORRECTED_DATA:amp:XY,CORRECTED_DATA:phase:YX,CORRECTED_DATA:phase:XY',
         '--xaxis uv,uv,uv,uv --yaxis CORRECTED_DATA:amp:XX,CORRECTED_DATA:amp:YY,CORRECTED_DATA:phase:XX,CORRECTED_DATA:phase:YY']
+
+    # Targets are plotted without phase, so their plot list drops every phase
+    # y-axis along with the x-axis it was paired with.
+    target_plots = [p for p in (drop_phase_axes(plot) for plot in plots) if p is not None]
 
     colour_by = ['--colour-by ANTENNA1 --cnum 64']
 
 #    shadems_base = 'shadems --profile --dir '+VISPLOTS+' '
     shadems_base = 'shadems --dir '+VISPLOTS+' '
-    
+
     for field in fields:
-        for plot in plots:
+        field_plots = target_plots if field in targets else plots
+        for plot in field_plots:
             for col in colour_by:
                 syscall = shadems_base+' '+plot+' '+col+' --field '+str(field)+' '+myms
                 subprocess.run([syscall],shell=True)

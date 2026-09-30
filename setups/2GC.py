@@ -26,6 +26,9 @@ def main():
     print(gen.col()+'2GC (TRICOLOR flagging, imaging & DI phase self-calibration) setup')
     gen.print_spacer()
 
+    # QuartiCal YAML(s) this run depends on must exist before any job is generated
+    if not o.isfile(cfg.CAL_2GC_YAML):
+        sys.exit(gen.col('QuartiCal YAML')+f'CAL_2GC_YAML is set to {cfg.CAL_2GC_YAML}, which does not exist')
 
     # ------------------------------------------------------------------------------
     #
@@ -208,6 +211,8 @@ def main():
                 print(gen.col('Mask')+ 'None')
 
             else:
+                if not o.isfile(mask):
+                    sys.exit(gen.col('Mask')+f'WSC_MASK is set to {mask}, which does not exist')
                 print(gen.col('Mask')+mask)
 
             step = {}
