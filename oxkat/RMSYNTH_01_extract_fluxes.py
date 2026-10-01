@@ -690,6 +690,162 @@ def write_uvfix_rmsynth(rmsynth_fname, rmsynth_arr, V, rms_V):
     with open(out_json, 'w') as j:
         json.dump(summary, j, indent=4)
 
+
+
+def scan_stokes_images(src_im_identifier, mfs_im_suffix, chan_im_suffix, pol_flag):
+    '''
+    Locate the MFS and per-channel images for one source, matching every image
+    to its Stokes parameter by name, and decide whether full Stokes (I, P, Q,
+    U, V) can be fitted or only Stokes I.
+
+    Multi-Stokes images are named '{prefix}-MFS-{stokes}-{suffix}' and
+    '{prefix}-{chan}-{stokes}-{suffix}'; Stokes I only imaging has no Stokes
+    tag, '{prefix}-MFS-{suffix}' and '{prefix}-{chan}-{suffix}'. P is Plin
+    when pol_flag (a polarization angle calibrator was used), Ptot otherwise.
+
+    Full Stokes is used if ANY prefix has the complete MFS set (I, P, Q, U, V)
+    and at least one complete channel set; otherwise every prefix is fitted as
+    Stokes I only. In a full Stokes run a prefix (time interval) without a
+    complete MFS set is dropped, since its I and polarization results could not
+    line up with the other epochs, and a channel without a complete set of
+    Stokes images (e.g. a flagged channel) is left out. A prefix with a complete
+    MFS set but no complete channel set is kept for its MFS results only.
+
+    Returns a dict:
+        prefixes     prefixes to fit, sorted: those with an MFS Stokes I image,
+                     or in a full Stokes run those with a complete MFS set
+        mfs          {prefix: {'I'|'P'|'Q'|'U'|'V': path}}
+        chan_groups  {prefix: [[paths], ...]}, one group per channel in
+                     frequency order: [I, P, Q, U, V] or [I]
+        full_stokes  True if full Stokes will be fitted
+        notes        why Stokes I only was chosen (empty if full Stokes)
+        n_chan_incomplete  {prefix: channels left out for missing Stokes}
+    '''
+
+    p_tag      = 'Plin' if pol_flag else 'Ptot'
+    tag_to_key = {'I': 'I', 'Q': 'Q', 'U': 'U', 'V': 'V', p_tag: 'P'}
+    full_keys  = ['I', 'P', 'Q', 'U', 'V']
+    tag_re     = '|'.join(['I', 'Q', 'U', 'V', 'Plin', 'Ptot'])
+
+    mfs_re  = re.compile(rf'(?P<prefix>.+?)-MFS-(?:(?P<tag>{tag_re})-)?{re.escape(mfs_im_suffix)}')
+    chan_re = re.compile(rf'(?P<prefix>.+)-(?P<chan>\d+)-(?:(?P<tag>{tag_re})-)?{re.escape(chan_im_suffix)}')
+
+    def add(entry, tag, path):
+        # A tagged Stokes I image is part of the multi-Stokes set and takes
+        # precedence over an untagged one; the unused P type is ignored.
+        if tag is None:
+            entry.setdefault('I', path)
+        elif tag in tag_to_key:
+            entry[tag_to_key[tag]] = path
+
+    def count_tags(counts, tag):
+        label = 'I (untagged)' if tag is None else tag
+        counts[label] = counts.get(label, 0) + 1
+
+    def tag_summary(counts):
+        return ', '.join(f'{k}={counts[k]}' for k in sorted(counts))
+
+    mfs_pattern = f'{src_im_identifier}*MFS*{mfs_im_suffix}'
+    msg(f'Locating MFS images: {mfs_pattern}')
+    mfs_files = glob.glob(mfs_pattern)
+    mfs, mfs_counts, mfs_unmatched = {}, {}, []
+    for f in mfs_files:
+        m = mfs_re.fullmatch(f)
+        if m is None:
+            mfs_unmatched.append(f)
+            continue
+        count_tags(mfs_counts, m.group('tag'))
+        add(mfs.setdefault(m.group('prefix'), {}), m.group('tag'), f)
+    msg(f'  {len(mfs_files)} file(s) matched; by Stokes: {tag_summary(mfs_counts) or "none"}')
+    if mfs_unmatched:
+        msg(f'  {len(mfs_unmatched)} file(s) not recognised as MFS Stokes images and ignored, e.g. '
+            f'{os.path.basename(sorted(mfs_unmatched)[0])}')
+    unused_p = 'Ptot' if pol_flag else 'Plin'
+    if unused_p in mfs_counts:
+        msg(f'  Ignoring {mfs_counts[unused_p]} {unused_p} MFS image(s): '
+            f'{p_tag} is used {"with" if pol_flag else "without"} a polarization angle calibrator')
+
+    # One glob for the channel images of every prefix, partitioned in memory.
+    # Filtered by a '-MFS-' substring check rather than a [!MFS] glob bracket,
+    # since fnmatch's '*' backtracking can defeat that bracket.
+    chan_pattern = f'{src_im_identifier}*-{chan_im_suffix}'
+    msg(f'Locating channel images: {chan_pattern}')
+    chan, chan_counts, chan_unmatched, n_chan_files = {}, {}, [], 0
+    for f in glob.glob(chan_pattern):
+        if '-MFS-' in f:
+            continue
+        n_chan_files += 1
+        m = chan_re.fullmatch(f)
+        if m is None:
+            chan_unmatched.append(f)
+            continue
+        count_tags(chan_counts, m.group('tag'))
+        add(chan.setdefault(m.group('prefix'), {}).setdefault(int(m.group('chan')), {}), m.group('tag'), f)
+    msg(f'  {n_chan_files} file(s) matched; by Stokes: {tag_summary(chan_counts) or "none"}')
+    if chan_unmatched:
+        msg(f'  {len(chan_unmatched)} file(s) not recognised as channel Stokes images and ignored, e.g. '
+            f'{os.path.basename(sorted(chan_unmatched)[0])}')
+    if unused_p in chan_counts:
+        msg(f'  Ignoring {chan_counts[unused_p]} {unused_p} channel image(s)')
+
+    prefixes = sorted(p for p in mfs if 'I' in mfs[p])
+    for p in sorted(set(mfs) - set(prefixes)):
+        msg(f'  WARNING: {os.path.basename(p)} has MFS images but no Stokes I image -- skipped')
+    msg(f'  {len(prefixes)} prefix(es) with an MFS Stokes I image')
+
+    groups_full, groups_I, n_incomplete = {}, {}, {}
+    for p in prefixes:
+        channels = sorted(chan.get(p, {}).items())
+        groups_I[p]     = [[ch['I']] for _, ch in channels if 'I' in ch]
+        groups_full[p]  = [[ch[k] for k in full_keys] for _, ch in channels if all(k in ch for k in full_keys)]
+        n_incomplete[p] = len(groups_I[p]) - len(groups_full[p])
+
+    no_mfs   = {p: [k for k in full_keys if k not in mfs[p]] for p in prefixes}
+    complete = [p for p in prefixes if not no_mfs[p]]
+    usable   = [p for p in complete if groups_full[p]]
+    full_stokes = bool(usable)
+
+    def missing_text(p):
+        return (f'{os.path.basename(p)}: MFS image(s) missing for {",".join(no_mfs[p])}'
+                + (f' (is {p_tag} made by make_pol_images.py?)' if 'P' in no_mfs[p] else ''))
+
+    notes = []
+    if not full_stokes:
+        if not prefixes:
+            notes.append('no MFS Stokes I image found')
+        elif not any(set(mfs[p]) - {'I'} for p in prefixes):
+            notes.append('no polarization images found (Stokes I only imaging)')
+        else:
+            notes.append(f'no prefix has a complete set of {",".join(full_keys)} images in both MFS and at least one channel')
+            notes += [missing_text(p) for p in [p for p in prefixes if no_mfs[p]][:5]]
+            notes += [f'{os.path.basename(p)}: MFS set complete but no channel has a complete set'
+                      for p in [p for p in complete if not groups_full[p]][:5]]
+
+    kept = prefixes
+    if full_stokes:
+        kept = complete
+        dropped = [p for p in prefixes if no_mfs[p]]
+        msg(f'  Full Stokes: {len(usable)} prefix(es) with a complete MFS set and at least one complete channel set')
+        for p in dropped[:10]:
+            msg(f'  WARNING: {missing_text(p)} -- prefix dropped (flagged interval?)')
+        if dropped:
+            msg(f'  {len(dropped)} of {len(prefixes)} prefix(es) dropped for missing polarization images')
+        for p in kept:
+            if not groups_full[p]:
+                msg(f'  {os.path.basename(p)}: MFS set complete but no complete channel set -- MFS results only')
+            elif n_incomplete[p]:
+                msg(f'  {os.path.basename(p)}: {len(groups_full[p])} complete channel set(s), '
+                    f'{n_incomplete[p]} channel(s) missing a Stokes image')
+
+    return {
+        'prefixes'         : kept,
+        'mfs'              : {p: mfs[p] for p in kept},
+        'chan_groups'      : {p: (groups_full if full_stokes else groups_I)[p] for p in kept},
+        'full_stokes'      : full_stokes,
+        'notes'            : notes,
+        'n_chan_incomplete': {p: (n_incomplete[p] if full_stokes else 0) for p in kept},
+    }
+
         
 
 def return_max(im, region):
@@ -1378,53 +1534,33 @@ def extract_polarization_properties(src_name,
     else:
         msg(f'MFS image suffix: {mfs_im_suffix}')
 
-    # Check whether polarization images (Q, U, V, P) exist, or if this run
-    # is Stokes I only (e.g. early-stage pipeline without polarization calibration)
-    if not glob.glob(f'{src_im_identifier}*MFS-I-{mfs_im_suffix}'):
-        only_intensity = True
-        msg('No MFS polarization images found -- running in Stokes I only mode')
-    else:
-        only_intensity = False
-        msg('MFS polarization images found -- fitting full Stokes IQUV')
-
-    # Build the list of unique image prefixes.  Each prefix corresponds to one
-    # time interval (or the full observation if image_timing=false in rmsynth_info.json).
-    _mfs_glob_all = glob.glob(f'{src_im_identifier}*MFS*{mfs_im_suffix}')
-    prefix_arr = sorted(list(set([x.split('-MFS')[0] for x in _mfs_glob_all])))
+    # Match every MFS and CHAN image to its Stokes by name and decide between
+    # full Stokes (some prefix has a complete set of I, P, Q, U, V images) and
+    # Stokes I only.
+    # Each prefix corresponds to one time interval (or the full observation if
+    # image_timing=false in rmsynth_info.json). One directory scan serves every
+    # prefix -- with hundreds of timesteps this avoids hundreds of repeated
+    # full-directory scans.
+    stokes_scan    = scan_stokes_images(src_im_identifier, mfs_im_suffix, src_im_suffix, pol_flag)
+    prefix_arr     = stokes_scan['prefixes']
+    only_intensity = not stokes_scan['full_stokes']
     is_time_resolved = len(prefix_arr) > 1
+
+    if only_intensity:
+        msg('Fitting Stokes I only:')
+        for _note in stokes_scan['notes']:
+            msg(f'  {_note}')
+    else:
+        msg(f'Full Stokes images found -- fitting I, {"Plin" if pol_flag else "Ptot"}, Q, U, V')
     msg(f'Found {len(prefix_arr)} prefix(es) (time interval(s)) to process')
 
-    # Cache each prefix's MFS images from the single glob above, in memory,
-    # instead of re-globbing the same (potentially huge) directory once per
-    # prefix -- with hundreds of timesteps this turns hundreds of repeated
-    # full-directory scans into zero additional filesystem calls.
-    _mfs_images_by_prefix = {}
-    for _f in _mfs_glob_all:
-        _mfs_images_by_prefix.setdefault(_f.split('-MFS')[0], []).append(_f)
-    msg(f'Cached MFS images for {len(_mfs_images_by_prefix)} prefix(es) from one directory scan.')
-
-    # One glob for CHAN images across all prefixes, partitioned in memory by
-    # prefix -- channel counts vary per timestep (flagging differs per
-    # snapshot), so each prefix needs its own real result, not a suffix set
-    # learned from prefix 0. Filtered by a '-MFS-' substring check rather than
-    # a [!MFS] glob bracket, since fnmatch's '*' backtracking can defeat that
-    # bracket and falsely match an MFS image.
-    _all_chan_glob = glob.glob(f'{src_im_identifier}*-{src_im_suffix}')
-    _chan_images_by_prefix = {}
-    for _f in _all_chan_glob:
-        if '-MFS-' in _f:
-            continue
-        # CHAN filenames are '{prefix}-{chan}-{stokes}-{suffix}' and chan/
-        # stokes/suffix are all hyphen-free, so the prefix is always
-        # everything before the last 3 hyphens.
-        _prefix_key = _f.rsplit('-', 3)[0]
-        _chan_images_by_prefix.setdefault(_prefix_key, []).append(_f)
-
-    _n_chan_total = sum(len(v) for v in _chan_images_by_prefix.values())
-    _n_stokes_per_chan = 1 if only_intensity else 5
-    msg(f'Cached CHAN images for {len(_chan_images_by_prefix)} prefix(es) '
-        f'({_n_chan_total} image(s) total, ~{_n_chan_total // max(1, len(_chan_images_by_prefix)) // max(1, _n_stokes_per_chan)} '
+    _n_chan_total = sum(len(v) for v in stokes_scan['chan_groups'].values())
+    msg(f'Cached CHAN images for {len(prefix_arr)} prefix(es) '
+        f'({_n_chan_total} channel(s) total, ~{_n_chan_total // max(1, len(prefix_arr))} '
         f'channel(s)/prefix on average) from one directory scan.')
+    _n_chan_skipped = sum(stokes_scan['n_chan_incomplete'].values())
+    if _n_chan_skipped > 0:
+        msg(f'WARNING: {_n_chan_skipped} channel(s) left out because a Stokes image is missing')
 
     # Pre-compute timing before the prefix loop.
     #   Time-resolved: read DATE-OBS from each prefix's MFS image header; the
@@ -1436,8 +1572,7 @@ def extract_polarization_properties(src_name,
         _ms_timings = None
         _hdr_mjds   = []
         for _pfx in prefix_arr:
-            _pfx_imgs = sorted(_mfs_images_by_prefix.get(_pfx, []))
-            _pfx_dobs = imhead(_pfx_imgs[0], mode='get', hdkey='DATE-OBS').replace('/','-',2).replace('/','T')
+            _pfx_dobs = imhead(stokes_scan['mfs'][_pfx]['I'], mode='get', hdkey='DATE-OBS').replace('/','-',2).replace('/','T')
             _hdr_mjds.append(_iso_to_mjd(_pfx_dobs))
         _hdr_mjds   = np.array(_hdr_mjds)
         _hdr_diffs  = np.diff(_hdr_mjds) * 86400.0         # seconds between adjacent prefixes
@@ -1517,19 +1652,13 @@ def extract_polarization_properties(src_name,
         msg('')
         msg(f'--- Prefix {k+1}/{len(prefix_arr)}: {os.path.basename(prefix)} ---')
 
-        # Collect MFS images for this prefix. sorted() puts them in the order
-        # I, P(lin/tot), Q, U, V which is the order the rest of the code assumes.
+        # MFS images for this prefix in the order the rest of the code assumes:
+        # I, P (Plin with a polarization angle calibrator, Ptot without), Q, U, V
+        _mfs = stokes_scan['mfs'][prefix]
         if only_intensity:
-            MFS_images = [f'{prefix}-MFS-{mfs_im_suffix}']
+            MFS_images = [_mfs['I']]
         else:
-            MFS_images = _mfs_images_by_prefix.get(prefix, [])
-            # Exclude whichever polarized intensity type is not in use:
-            # pol_flag=True  --> pol angle calibrator present --> use Plin (sqrt(Q^2+U^2))
-            # pol_flag=False --> no pol angle calibrator       --> use Ptot (sqrt(Q^2+U^2+V^2))
-            if pol_flag:
-                MFS_images = sorted([im for im in MFS_images if '-Ptot-' not in im])
-            else:
-                MFS_images = sorted([im for im in MFS_images if '-Plin-' not in im])
+            MFS_images = [_mfs[_stokes] for _stokes in ('I', 'P', 'Q', 'U', 'V')]
 
         msg(f'MFS images selected ({len(MFS_images)}):')
         for MFS_image in MFS_images:
@@ -1884,22 +2013,10 @@ def extract_polarization_properties(src_name,
 
         msg(f'Fitting CHAN image(s) for prefix {k} with {src_im_suffix}: {prefix}')
 
-        # Look up this prefix's actual CHAN images from the one-time cached
-        # scan above -- no glob here, and each prefix's own real channel
-        # count/list is used (not assumed identical across timesteps).
-        CHAN_images = sorted(_chan_images_by_prefix.get(prefix, []))
-
-        # Reshape to so that each component is a set of Stokes parameters
-        if only_intensity:
-            CHAN_images_arr = np.array(CHAN_images).reshape(len(CHAN_images), 1)
-
-        else:
-            if pol_flag:
-               CHAN_images = sorted([im for im in CHAN_images if '-Ptot-' not in im])
-            else:
-               CHAN_images = sorted([im for im in CHAN_images if '-Plin-' not in im])
-
-            CHAN_images_arr = np.array(CHAN_images).reshape(int(len(CHAN_images) / 5), 5) # reshape to group in frequency for each set of Stokes parameters
+        # This prefix's own channels from the one-time scan above (channel
+        # counts vary per timestep, as flagging differs per snapshot): one
+        # group per channel, [I] or [I, P, Q, U, V]
+        CHAN_images_arr = stokes_scan['chan_groups'][prefix]
 
         # Build one job per frequency channel, fully self-contained so it can
         # run in a parallel worker (see fit_channel_group). MFS_P_ra_pix/dec
@@ -2692,7 +2809,7 @@ def main():
     with open(cfg.RMSYN_INFO_FILE, 'r') as j:
         rmsynth_info = json.load(j)
 
-    # Check to see if there is a Polarization angle calibrator -- pol_flag = Trye means that you do have
+    # Check to see if there is a Polarization angle calibrator -- pol_flag = True means that you do have
     pol_flag=False
     if cfg.POLANG_NAME != '':
         pol_flag = True

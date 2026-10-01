@@ -40,6 +40,7 @@ def main():
     gen.setup_dir(cfg.IMAGES)
     gen.setup_dir(cfg.GAINPLOTS)
     gen.setup_dir(cfg.VISPLOTS)
+    gen.close_dir_notes()
 
     INFRASTRUCTURE, CONTAINER_PATH = gen.set_infrastructure(sys.argv)
     if CONTAINER_PATH is not None:
@@ -213,6 +214,7 @@ def main():
                 weight=cfg.WSC_WEIGHT_CAL,
                 chanout = cfg.WSC_CAL_CHANNELSOUT,
                 imsize = cfg.WSC_CAL_IMSIZE,
+                pol = 'IQUV',   # Always full Stokes: the systematics (RMSYNTH_01B) need I, Q, U and V whatever WSC_POL is
                 joinpolarizations=False,
                 multiscale = False,
                 splitpol = True,                
@@ -230,8 +232,7 @@ def main():
             for call in imcall: 
                 syscall += prefix + call + '\n\n'
 
-            if cfg.WSC_POL != 'I':
-                syscall += prefix + f"python3 {cfg.TOOLS}/make_pol_images.py {cfg.IMAGES} {cal_name}"
+            syscall += prefix + f"python3 {cfg.TOOLS}/make_pol_images.py {cfg.IMAGES} {cal_name}"
 
             step['syscall'] = syscall
             steps.append(step)

@@ -37,6 +37,7 @@ def main():
     gen.setup_dir(cfg.RESULTS)
     gen.setup_dir(cfg.GAINPLOTS)
     gen.setup_dir(cfg.VISPLOTS)
+    gen.close_dir_notes()
 
     with open(cfg.RMSYN_INFO_FILE, 'r') as j:
         rmsynth_info = json.load(j)
@@ -102,7 +103,6 @@ def main():
         step['step'] = step_i
         step['comment'] = 'Calculate systematic effects by performing image plane analysis on polarization/primary calibrator'
         step['dependency'] = step_i - 1
-        step['slurm_config'] = cfg.SLURM_RM
         step['id'] = 'POSYS'+code
         syscall = CONTAINER_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
         syscall += gen.generate_syscall_casa_short(casascript=cfg.OXKAT+f'/RMSYNTH_01B_systematics.py')
@@ -110,24 +110,21 @@ def main():
         steps.append(step)
         step_i += 1      
 
-    if cfg.POLANG_NAME != '':
-        step = {}
-        step['step'] = step_i
-        step['comment'] = 'Run RM Synthesis on all of the extracted IQUV curves'
-        step['dependency'] = step_i - 1
-        step['slurm_config'] = cfg.SLURM_RM
-        step['id'] = 'RMSYN'+code
-        syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
-        syscall += 'python3 '+cfg.OXKAT+'/RMSYNTH_02_run_rmsynth.py'
-        step['syscall'] = syscall
-        steps.append(step)
-        step_i += 1
+    step = {}
+    step['step'] = step_i
+    step['comment'] = 'Run RM Synthesis on all of the extracted IQU curves (does nothing if POEXT wrote none)'
+    step['dependency'] = step_i - 1
+    step['id'] = 'RMSYN'+code
+    syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
+    syscall += 'python3 '+cfg.OXKAT+'/RMSYNTH_02_run_rmsynth.py'
+    step['syscall'] = syscall
+    steps.append(step)
+    step_i += 1
 
     step = {}
     step['step'] = step_i
     step['comment'] = 'Run SPINIFEX on all sources'
     step['dependency'] = step_i - 1
-    step['slurm_config'] = cfg.SLURM_RM
     step['id'] = 'SPFEX'+code
     syscall = CONTAINER_RUNNER+SPINIFEX_CONTAINER+' ' if USE_SINGULARITY else ''
     syscall += 'python-spinifex '+cfg.OXKAT+'/RMSYNTH_03_run_SPINIFEX.py'
@@ -140,7 +137,6 @@ def main():
         step['step'] = step_i
         step['comment'] = f'Summarize MFS/RM synthesis outputs for single target {single_targets[0]}'
         step['dependency'] = step_i - 1
-        step['slurm_config'] = cfg.SLURM_RM
         step['id'] = 'RMSUM'+code
         syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
         syscall += 'python3 '+cfg.OXKAT+'/RMSYNTH_04_summarize_target.py'

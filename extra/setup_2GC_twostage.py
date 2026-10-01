@@ -93,6 +93,7 @@ def main():
     gen.setup_dir(IMAGES)
     gen.setup_dir(cfg.LOGS)
     gen.setup_dir(cfg.SCRIPTS)
+    gen.close_dir_notes()
 
 
     INFRASTRUCTURE, CONTAINER_PATH = gen.set_infrastructure(sys.argv)

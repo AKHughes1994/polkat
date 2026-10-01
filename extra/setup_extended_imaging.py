@@ -134,6 +134,7 @@ def main():
     gen.setup_dir(IMAGES)
     gen.setup_dir(SCRIPTS)
     gen.setup_dir(LOGS)
+    gen.close_dir_notes()
 
     INFRASTRUCTURE, CONTAINER_PATH = gen.set_infrastructure(['', args.infra])
     USE_SINGULARITY = cfg.USE_SINGULARITY

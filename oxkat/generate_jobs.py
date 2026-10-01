@@ -126,9 +126,15 @@ def get_container(pathlist,pattern,use_singularity):
     return container
 
 
+_dir_notes_open = False
+
+
 def setup_dir(DIR,relabel=False):
 
-    # Make scripts folder if it doesn't exist
+    # Make scripts folder if it doesn't exist. Only the image directories
+    # get a NOTE when they already hold files; close_dir_notes() ends them.
+
+    global _dir_notes_open
 
     if not o.isdir(DIR):
         os.mkdir(DIR)
@@ -138,7 +144,20 @@ def setup_dir(DIR,relabel=False):
         os.rename(DIR,DIR+str(n))
         os.mkdir(DIR)
     elif len(os.listdir(DIR)) != 0:
-        print(col('NOTE')+f'{DIR} already exists and is not empty')
+        if o.abspath(DIR) in (o.abspath(cfg.IMAGES), o.abspath(cfg.INTERVALS)):
+            print(col('NOTE')+f'{DIR} already exists and is not empty')
+            _dir_notes_open = True
+
+
+def close_dir_notes():
+
+    # Separator under the NOTE line(s) printed by setup_dir, if there were any
+
+    global _dir_notes_open
+
+    if _dir_notes_open:
+        print_spacer()
+        _dir_notes_open = False
 
 
 def timenow():
