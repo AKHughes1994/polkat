@@ -44,6 +44,11 @@ SPEC_INDEX_SNR_THRESH = cfg.RMSYN_SPEC_INDEX_SNR_THRESH
 SPEC_INDEX_MAD_CLIP   = cfg.RMSYN_SPEC_INDEX_MAD_CLIP
 MAX_I_DRIFT_PIX       = cfg.RMSYN_MAX_I_DRIFT_PIX
 
+# No polarization angle calibrator: the U/V-merged companion RM synthesis file
+# is built from a linear cross-hand phase fit (see fit_linear_xy_phase).
+UVFIX_MAX_DELAY_NS    = 10.0  # Half-width of the cross-hand delay search, +/- ns
+UVFIX_MIN_SNR         = 6.0   # Minimum coherent S/N of the fit to write the file
+
 # =============================================================================
 
 
@@ -459,6 +464,231 @@ def calculate_P0(flux_P, rms_Q, rms_U, rms_V, pol_flag, Aq = 0.8):
         flux_P0 = (flux_P ** 2 - 2.0 * rms_P ** 2) ** 0.5
 
     return flux_P0, rms_P
+
+
+
+def fit_linear_xy_phase(freq_hz, U, V, rms_U, rms_V, max_delay_ns, oversample=8):
+    '''
+    Fit a linear (delay + offset) cross-hand phase to uncalibrated U and V.
+
+    Without a polarization angle calibrator the cross-hand phase is never
+    solved, so if Stokes V is intrinsically zero the observed U + iV is the
+    true U rotated by an unknown phase phi(nu):
+
+        U + iV = U_true * exp(i * phi(nu)),  phi = phi0 + 2*pi*tau*(nu - nu_ref)
+
+    Squaring removes the sign of U_true (including its Faraday rotation sign
+    flips), leaving (U + iV)^2 = U_true^2 * exp(2i * phi): a non-negative
+    amplitude times a phase that is purely instrumental. tau is found by a
+    coherent delay search over that quantity, so the whole band is used at once
+    and the fit works when individual channels are noise-dominated. Channels
+    are weighted by S/N^2, and the noise bias of the square, rms_U^2 - rms_V^2,
+    is subtracted.
+
+    The sign of U_true cannot be recovered (phi0 -> phi0 + pi gives the same
+    data), so phi0 is returned in (-pi/2, pi/2].
+
+    Returns a dict with tau_s, phi0_rad, nu_ref_hz, snr (coherent S/N of the
+    fit), n_chan (channels used) and at_edge (best delay within 5% of the search
+    limit), or None if fewer than 8 channels are usable.
+    '''
+
+    freq  = np.asarray(freq_hz, dtype=float)
+    U     = np.asarray(U, dtype=float)
+    V     = np.asarray(V, dtype=float)
+    rms_U = np.asarray(rms_U, dtype=float)
+    rms_V = np.asarray(rms_V, dtype=float)
+
+    good = (np.isfinite(freq) & np.isfinite(U) & np.isfinite(V) &
+            np.isfinite(rms_U) & np.isfinite(rms_V) & (rms_U > 0) & (rms_V > 0))
+    n_chan = int(good.sum())
+    if n_chan < 8:
+        return None
+
+    nu_ref = np.mean(freq[good])
+    dnu    = freq[good] - nu_ref
+
+    c2 = (U[good] + 1j * V[good]) ** 2 - (rms_U[good] ** 2 - rms_V[good] ** 2)
+    z  = c2 / (0.5 * (rms_U[good] ** 2 + rms_V[good] ** 2))
+
+    # Phase of the squared quantity advances by 4*pi*tau*dnu, so one cycle
+    # across the band is tau = 1/(2*bandwidth).
+    bandwidth = dnu.max() - dnu.min()
+    step    = 1.0 / (2.0 * bandwidth * oversample)
+    tau_max = max_delay_ns * 1e-9
+    tau     = np.arange(-tau_max, tau_max + step, step)
+    Z       = np.exp(-4j * np.pi * np.outer(tau, dnu)) @ z
+
+    # Refine the best grid point on a finer grid spanning its neighbours
+    tau_fine = np.linspace(tau[np.argmax(np.abs(Z))] - step, tau[np.argmax(np.abs(Z))] + step, 41)
+    Z_fine   = np.exp(-4j * np.pi * np.outer(tau_fine, dnu)) @ z
+    best     = np.argmax(np.abs(Z_fine))
+
+    # Noise floor of |Z| for the coherent S/N. The median |Z| across the delay
+    # grid (Rayleigh median = sigma*sqrt(2*ln2)) measures it directly, so the
+    # S/N does not depend on the quoted rms being right. That needs enough
+    # independent delays (resolution is 1/(2*bandwidth)); for a narrower band
+    # the floor is the analytic one, where each of Re(Z), Im(Z) has variance
+    # 4*n_chan if the quoted rms are right.
+    if 4.0 * tau_max * bandwidth >= 16:
+        floor = np.median(np.abs(Z)) / np.sqrt(2.0 * np.log(2.0))
+    else:
+        floor = np.sqrt(4.0 * n_chan)
+
+    return {
+        'tau_s'    : float(tau_fine[best]),
+        'phi0_rad' : float(0.5 * np.angle(Z_fine[best])),
+        'nu_ref_hz': float(nu_ref),
+        'snr'      : float(np.abs(Z_fine[best]) / floor),
+        'n_chan'   : n_chan,
+        'at_edge'  : bool(abs(tau_fine[best]) >= 0.95 * tau_max),
+    }
+
+
+
+def derotate_uv(freq_hz, U, V, rms_U, rms_V, fit):
+    '''
+    Rotate (U, V) by minus the fitted linear cross-hand phase. Returns the
+    derotated U and residual V with their propagated errors. The rotation is
+    linear, so noise stays zero-mean Gaussian (no Rice bias).
+    '''
+
+    phi = fit['phi0_rad'] + 2.0 * np.pi * fit['tau_s'] * (np.asarray(freq_hz, dtype=float) - fit['nu_ref_hz'])
+    cos_phi, sin_phi = np.cos(phi), np.sin(phi)
+
+    U_alt = U * cos_phi + V * sin_phi
+    V_res = V * cos_phi - U * sin_phi
+    rms_U_alt = np.sqrt((cos_phi * rms_U) ** 2 + (sin_phi * rms_V) ** 2)
+    rms_V_res = np.sqrt((sin_phi * rms_U) ** 2 + (cos_phi * rms_V) ** 2)
+
+    return U_alt, V_res, rms_U_alt, rms_V_res
+
+
+
+def mad_rms_outlier_channels(rms_arrays, nsigma=5.0):
+    '''
+    True for channels where ANY of the noise arrays is a MAD outlier (more than
+    nsigma robust sigmas from its median, or non-finite). This is the test
+    plot_stokes_spectrum uses to mask pathological channels from I, Q, U, V and P
+    alike.
+    '''
+
+    bad = np.zeros(len(rms_arrays[0]), dtype=bool)
+    for rms in rms_arrays:
+        rms = np.asarray(rms, dtype=float)
+        med = np.nanmedian(rms)
+        sig = 1.4826 * np.nanmedian(np.abs(rms - med))
+        if sig > 0:
+            bad |= ~(np.abs(rms - med) <= nsigma * sig)
+
+    return bad
+
+
+
+def write_uvfix_rmsynth(rmsynth_fname, rmsynth_arr, V, rms_V):
+    '''
+    No polarization angle calibrator: write a companion to an RM synthesis
+    input file in which all of the linear polarization is assumed to be U,
+    spread into V by a linear cross-hand phase (see fit_linear_xy_phase).
+
+    rmsynth_arr is the usual (freq, I, Q, U, dI, dQ, dU) array in Hz and Jy;
+    V and rms_V are the matching Stokes V spectrum and noise in Jy.
+
+    Channels whose I, Q, U or V noise is a MAD outlier (mad_rms_outlier_channels)
+    are excluded from the fit and dropped from the companion file, as are
+    channels with non-finite U or V.
+
+    Outputs, alongside rmsynth_fname (<base> = rmsynth_fname minus '.txt'):
+        <base>_UVfix.txt       freq, I, Q, U_derotated, dI, dQ, dU_derotated
+                               (the same format as the usual file); only
+                               written if the fit reaches UVFIX_MIN_SNR
+        <base>_UVfix_fit.json  fit parameters, significance and V residual
+                               statistics (always written)
+        <base>_UVfix.png       observed vs derotated U and V (only with the file)
+    '''
+
+    base     = rmsynth_fname[:-len('.txt')] + '_UVfix'
+    out_txt  = base + '.txt'
+    out_json = base + '_fit.json'
+    out_png  = base + '.png'
+
+    rmsynth_arr = np.asarray(rmsynth_arr, dtype=float)
+    V           = np.asarray(V, dtype=float)
+    rms_V       = np.asarray(rms_V, dtype=float)
+
+    mad_clipped = mad_rms_outlier_channels([rmsynth_arr[4], rmsynth_arr[5], rmsynth_arr[6], rms_V])
+    use = ~mad_clipped & np.isfinite(rmsynth_arr[3]) & np.isfinite(V)
+
+    freq, I, Q, U, rms_I, rms_Q, rms_U = rmsynth_arr[:, use]
+    V, rms_V = V[use], rms_V[use]
+
+    fit = fit_linear_xy_phase(freq, U, V, rms_U, rms_V, UVFIX_MAX_DELAY_NS)
+
+    summary = {
+        'max_delay_ns'   : UVFIX_MAX_DELAY_NS,
+        'min_snr'        : UVFIX_MIN_SNR,
+        'n_chan_total'   : int(len(use)),
+        'n_mad_clipped'  : int(mad_clipped.sum()),
+    }
+    if mad_clipped.any():
+        msg(f'  U/V fix: excluding {int(mad_clipped.sum())}/{len(use)} MAD-clipped channels (outlier RMS)')
+
+    if fit is None:
+        summary['status'] = 'too few usable channels'
+    else:
+        summary.update({
+            'tau_ns'      : fit['tau_s'] * 1e9,
+            'phi0_deg'    : float(np.degrees(fit['phi0_rad'])),
+            'nu_ref_GHz'  : fit['nu_ref_hz'] / 1e9,
+            'coherent_snr': fit['snr'],
+            'n_chan_used' : fit['n_chan'],
+            'at_search_edge': fit['at_edge'],
+            'status'      : 'ok' if fit['snr'] >= UVFIX_MIN_SNR else 'coherent S/N below threshold',
+        })
+
+    if summary['status'] == 'ok':
+        U_alt, V_res, rms_U_alt, rms_V_res = derotate_uv(freq, U, V, rms_U, rms_V, fit)
+
+        usable = np.isfinite(V_res) & np.isfinite(rms_V_res) & (rms_V_res > 0)
+        summary['V_residual_chi2_red'] = float(np.mean((V_res[usable] / rms_V_res[usable]) ** 2))
+
+        np.savetxt(out_txt, np.array([freq, I, Q, U_alt, rms_I, rms_Q, rms_U_alt]).T)
+        msg(f'  U/V-merged RM synthesis file written: {out_txt}')
+        msg(f'    tau = {summary["tau_ns"]:.3f} ns, phi0 = {summary["phi0_deg"]:.1f} deg, '
+            f'coherent S/N = {fit["snr"]:.1f}, V residual chi2_red = {summary["V_residual_chi2_red"]:.2f}')
+        if fit['at_edge']:
+            msg(f'    WARNING: fitted delay is at the edge of the +/-{UVFIX_MAX_DELAY_NS:.1f} ns search range')
+
+        try:
+            fig, (ax_obs, ax_fix) = plt.subplots(2, 1, sharex=True, figsize=(8, 6))
+            fghz = freq / 1e9
+            ax_obs.errorbar(fghz, U * 1e3, rms_U * 1e3, fmt='.', ms=3, lw=0.5, label='U (observed)')
+            ax_obs.errorbar(fghz, V * 1e3, rms_V * 1e3, fmt='.', ms=3, lw=0.5, label='V (observed)')
+            ax_fix.errorbar(fghz, U_alt * 1e3, rms_U_alt * 1e3, fmt='.', ms=3, lw=0.5, label='U (derotated)')
+            ax_fix.errorbar(fghz, V_res * 1e3, rms_V_res * 1e3, fmt='.', ms=3, lw=0.5, label='V (residual)')
+            for ax in (ax_obs, ax_fix):
+                ax.axhline(0, color='k', lw=0.5)
+                ax.set_ylabel('Flux density (mJy)')
+                ax.legend(loc='best', fontsize=8)
+            ax_fix.set_xlabel('Frequency (GHz)')
+            ax_obs.set_title(f'tau = {summary["tau_ns"]:.3f} ns, phi0 = {summary["phi0_deg"]:.1f} deg, '
+                             f'coherent S/N = {fit["snr"]:.1f}, V residual chi2_red = {summary["V_residual_chi2_red"]:.2f}',
+                             fontsize=9)
+            fig.tight_layout()
+            fig.savefig(out_png, dpi=100)
+            plt.close(fig)
+        except Exception as e:
+            msg(f'  WARNING: could not write U/V fix plot ({e})')
+    else:
+        # Drop outputs from an earlier run so a stale file is never picked up
+        for stale in (out_txt, out_png):
+            if os.path.exists(stale):
+                os.remove(stale)
+        msg(f'  U/V-merged RM synthesis file NOT written: {summary["status"]}'
+            + (f' (coherent S/N = {fit["snr"]:.1f} < {UVFIX_MIN_SNR})' if fit is not None else ''))
+
+    with open(out_json, 'w') as j:
+        json.dump(summary, j, indent=4)
 
         
 
@@ -1849,6 +2079,12 @@ def extract_polarization_properties(src_name,
                 rmsynth_fname = _apply_label(rmsynth_fname, src_name, label)
                 np.savetxt(rmsynth_fname, rmsynth_arr.T)
                 msg(f'  RM synthesis file written: {rmsynth_fname}')
+
+                # No polarization angle calibrator: also write the U/V-merged companion
+                if not pol_flag:
+                    write_uvfix_rmsynth(rmsynth_fname, rmsynth_arr,
+                                        np.array(output_dictionary['CHAN'][component]['V_flux_mJy'][k]) / 1e3,
+                                        np.array(output_dictionary['CHAN'][component]['V_rms_mJy'][k]) / 1e3)
 
         # Compute the spectral index for every epoch unconditionally (stored in
         # JSON) -- this compute-only pass (save_plot=False) is NOT gated by

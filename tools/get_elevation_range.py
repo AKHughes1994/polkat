@@ -8,6 +8,8 @@ from astropy.coordinates import SkyCoord, EarthLocation, AltAz
 from astropy import units as u
 from astropy.time import Time
 from pyrap.tables import table
+from pyrap.measures import measures
+from pyrap.quanta import quantity
 from optparse import OptionParser
 
 
@@ -27,12 +29,12 @@ def main():
     logfile = 'elevations_' + msname + '.log'
 
     # Setup logging
-    logging.basicConfig(filename=logfile, level=logging.DEBUG, 
-                       format='%(asctime)s |  %(message)s', 
+    logging.basicConfig(filename=logfile, level=logging.DEBUG,
+                       format='%(asctime)s |  %(message)s',
                        datefmt='%d/%m/%Y %H:%M:%S ')
     stream = logging.StreamHandler()
     stream.setLevel(logging.DEBUG)
-    streamformat = logging.Formatter('%(asctime)s |  %(message)s', 
+    streamformat = logging.Formatter('%(asctime)s |  %(message)s',
                                     datefmt='%d/%m/%Y %H:%M:%S ')
     stream.setFormatter(streamformat)
     mylogger = logging.getLogger(__name__)
@@ -83,39 +85,66 @@ def main():
 
     maintab.done()
 
+    # Parallactic angle reference frame: the array's own position, read
+    # straight from the first row of the MS's ANTENNA table (ITRF), rather
+    # than a separately maintained lon/lat/height constant. Per-antenna
+    # differences in parallactic angle are negligible for this diagnostic.
+    antab = table(myms + '/ANTENNA', ack=False)
+    ant0_pos = antab.getcol('POSITION')[0]
+    antab.done()
+
+    dm = measures()
+    dm.doframe(dm.position('itrf', *[quantity(x, 'm') for x in ant0_pos]))
+    zenith = dm.direction('AZELGEO', '0deg', '90deg')
+
+    def parallactic_angle_deg(ra_rad, dec_rad, times_s):
+        """
+        Parallactic angle (deg, wrapped by casacore to (-180, 180]) at each
+        time in `times_s` (raw MS TIME values, seconds), for a field at
+        (ra_rad, dec_rad). Position angle between the field direction and the
+        local zenith, computed directly via casacore.measures -- the same
+        method tools/correct_parang.py uses per-antenna.
+        """
+        field_dir = dm.direction('J2000', quantity(ra_rad, 'rad'), quantity(dec_rad, 'rad'))
+        chi = numpy.empty(len(times_s))
+        for i, t in enumerate(times_s):
+            dm.doframe(dm.epoch('utc', quantity(t, 's')))
+            chi[i] = dm.posangle(field_dir, zenith).get_value('rad')
+        return numpy.degrees(chi)
+
     # ------- CALCULATE ELEVATIONS PER SCAN -------
 
-    mylogger.info('---- ELEVATION/AZIMUTH RANGES (PER SCAN):')
+    mylogger.info('---- ELEVATION/AZIMUTH/PARALLACTIC ANGLE RANGES (PER SCAN):')
     mylogger.info('')
-    mylogger.info('     SCAN      FIELD_ID  NAME                  RA[deg]       DEC[deg]      RA[hms]           DEC[dms]          EL_MIN[deg]   EL_MAX[deg]   EL_MEAN[deg]  AZ_MIN[deg]   AZ_MAX[deg]   AZ_MEAN[deg]  MJD_MIN       MJD_MAX       MJD_CENTRAL')
+    mylogger.info('     SCAN      FIELD_ID  NAME                  RA[deg]       DEC[deg]      RA[hms]           DEC[dms]          EL_MIN[deg]   EL_MAX[deg]   EL_MEAN[deg]  AZ_MIN[deg]   AZ_MAX[deg]   AZ_MEAN[deg]  PA_MIN[deg]   PA_MAX[deg]   PA_DELTA[deg] MJD_MIN       MJD_MAX       MJD_CENTRAL')
     mylogger.info('')
 
     for scan_data in scan_info:
         sc = scan_data['scan']
         fld_id = scan_data['field_id']
         times = scan_data['times']
-        
+
         # Get field name and position
         name = names[fld_id]
         ra_rad = float(dirs[fld_id][0][0])
         dec_rad = float(dirs[fld_id][0][1])
-        
+
         # Convert to degrees
         ra_deg = numpy.degrees(ra_rad)
         dec_deg = numpy.degrees(dec_rad)
-        
+
         # Create SkyCoord for the source
         source_coord = SkyCoord(ra=ra_rad * u.rad, dec=dec_rad * u.rad, frame='icrs')
-        
+
         # Calculate elevation for this scan
         obs_times_mjd = numpy.array(times) / 86400.0  # Convert to MJD
         obs_times = Time(obs_times_mjd, format='mjd')
-        
+
         # Get time statistics in MJD
         mjd_min = numpy.min(obs_times_mjd)
         mjd_max = numpy.max(obs_times_mjd)
         mjd_central = (mjd_min + mjd_max) / 2.0
-        
+
         # HMS/DMS (colon-separated)
         ra_hms = source_coord.ra.to_string(unit=u.hour, sep=':', precision=2, pad=True)
         dec_dms = source_coord.dec.to_string(unit=u.deg, sep=':', precision=2, alwayssign=True, pad=True)
@@ -123,7 +152,7 @@ def main():
         # Calculate Alt/Az at each time point
         altaz_frame = AltAz(obstime=obs_times, location=meerkat)
         source_altaz = source_coord.transform_to(altaz_frame)
-        
+
         # Get elevation statistics
         elevations = source_altaz.alt.degree
         el_min = numpy.min(elevations)
@@ -135,9 +164,19 @@ def main():
         az_min = numpy.min(azimuths)
         az_max = numpy.max(azimuths)
         az_mean = numpy.mean(azimuths)
-        
-        mylogger.info('     %-10s%-10s%-22s%-14.4f%-14.4f%-18s%-18s%-14.2f%-14.2f%-14.2f%-14.2f%-14.2f%-14.2f%-14.6f%-14.6f%-14.6f' % 
-                 (sc, fld_id, name, ra_deg, dec_deg, ra_hms, dec_dms, el_min, el_max, el_mean, az_min, az_max, az_mean, mjd_min, mjd_max, mjd_central))
+
+        # Parallactic angle: one measures call per unique dump time (the raw
+        # `times` column repeats every timestamp once per baseline), unwrapped
+        # so a swing through the +-180 degree branch doesn't corrupt the range.
+        unique_times = numpy.unique(times)
+        chi_deg_raw = parallactic_angle_deg(ra_rad, dec_rad, unique_times)
+        chi_deg_unwrapped = numpy.degrees(numpy.unwrap(numpy.radians(chi_deg_raw)))
+        pa_min = numpy.min(chi_deg_unwrapped)
+        pa_max = numpy.max(chi_deg_unwrapped)
+        pa_delta = pa_max - pa_min
+
+        mylogger.info('     %-10s%-10s%-22s%-14.4f%-14.4f%-18s%-18s%-14.2f%-14.2f%-14.2f%-14.2f%-14.2f%-14.2f%-14.2f%-14.2f%-14.2f%-14.6f%-14.6f%-14.6f' %
+                 (sc, fld_id, name, ra_deg, dec_deg, ra_hms, dec_dms, el_min, el_max, el_mean, az_min, az_max, az_mean, pa_min, pa_max, pa_delta, mjd_min, mjd_max, mjd_central))
 
     mylogger.info('')
     mylogger.info('Elevation ranges written to: ' + logfile)
