@@ -47,7 +47,7 @@ MAX_I_DRIFT_PIX       = cfg.RMSYN_MAX_I_DRIFT_PIX
 # No polarization angle calibrator: the U/V-merged companion RM synthesis file
 # is built from a linear cross-hand phase fit (see fit_linear_xy_phase).
 UVFIX_MAX_DELAY_NS    = 10.0  # Half-width of the cross-hand delay search, +/- ns
-UVFIX_MIN_SNR         = 6.0   # Minimum coherent S/N of the fit to write the file
+UVFIX_MIN_SNR         = 6.0   # Coherent S/N below which the fit is flagged unreliable (file still written)
 
 # =============================================================================
 
@@ -536,12 +536,19 @@ def fit_linear_xy_phase(freq_hz, U, V, rms_U, rms_V, max_delay_ns, oversample=8)
         floor = np.sqrt(4.0 * n_chan)
 
     return {
-        'tau_s'    : float(tau_fine[best]),
-        'phi0_rad' : float(0.5 * np.angle(Z_fine[best])),
-        'nu_ref_hz': float(nu_ref),
-        'snr'      : float(np.abs(Z_fine[best]) / floor),
-        'n_chan'   : n_chan,
-        'at_edge'  : bool(abs(tau_fine[best]) >= 0.95 * tau_max),
+        'tau_s'       : float(tau_fine[best]),
+        'phi0_rad'    : float(0.5 * np.angle(Z_fine[best])),
+        'nu_ref_hz'   : float(nu_ref),
+        'snr'         : float(np.abs(Z_fine[best]) / floor),
+        'n_chan'      : n_chan,
+        'at_edge'     : bool(abs(tau_fine[best]) >= 0.95 * tau_max),
+        # For the diagnostic plot: the delay search, its noise floor, and the
+        # squared phasor the fit was made to
+        'floor'       : float(floor),
+        'tau_grid_s'  : tau,
+        'Z_abs'       : np.abs(Z),
+        'freq_used_hz': freq[good],
+        'z'           : z,
     }
 
 
@@ -585,6 +592,82 @@ def mad_rms_outlier_channels(rms_arrays, nsigma=5.0):
 
 
 
+def plot_uvfix_diagnostics(out_png, freq, U, V, rms_U, rms_V, U_alt, V_res, rms_U_alt, rms_V_res, fit, summary):
+    '''
+    Diagnostics of the linear cross-hand phase fit, for fits that pass and for
+    fits that do not (when nothing else is written):
+        1. delay search: |Z(tau)| over the search range, with the best delay,
+           the noise floor and the S/N threshold
+        2. phase of (U + iV)^2 against frequency, with the fitted 2*phi(nu)
+           (dots are more opaque the higher their S/N^2)
+        3. observed U and V
+        4. U and V after derotating by the fit; V should be consistent with
+           zero if the assumption holds
+    '''
+
+    from matplotlib.colors import to_rgba
+
+    ok = summary['status'] == 'ok'
+    fghz = freq / 1e9
+    fused = fit['freq_used_hz'] / 1e9
+
+    try:
+        fig = plt.figure(figsize=(9, 14), constrained_layout=True)
+        ax_per, ax_ph, ax_obs, ax_fix = fig.subplots(4, 1)
+
+        # 1. delay search
+        ax_per.plot(fit['tau_grid_s'] * 1e9, fit['Z_abs'], lw=0.8, color='C0')
+        ax_per.axvline(fit['tau_s'] * 1e9, color='C3', ls='--', label=f'best tau = {fit["tau_s"] * 1e9:.3f} ns')
+        ax_per.axhline(fit['floor'], color='0.5', ls=':', label='noise floor')
+        ax_per.axhline(UVFIX_MIN_SNR * fit['floor'], color='C1', ls='-.', label=f'threshold ({UVFIX_MIN_SNR:g} x floor)')
+        ax_per.set_xlim(-UVFIX_MAX_DELAY_NS, UVFIX_MAX_DELAY_NS)
+        ax_per.set_xlabel('Cross-hand delay tau (ns)')
+        ax_per.set_ylabel('|Z(tau)|')
+        ax_per.set_title('Delay search: coherent S/N = %.1f%s%s' % (
+            fit['snr'],
+            '' if ok else ' -- below threshold, derotation unreliable',
+            ' -- best delay at the edge of the search range' if fit['at_edge'] else ''), fontsize=9)
+        ax_per.legend(loc='best', fontsize=8)
+
+        # 2. phase of the squared phasor against the fit
+        weight = np.abs(fit['z'])
+        alpha  = np.clip(weight / max(np.percentile(weight, 95), 1e-12), 0.05, 1.0)
+        rgba   = np.tile(to_rgba('C0'), (len(weight), 1))
+        rgba[:, 3] = alpha
+        psi_model = 2.0 * fit['phi0_rad'] + 4.0 * np.pi * fit['tau_s'] * (fit['freq_used_hz'] - fit['nu_ref_hz'])
+        ax_ph.scatter(fused, np.degrees(np.angle(fit['z'])), c=rgba, s=10, label='phase of (U+iV)^2')
+        ax_ph.scatter(fused, np.degrees(np.angle(np.exp(1j * psi_model))), c='C3', s=2, label='fitted 2*phi(nu)')
+        ax_ph.set_ylim(-190, 190)
+        ax_ph.set_yticks(range(-180, 181, 90))
+        ax_ph.set_ylabel('Phase (deg)')
+        ax_ph.set_title('Cross-hand phase: %.1f turn(s) across the band' % summary['xy_phase_turns_across_band'], fontsize=9)
+        ax_ph.legend(loc='upper right', fontsize=8)
+
+        # 3 and 4. observed and derotated spectra
+        ax_obs.errorbar(fghz, U * 1e3, rms_U * 1e3, fmt='.', ms=3, lw=0.5, label='U (observed)')
+        ax_obs.errorbar(fghz, V * 1e3, rms_V * 1e3, fmt='.', ms=3, lw=0.5, label='V (observed)')
+        ax_fix.errorbar(fghz, U_alt * 1e3, rms_U_alt * 1e3, fmt='.', ms=3, lw=0.5, label='U (derotated)')
+        ax_fix.errorbar(fghz, V_res * 1e3, rms_V_res * 1e3, fmt='.', ms=3, lw=0.5, label='V (residual)')
+        ax_fix.set_title('V residual chi2_red = %.2f%s' % (
+            summary['V_residual_chi2_red'], '' if ok else ' (fit below threshold)'), fontsize=9)
+        for ax in (ax_ph, ax_obs, ax_fix):
+            ax.set_xlim(fghz.min(), fghz.max())
+        for ax in (ax_obs, ax_fix):
+            ax.axhline(0, color='k', lw=0.5)
+            ax.set_ylabel('Flux density (mJy)')
+            ax.legend(loc='best', fontsize=8)
+        ax_ph.set_xlabel('Frequency (GHz)')
+        ax_fix.set_xlabel('Frequency (GHz)')
+
+        fig.suptitle('%s: %d channel(s) used, %d MAD-clipped' % (
+            os.path.basename(out_png), fit['n_chan'], summary['n_mad_clipped']), fontsize=9)
+        fig.savefig(out_png, dpi=100)
+        plt.close(fig)
+    except Exception as e:
+        msg(f'  WARNING: could not write U/V fix diagnostics plot ({e})')
+
+
+
 def write_uvfix_rmsynth(rmsynth_fname, rmsynth_arr, V, rms_V):
     '''
     No polarization angle calibrator: write a companion to an RM synthesis
@@ -600,11 +683,13 @@ def write_uvfix_rmsynth(rmsynth_fname, rmsynth_arr, V, rms_V):
 
     Outputs, alongside rmsynth_fname (<base> = rmsynth_fname minus '.txt'):
         <base>_UVfix.txt       freq, I, Q, U_derotated, dI, dQ, dU_derotated
-                               (the same format as the usual file); only
-                               written if the fit reaches UVFIX_MIN_SNR
+                               (the same format as the usual file); written
+                               whenever a fit could be made, with a warning if
+                               its coherent S/N is below UVFIX_MIN_SNR
         <base>_UVfix_fit.json  fit parameters, significance and V residual
                                statistics (always written)
-        <base>_UVfix.png       observed vs derotated U and V (only with the file)
+        <base>_UVfix.png       diagnostics of the fit (plot_uvfix_diagnostics),
+                               written whenever the fit could be made
     '''
 
     base     = rmsynth_fname[:-len('.txt')] + '_UVfix'
@@ -640,52 +725,42 @@ def write_uvfix_rmsynth(rmsynth_fname, rmsynth_arr, V, rms_V):
             'tau_ns'      : fit['tau_s'] * 1e9,
             'phi0_deg'    : float(np.degrees(fit['phi0_rad'])),
             'nu_ref_GHz'  : fit['nu_ref_hz'] / 1e9,
+            'xy_phase_turns_across_band': float(abs(fit['tau_s']) * (freq.max() - freq.min())),
             'coherent_snr': fit['snr'],
+            'noise_floor' : fit['floor'],
             'n_chan_used' : fit['n_chan'],
             'at_search_edge': fit['at_edge'],
             'status'      : 'ok' if fit['snr'] >= UVFIX_MIN_SNR else 'coherent S/N below threshold',
         })
 
-    if summary['status'] == 'ok':
+        # Derotated even when the fit is below threshold, for the diagnostics
         U_alt, V_res, rms_U_alt, rms_V_res = derotate_uv(freq, U, V, rms_U, rms_V, fit)
-
         usable = np.isfinite(V_res) & np.isfinite(rms_V_res) & (rms_V_res > 0)
         summary['V_residual_chi2_red'] = float(np.mean((V_res[usable] / rms_V_res[usable]) ** 2))
 
-        np.savetxt(out_txt, np.array([freq, I, Q, U_alt, rms_I, rms_Q, rms_U_alt]).T)
-        msg(f'  U/V-merged RM synthesis file written: {out_txt}')
-        msg(f'    tau = {summary["tau_ns"]:.3f} ns, phi0 = {summary["phi0_deg"]:.1f} deg, '
-            f'coherent S/N = {fit["snr"]:.1f}, V residual chi2_red = {summary["V_residual_chi2_red"]:.2f}')
+        msg(f'  U/V fix: tau = {summary["tau_ns"]:.3f} ns ({summary["xy_phase_turns_across_band"]:.1f} turn(s) across the band), '
+            f'phi0 = {summary["phi0_deg"]:.1f} deg, coherent S/N = {fit["snr"]:.1f} (threshold {UVFIX_MIN_SNR:g}), '
+            f'V residual chi2_red = {summary["V_residual_chi2_red"]:.2f}')
         if fit['at_edge']:
             msg(f'    WARNING: fitted delay is at the edge of the +/-{UVFIX_MAX_DELAY_NS:.1f} ns search range')
 
-        try:
-            fig, (ax_obs, ax_fix) = plt.subplots(2, 1, sharex=True, figsize=(8, 6))
-            fghz = freq / 1e9
-            ax_obs.errorbar(fghz, U * 1e3, rms_U * 1e3, fmt='.', ms=3, lw=0.5, label='U (observed)')
-            ax_obs.errorbar(fghz, V * 1e3, rms_V * 1e3, fmt='.', ms=3, lw=0.5, label='V (observed)')
-            ax_fix.errorbar(fghz, U_alt * 1e3, rms_U_alt * 1e3, fmt='.', ms=3, lw=0.5, label='U (derotated)')
-            ax_fix.errorbar(fghz, V_res * 1e3, rms_V_res * 1e3, fmt='.', ms=3, lw=0.5, label='V (residual)')
-            for ax in (ax_obs, ax_fix):
-                ax.axhline(0, color='k', lw=0.5)
-                ax.set_ylabel('Flux density (mJy)')
-                ax.legend(loc='best', fontsize=8)
-            ax_fix.set_xlabel('Frequency (GHz)')
-            ax_obs.set_title(f'tau = {summary["tau_ns"]:.3f} ns, phi0 = {summary["phi0_deg"]:.1f} deg, '
-                             f'coherent S/N = {fit["snr"]:.1f}, V residual chi2_red = {summary["V_residual_chi2_red"]:.2f}',
-                             fontsize=9)
-            fig.tight_layout()
-            fig.savefig(out_png, dpi=100)
-            plt.close(fig)
-        except Exception as e:
-            msg(f'  WARNING: could not write U/V fix plot ({e})')
+    if fit is not None:
+        np.savetxt(out_txt, np.array([freq, I, Q, U_alt, rms_I, rms_Q, rms_U_alt]).T)
+        msg(f'  U/V-merged RM synthesis file written: {out_txt}')
+        if summary['status'] != 'ok':
+            msg(f'  WARNING: coherent S/N = {fit["snr"]:.1f} is below the threshold ({UVFIX_MIN_SNR:g}) -- '
+                f'file written anyway, treat the derotation as unreliable')
     else:
-        # Drop outputs from an earlier run so a stale file is never picked up
-        for stale in (out_txt, out_png):
-            if os.path.exists(stale):
-                os.remove(stale)
-        msg(f'  U/V-merged RM synthesis file NOT written: {summary["status"]}'
-            + (f' (coherent S/N = {fit["snr"]:.1f} < {UVFIX_MIN_SNR})' if fit is not None else ''))
+        # Drop an earlier run's file so a stale one is never picked up
+        if os.path.exists(out_txt):
+            os.remove(out_txt)
+        msg(f'  U/V-merged RM synthesis file NOT written: {summary["status"]}')
+
+    if fit is not None:
+        plot_uvfix_diagnostics(out_png, freq, U, V, rms_U, rms_V, U_alt, V_res, rms_U_alt, rms_V_res, fit, summary)
+        msg(f'  U/V fix diagnostics written: {out_png}')
+    elif os.path.exists(out_png):
+        os.remove(out_png)
 
     with open(out_json, 'w') as j:
         json.dump(summary, j, indent=4)
@@ -2199,9 +2274,12 @@ def extract_polarization_properties(src_name,
 
                 # No polarization angle calibrator: also write the U/V-merged companion
                 if not pol_flag:
-                    write_uvfix_rmsynth(rmsynth_fname, rmsynth_arr,
-                                        np.array(output_dictionary['CHAN'][component]['V_flux_mJy'][k]) / 1e3,
-                                        np.array(output_dictionary['CHAN'][component]['V_rms_mJy'][k]) / 1e3)
+                    try:
+                        write_uvfix_rmsynth(rmsynth_fname, rmsynth_arr,
+                                            np.array(output_dictionary['CHAN'][component]['V_flux_mJy'][k]) / 1e3,
+                                            np.array(output_dictionary['CHAN'][component]['V_rms_mJy'][k]) / 1e3)
+                    except Exception as e:
+                        msg(f'  WARNING: U/V fix failed for {component} ({e}) -- continuing without it')
 
         # Compute the spectral index for every epoch unconditionally (stored in
         # JSON) -- this compute-only pass (save_plot=False) is NOT gated by

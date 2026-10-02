@@ -973,7 +973,7 @@ RMSYN_INFO_FILE           = DATA + '/rmsynth/rmsynth_info.json'  # Source list +
                                     # by the RMSYNTH extraction scripts. Change this to point at a
                                     # different info file without moving/renaming your dataset copy.
 
-RMSYN_OVERWRITE           = True    # Re-run fitting even when the output JSON already exists.
+RMSYN_OVERWRITE           = False    # Re-run fitting even when the output JSON already exists.
                                     # Set False to skip to plotting only.
 
 RMSYN_FORCE_FIX_STOKES_V  = True   # Always anchor the Stokes V position to Stokes I regardless
