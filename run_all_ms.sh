@@ -105,9 +105,9 @@ STATE="$ROOT/run_all_ms_logs"
 # 0_GET_INFO) -- see STAGES_INCLUDE_RMSYNTH below for what that changes.
 STAGES=(
   "setups/0_GET_INFO.py|submit_info_job.sh"
-  #"setups/1GC.py|submit_1GC_jobs.sh"
-  #"setups/2GC.py|submit_2GC_jobs.sh"
-  #"setups/RMSYNTH.py|submit_rmsynth_jobs.sh"
+  "setups/1GC.py|submit_1GC_jobs.sh"
+  "setups/2GC.py|submit_2GC_jobs.sh"
+  "setups/RMSYNTH.py|submit_rmsynth_jobs.sh"
 )
 
 # TRACKING is only ever written by RMSYNTH's own last step, so a run that
