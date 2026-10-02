@@ -61,6 +61,7 @@ TRACKING='/mnt/scratchhdd/tkat_reprocessing/tracking/mahrez_tracking.txt'   # tr
 PIPELINE='/mnt/scratchhdd/tkat_reprocessing/polkat_tkat_reprocessing'   # pipeline directory to run, e.g. 'polkat_tkat_reprocessing'
 WORK='/mnt/scratchhdd/tkat_reprocessing/working_dir'       # scratch working directory, rebuilt from scratch for every MS -- must be dedicated to this script, not shared with anything else
 POLL=${POLL:-300}   # slurm queue poll interval in seconds, overridable via POLL=... in the environment
+FIRST_ONLY=false    # true: run only the first MS that is not already in the tracking file (debugging)
 
 # Refuse to start unless every input above has actually been filled in.
 REQUIRED=(INFRA MS_DIR TRACKING PIPELINE WORK)
@@ -224,6 +225,15 @@ for ms in "${ALL_MS[@]}"; do
   fi
 done
 
+[[ $FIRST_ONLY == true || $FIRST_ONLY == false ]] || { echo "FIRST_ONLY must be 'true' or 'false' (got: '$FIRST_ONLY')" >&2; exit 1; }
+
+# With FIRST_ONLY, only the first MS to run is kept
+HELD_BACK=0
+if [[ $FIRST_ONLY == true && ${#TODO[@]} -gt 1 ]]; then
+  HELD_BACK=$(( ${#TODO[@]} - 1 ))
+  TODO=("${TODO[0]}")
+fi
+
 echo
 echo "=================================================================="
 echo " SUMMARY"
@@ -253,6 +263,9 @@ fi
 [[ $MODE == slurm ]] && echo "  Queue poll     : every ${POLL}s"
 echo
 echo "  Found ${#ALL_MS[@]} MS file(s): ${#DONE[@]} already in tracking, ${#TODO[@]} to run"
+if [[ $FIRST_ONLY == true ]]; then
+  echo "  FIRST_ONLY is true: only the first MS to run is kept ($HELD_BACK more not run)"
+fi
 if [[ ${#DONE[@]} -gt 0 ]]; then
   echo
   echo "  Skipping (already in tracking):"

@@ -100,29 +100,22 @@ def representative_frac_pol(rmclean, rmsynth):
 
 
 def peak_chan_frac_pol(pol):
-    """Channel with the highest P/I (%). Returns (index, freq_GHz, frac, frac_err) or None."""
-    chan   = pol.get('CHAN', {})
-    ptype  = pol.get('pol_image_type')
-    P      = chan.get(f'{ptype}_flux_mJy')
-    P_err  = chan.get(f'{ptype}_err_mJy')
-    I      = chan.get('I_flux_mJy')
-    I_err  = chan.get('I_err_mJy')
-    freqs  = chan.get('freq_GHz')
-    if not (ptype and P and P_err and I and I_err and freqs):
+    """
+    Peak-channel total polarisation fraction, sqrt(Q^2+U^2+V^2)/I (%), as stored
+    in the polarization JSON by RMSYNTH_01_extract_fluxes.py. That peak is taken
+    over the channels left after the MAD flux/noise clip. Returns
+    (index, freq_GHz, frac, frac_err), or None if the JSON has no peak.
+    """
+    mfs  = pol.get('MFS', {})
+    freq = mfs.get('total_frac_pol_peak_freq_GHz')
+    frac = mfs.get('total_frac_pol_peak')
+    err  = mfs.get('total_frac_pol_peak_err')
+    if freq is None or frac is None or err is None:
         return None
 
-    best = None
-    for idx, (p, dp, i, di) in enumerate(zip(P, P_err, I, I_err)):
-        if i is None or p is None or i <= 0:
-            continue
-        frac = p / i
-        if best is None or frac > best[2]:
-            frac_err = abs(frac) * ((dp / p)**2 + (di / i)**2)**0.5 if p != 0 else dp / i
-            best = (idx, freqs[idx], frac, frac_err)
-    if best is None:
-        return None
-    idx, freq, frac, frac_err = best
-    return idx, freq, frac * 100.0, frac_err * 100.0
+    freqs = pol.get('CHAN', {}).get('freq_GHz', [])
+    idx   = freqs.index(freq) if freq in freqs else None
+    return idx, freq, frac * 100.0, err * 100.0
 
 
 def write_rmsynth_block(line, rmclean, rmsynth):

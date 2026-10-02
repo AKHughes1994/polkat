@@ -943,6 +943,43 @@ def main():
         steps.append(step)
         n += 1
 
+        # Targets only: predict the final (PCALMASK) model into MODEL_DATA and average the
+        # data, corrected data and model down to CAL_2GC_AVG_NCHANS channels in RESULTS, as one job.
+        # This must come before the clean-up below, which removes the pcalmask channel model
+        # images the predict reads. The commands are chained so that the averaging does not
+        # run on a stale model if the predict fails.
+        if is_target:
+            avg_name = o.basename(myms)
+            if f'_{cfg.PRE_NCHANS}ch' in avg_name:
+                avg_name = avg_name.replace(f'_{cfg.PRE_NCHANS}ch', f'_{cfg.CAL_2GC_AVG_NCHANS}ch')
+            else:
+                avg_name = avg_name.replace('.ms', f'_{cfg.CAL_2GC_AVG_NCHANS}ch.ms')
+            avg_ms = f'{cfg.RESULTS}/{avg_name}'
+
+            step = {}
+            step['step'] = n
+            step['comment'] = f'Predict the final PCALMASK model into MODEL_DATA, then average to {cfg.CAL_2GC_AVG_NCHANS} channels for source {fieldname}'
+            step['dependency'] = n - 1
+            step['id'] = 'PRAVG'+code
+            step['glam_config'] = cfg.GLAM_MEDIUM
+            step['slurm_config'] = cfg.SLURM_PREDICT
+            step['pbs_config'] = cfg.PBS_WSCLEAN
+            absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
+            cores = '8' if FORCE_CORES_8 else step['glam_config']['CPUS']
+            wsc_prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
+            casa_prefix = CONTAINER_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
+            calls = [wsc_prefix + 'python3 '+TOOLS+'/fix_nan_models.py ' + pcal_img_prefix,
+                     wsc_prefix + gen.generate_syscall_predict(msname = myms,
+                         imgname = pcal_img_prefix,
+                         cores = cores,
+                         absmem = absmem,
+                         tempdir = temp_dir,
+                         chanout = chanout_pcal),
+                     casa_prefix + gen.generate_syscall_casa(casascript=f'{cfg.OXKAT}/2GC_casa_average_channels.py {myms} {avg_ms} {cfg.CAL_2GC_AVG_NCHANS}')]
+            step['syscall'] = ' &&\n'.join(calls)
+            steps.append(step)
+            n += 1
+
         step = {}
         step['step'] = n
         step['comment'] = 'Clean directory for '+fieldname

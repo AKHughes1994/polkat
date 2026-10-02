@@ -499,6 +499,11 @@ CAL_2GC_YAML_COMPLEX = DATA+'/quartical/2GC_phase.yaml'
 # To use phase-only calibration for both stages (i.e. override the complex solve), uncomment:
 # CAL_2GC_YAML_COMPLEX = CAL_2GC_YAML
 
+# End of 2GC for every target: predict the final (pcalmask) model into MODEL_DATA, then average
+# DATA, CORRECTED_DATA and MODEL_DATA down to this many channels, into RESULTS. RESULTS is a
+# subdirectory, so the *.ms removal at the end of RMSYNTH does not touch the averaged MS.
+CAL_2GC_AVG_NCHANS = 32
+
 # Skip primary beam correction in post-processing
 SKIP_PB = False
 

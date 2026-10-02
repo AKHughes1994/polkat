@@ -1659,10 +1659,11 @@ def extract_polarization_properties(src_name,
     # here so it is captured in the JSON below.
     mfs = output_dictionary['MFS']
     if 'I_flux_mJy' in mfs and 'I_rms_mJy' in mfs and 'freq_GHz' in mfs:
+        _keep = _mad_keep_mask(output_dictionary['CHAN'])
         spec_fit = _fit_alpha_chi2(
-            output_dictionary['CHAN']['freq_GHz'],
-            output_dictionary['CHAN']['I_flux_mJy'],
-            output_dictionary['CHAN']['I_rms_mJy'],
+            np.asarray(output_dictionary['CHAN']['freq_GHz'], dtype=float)[_keep],
+            np.asarray(output_dictionary['CHAN']['I_flux_mJy'], dtype=float)[_keep],
+            np.asarray(output_dictionary['CHAN']['I_rms_mJy'], dtype=float)[_keep],
             mfs['I_flux_mJy'], mfs['I_rms_mJy'], mfs['freq_GHz'])
         mfs['alpha']     = spec_fit['alpha']
         mfs['alpha_err'] = spec_fit['alpha_err']
@@ -1825,6 +1826,34 @@ def _mad_ylim(arr, err=None, k=10.0, pad=0.10):
     return (lo - margin, hi + margin)
 
 
+def _mad_keep_mask(chan, k=None):
+    """
+    Channels to keep for the spectral analysis (the polarisation fraction and
+    its peak, the spectral index, the plots): a boolean array, True where kept.
+    Every value stays in the saved files; this only decides what is analysed.
+
+    For each of I, Q, U, V, a channel is dropped if its flux or its noise (rms)
+    lies outside median +/- k robust sigmas (sigma = 1.4826 x MAD), the same
+    rule _mad_ylim applies for plotting, and if it fails for ANY Stokes it is
+    dropped from all of them. A non-finite flux or noise drops the channel.
+    k defaults to SPEC_INDEX_MAD_CLIP.
+    """
+    k = SPEC_INDEX_MAD_CLIP if k is None else k
+    keep = np.ones(len(chan['freq_GHz']), dtype=bool)
+    for stokes in ('I', 'Q', 'U', 'V'):
+        for key in (f'{stokes}_flux_mJy', f'{stokes}_rms_mJy'):
+            if key not in chan:
+                continue
+            arr = np.asarray(chan[key], dtype=float)
+            med = np.nanmedian(arr)
+            sig = 1.4826 * np.nanmedian(np.abs(arr - med))
+            if sig > 0:
+                keep &= np.abs(arr - med) <= k * sig
+            else:
+                keep &= np.isfinite(arr)
+    return keep
+
+
 def _total_pol_fraction(chan):
     """
     Per-channel total polarisation fraction, sqrt(Q^2 + U^2 + V^2) / I.
@@ -1839,8 +1868,11 @@ def _total_pol_fraction(chan):
 
     The per-channel S/N is P / s_P. It is approximate: P is positive-definite
     and no Ricean debiasing is applied, so a noise-dominated channel reads
-    high in both P and p. The peak is taken over every finite channel, so its
-    S/N is what says whether to believe it.
+    high in both P and p. Channels whose I, Q, U or V flux or noise is a MAD
+    outlier (see _mad_keep_mask) are excluded first, so one pathological
+    channel can be neither the peak nor distort the spectrum; their values stay
+    in the CHAN arrays. The peak is taken over the remaining finite channels,
+    so its S/N is what says whether to believe it.
 
     Returns
     -------
@@ -1878,8 +1910,14 @@ def _total_pol_fraction(chan):
         frac_err = np.abs(frac) * np.sqrt((s_P / P)**2 + (sI / I)**2)
         snr  = P / s_P
 
+    # A channel with MAD outlier flux or noise is excluded from the spectrum and the peak
+    mad_ok = _mad_keep_mask(chan)
+    if (~mad_ok).any():
+        msg(f'  Total polarisation fraction: excluding {int((~mad_ok).sum())}/{freq.size} '
+            f'channel(s) with outlier flux or noise (MAD)')
+
     good = (np.isfinite(frac) & np.isfinite(frac_err) & np.isfinite(snr)
-            & (I > 0) & (P > 0))
+            & (I > 0) & (P > 0) & mad_ok)
     if not good.any():
         return None
 
@@ -2026,6 +2064,18 @@ def plot_stokes_spectrum(output_dictionary, src_name, timestamp_prefix):
             ('V', chan['V_flux_mJy'], chan['V_rms_mJy'], 'tab:red'),
         ]
 
+    # A channel with MAD outlier flux or noise in any of I, Q, U, V is masked from
+    # every panel.
+    keep = _mad_keep_mask(chan)
+    if (~keep).any():
+        msg(f'  Masking {int((~keep).sum())}/{len(keep)} channels with outlier flux or noise (MAD)')
+        freq   = freq[keep]
+        stokes = [(label, np.asarray(flux, dtype=float)[keep], np.asarray(rms, dtype=float)[keep], colour)
+                  for label, flux, rms, colour in stokes]
+    if len(freq) == 0:
+        msg('  plot_stokes_spectrum: all channels masked, skipping plot')
+        return
+
     n_panels  = len(stokes)
     fig, axes = plt.subplots(n_panels, 1, figsize=(12, 3.5 * n_panels),
                              sharex=True, squeeze=False)
@@ -2091,7 +2141,7 @@ def plot_total_pol_fraction(output_dictionary, src_name, timestamp_prefix):
     and save to RESULTS/fitting_plots.
 
     Layout  : 1x1, fraction as a percentage against frequency.
-    Y-range : MAD-based, data-driven, as on the Stokes panels (_mad_ylim).
+    Y-range : every plotted channel, error bars and the peak included.
     Markers : the peak channel is ringed and annotated with its fraction and
               approximate S/N (see _total_pol_fraction).
     """
@@ -2135,7 +2185,7 @@ def plot_total_pol_fraction(output_dictionary, src_name, timestamp_prefix):
                    f"$\\pm$ {tot['peak_frac_err']*100.0:.2f}% "
                    f"at {tot['peak_freq_GHz']:.3f} GHz (S/N ~ {tot['peak_snr']:.1f})"))
 
-    ax.set_ylim(_mad_ylim(frac, err=frac_err))
+    ax.margins(y=0.10)
     ax.set_xlabel('Frequency (GHz)', fontsize=11)
     ax.set_ylabel('Total polarisation fraction (%)', fontsize=10)
     ax.set_title(f'{src_name}  —  Total Polarisation Fraction', fontsize=12)
