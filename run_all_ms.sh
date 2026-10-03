@@ -436,6 +436,16 @@ run_ms() {
     else
       run_stage_node "$subs" || log "  $subs exited non-zero, continuing"
     fi
+    # Whatever a stage reported, 2GC must have left its images and averaged MS
+    # before RMSYNTH runs on them
+    if [[ $stage == 2GC ]]; then
+      python3 tools/check_outputs.py 2GC > "$state/check_stage$i.log" 2>&1 || {
+        log "  $stage outputs missing:"
+        sed 's/^/    /' "$state/check_stage$i.log"
+        record_failure "$id" "${ms##*/}" "$stage" "outputs missing, see $state/check_stage$i.log"
+        return 1
+      }
+    fi
   done
 }
 

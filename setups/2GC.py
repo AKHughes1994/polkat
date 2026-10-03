@@ -946,8 +946,7 @@ def main():
         # Targets only: predict the final (PCALMASK) model into MODEL_DATA and average the
         # data, corrected data and model down to CAL_2GC_AVG_NCHANS channels in RESULTS, as one job.
         # This must come before the clean-up below, which removes the pcalmask channel model
-        # images the predict reads. The commands are chained so that the averaging does not
-        # run on a stale model if the predict fails.
+        # images the predict reads.
         if is_target:
             avg_name = o.basename(myms)
             if f'_{cfg.PRE_NCHANS}ch' in avg_name:
@@ -976,7 +975,7 @@ def main():
                          tempdir = temp_dir,
                          chanout = chanout_pcal),
                      casa_prefix + gen.generate_syscall_casa(casascript=f'{cfg.OXKAT}/2GC_casa_average_channels.py {myms} {avg_ms} {cfg.CAL_2GC_AVG_NCHANS}')]
-            step['syscall'] = ' &&\n'.join(calls)
+            step['syscall'] = '\n\n'.join(calls)
             steps.append(step)
             n += 1
 
