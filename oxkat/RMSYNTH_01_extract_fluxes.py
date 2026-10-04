@@ -43,6 +43,7 @@ SPEC_PLOT_SNR_THRESH  = cfg.RMSYN_SPEC_PLOT_SNR_THRESH
 SPEC_INDEX_SNR_THRESH = cfg.RMSYN_SPEC_INDEX_SNR_THRESH
 SPEC_INDEX_MAD_CLIP   = cfg.RMSYN_SPEC_INDEX_MAD_CLIP
 MAX_I_DRIFT_PIX       = cfg.RMSYN_MAX_I_DRIFT_PIX
+USE_RESIDUAL_RMS      = cfg.RMSYN_USE_RESIDUAL_RMS
 
 # No polarization angle calibrator: the U/V-merged companion RM synthesis file
 # is built from a linear cross-hand phase fit (see fit_linear_xy_phase).
@@ -966,8 +967,17 @@ def get_imstat_values(image, xpix, ypix, manual_rms_region = False):
     xpix = ims['maxpos'][0]
     ypix = ims['maxpos'][1]
 
-    # Extract RMS
-    rms = imstat(image, region = rms_region)['rms'][0]
+    # Extract RMS: on the matching residual image when USE_RESIDUAL_RMS is set and
+    # one exists, otherwise on the image itself
+    rms_image = image
+    if USE_RESIDUAL_RMS:
+        residual = re.sub(r'-image(\.homogenized)?\.fits$', r'-residual\1.fits', image)
+        if os.path.exists(residual):
+            rms_image = residual
+        elif not getattr(get_imstat_values, 'warned', False):
+            msg(f'  WARNING: no residual image for the RMS (e.g. {os.path.basename(residual)}); using the image itself')
+            get_imstat_values.warned = True
+    rms = imstat(rms_image, region = rms_region)['rms'][0]
 
     return [flux, xpix, ypix, rms, rms_region]
     
@@ -1568,6 +1578,7 @@ def extract_polarization_properties(src_name,
         msg(f'  RMS region       : MANUAL -- {manual_rms_region}')
     else:
         msg(f'  RMS region       : default annulus (~500 beam areas) centred on source')
+    msg(f'  RMS image        : {"matching residual where it exists" if USE_RESIDUAL_RMS else "the image itself"}')
     msg(f'  Polarization angle calibrator present: {pol_flag}')
     msg(f'  Fix secondary component positions    : {fix_additional_comps}')
     msg(f'{"="*70}')
