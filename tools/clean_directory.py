@@ -103,7 +103,6 @@ patterns = [
     f"{cfg.IMAGES}/{source_name}/*notaper-MFS-*psf*",
     f"{cfg.IMAGES}/{source_name}/*intermask*0*",
     f"{cfg.IMAGES}/{source_name}/*pcalmask-0*",
-    f"{cfg.IMAGES}/{source_name}/*pcalmask-MFS-*residual*",
     f"{cfg.IMAGES}/{source_name}/*pcalmask-MFS-*model*",
     f"{cfg.IMAGES}/{source_name}/*pcalmask-MFS-*dirty*",
     f"{cfg.IMAGES}/{source_name}/*pcalmask-MFS-*psf*",
