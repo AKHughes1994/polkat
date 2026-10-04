@@ -1386,6 +1386,11 @@ def fit_channel_group_batch(jobs):
     return [fit_channel_group(job) for job in jobs]
 
 
+def case_insensitive(text):
+    """Glob pattern for text in any letter case."""
+    return ''.join(f'[{c.lower()}{c.upper()}]' if c.isalpha() else glob.escape(c) for c in text)
+
+
 def _try_get_ms_timing(src_name, n_intervals):
     """
     Derive per-interval MJD timing from the measurement set for src_name.
@@ -1414,9 +1419,10 @@ def _try_get_ms_timing(src_name, n_intervals):
 
     _target_names = _pinfo.get('target_names', [])
     _target_ms    = _pinfo.get('target_ms',    [])
+    _target_lower = [name.lower() for name in _target_names]
 
-    if src_name in _target_names:
-        _idx = _target_names.index(src_name)
+    if src_name.lower() in _target_lower:
+        _idx = _target_lower.index(src_name.lower())
         _candidate = _target_ms[_idx] if _idx < len(_target_ms) else None
         if _candidate and os.path.exists(_candidate):
             _ms_to_use = _candidate
@@ -1427,8 +1433,8 @@ def _try_get_ms_timing(src_name, n_intervals):
         if _working and os.path.exists(_working):
             _ms_to_use = _working
             _target_ids = _pinfo.get('target_ids', [])
-            if src_name in _target_names:
-                _idx = _target_names.index(src_name)
+            if src_name.lower() in _target_lower:
+                _idx = _target_lower.index(src_name.lower())
                 if _idx < len(_target_ids):
                     _field_id = int(_target_ids[_idx])
             msg(f'  [timing] split MS absent; using working MS: {os.path.basename(_ms_to_use)}'
@@ -1602,23 +1608,35 @@ def extract_polarization_properties(src_name,
     # Locate images and determine the correct suffix to use
     # ------------------------------------------------------------------
 
-    # Confirm at least some images exist before proceeding
-    test_images = glob.glob(f'{src_im_identifier}*{src_im_suffix}')
-    if not test_images:
-        raise FileNotFoundError(
-            f'No images found matching: {src_im_identifier}*{src_im_suffix}\n'
-            f'Check the image_directory and image_identifier fields in rmsynth_info.json.')
-    msg(f'Found images matching pattern (example): {test_images[0]}')
+    # The requested suffix is used for the MFS images and for the channel images
+    # wherever images with it exist. Homogenized images stand in for a type with
+    # none, as when the channelisation had to be chunked and no plain image could
+    # be made.
+    other_suffix = 'image.homogenized.fits' if src_im_suffix == 'image.fits' else 'image.fits'
 
-    # MFS images may use 'image.homogenized.fits' if per-channel splitting
-    # has already consumed the standard image.fits products
-    mfs_im_suffix = src_im_suffix[:]
-    if not glob.glob(f'{src_im_identifier}*MFS*{src_im_suffix}'):
-        msg(f'WARNING: No MFS {src_im_suffix} images found; '
-            f'falling back to image.homogenized.fits')
-        mfs_im_suffix = 'image.homogenized.fits'
-    else:
-        msg(f'MFS image suffix: {mfs_im_suffix}')
+    def pick_suffix(mfs):
+        for suffix in (src_im_suffix, other_suffix):
+            if any(('-MFS-' in f) == mfs for f in glob.glob(f'{src_im_identifier}*{suffix}')):
+                return suffix
+        return None
+
+    mfs_found, chan_found = pick_suffix(True), pick_suffix(False)
+
+    # Confirm at least some images exist before proceeding
+    if mfs_found is None and chan_found is None:
+        raise FileNotFoundError(
+            f'No images found matching: {src_im_identifier}*{src_im_suffix} or *{other_suffix}\n'
+            f'Check the image_directory and image_identifier fields in rmsynth_info.json.')
+
+    mfs_im_suffix = mfs_found or src_im_suffix
+    chan_im_suffix = chan_found or src_im_suffix
+    for kind, found in (('MFS', mfs_found), ('channel', chan_found)):
+        if found is None:
+            msg(f'WARNING: No {kind} images found with {src_im_suffix} or {other_suffix}')
+        elif found != src_im_suffix:
+            msg(f'WARNING: No {kind} {src_im_suffix} images found; using {found}')
+    src_im_suffix = chan_im_suffix
+    msg(f'MFS image suffix: {mfs_im_suffix}; channel image suffix: {src_im_suffix}')
 
     # Match every MFS and CHAN image to its Stokes by name and decide between
     # full Stokes (some prefix has a complete set of I, P, Q, U, V images) and
@@ -2917,12 +2935,12 @@ def main():
 
         # Construct image identifier based on input options
         if rmsynth_info["image_timing"][k]:
-            src_im_identifier = cfg.CWD +'/{}/*{}*.ms_{}-t'.format(rmsynth_info["image_directory"][k], 
-                                                                                            rmsynth_info["source_name"][k], 
+            src_im_identifier = cfg.CWD +'/{}/*{}*.ms_{}-t'.format(rmsynth_info["image_directory"][k],
+                                                                                            case_insensitive(rmsynth_info["source_name"][k]),
                                                                                             rmsynth_info["image_identifier"][k])
         else:
-            src_im_identifier = cfg.CWD +'/{}/*{}*.ms_{}-'.format(rmsynth_info["image_directory"][k], 
-                                                                                            rmsynth_info["source_name"][k], 
+            src_im_identifier = cfg.CWD +'/{}/*{}*.ms_{}-'.format(rmsynth_info["image_directory"][k],
+                                                                                            case_insensitive(rmsynth_info["source_name"][k]),
                                                                                            rmsynth_info["image_identifier"][k])                                                                                           
         # Parse source positions from rmsynth_info.json using parse_casa_position().
         # Accepts both CASA HMS/DMS format ('HH:MM:SS.SS,+-DD.MM.SS.SS') and
