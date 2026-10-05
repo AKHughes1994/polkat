@@ -239,20 +239,54 @@ os.makedirs(RESULTS, exist_ok=True)
 #  Each target's K/Gp/G calibration comes from its secondary, per
 #  target_cal_map in project_info.json. Secondaries and the
 #  polarization-angle calibrator use their own solution.
+#
+#  PRE_FIELDS (config.py): when set, the target / secondary lists are
+#  restricted to the selected fields, and the polarization-angle
+#  calibrator is kept only if it is in the selection. Whatever the
+#  source of the field list, fields absent from the working MS are dropped.
 # -----------------------------------------------------------------------
 
+if PRE_FIELDS != '':
+    target_names   = user_targets
+    pcal_names     = user_pcals
+    target_cal_map = user_cal_map
+
+# ======================= DEFAULT FIELDS INCLUDED IN THE Xf SOLVE =======================
+#   targets (target_names)  +  secondaries (pcal_names)  +  polarization-angle
+#   calibrator (polang_name).  The primary is never included.
+# =======================================================================================
 if pacal_name == '':
-    msg('pacal_name is empty — using every field in project_info.json except the primary.')
+    msg('pacal_name is empty — using the default fields (targets + secondaries + polang cal).')
 
-    pacal_name = ','.join(dict.fromkeys(
-        target_names + pcal_names +
-        ([str(project_info['polang_name'])] if project_info.get('polang_name', '') else [])))
+    _default_fields = list(target_names) + list(pcal_names)
+    _polang_name    = str(project_info.get('polang_name', ''))
+    if _polang_name:
+        _pre_list = [f.strip() for f in PRE_FIELDS.split(',')]
+        if PRE_FIELDS == '' or _polang_name in _pre_list \
+                or str(project_info.get('polang_id', '')) in _pre_list:
+            _default_fields.append(_polang_name)
 
-    if pacal_name:
-        msg(f'  Field(s) from project_info.json: {pacal_name}')
-    else:
-        msg('WARNING: No target/secondary/polang fields found in project_info.json. '
-            'Xf solving will be skipped.')
+    pacal_name = ','.join(dict.fromkeys(_default_fields))
+
+# Keep only fields present in the working MS (PRE_FIELDS may have dropped
+# fields from it).
+msmd.open(myms)
+try:
+    _ms_field_names = list(msmd.fieldnames())
+finally:
+    msmd.close()
+
+_requested_fields = [f.strip() for f in pacal_name.split(',') if f.strip()]
+_missing_fields   = [f for f in _requested_fields if f not in _ms_field_names]
+if _missing_fields:
+    msg(f'  Dropping field(s) not in {myms}: {_missing_fields}')
+pacal_name = ','.join(f for f in _requested_fields if f in _ms_field_names)
+
+if pacal_name:
+    msg(f'  Field(s) in Xf solve: {pacal_name}')
+else:
+    msg('WARNING: No target/secondary/polang fields available for the Xf solve. '
+        'Xf solving will be skipped.')
 
 
 # -----------------------------------------------------------------------
@@ -1917,8 +1951,8 @@ for _t in [xftab_combine, xftab_per, xftab_field]:
 #    combine='scan' with a warning.
 #  XF_AVG_PERSCAN=False: CASA polcal combine='scan' for combineScan,
 #    then perScan if applicable (original behaviour).
-#  combineScanField (do_multi_field): solved directly with combine='scan,field'
-#    — CASA pools all scans of all PA cal fields into a single solution.
+#  combineScanField (do_multi_field): not solved by polcal; built later by a
+#    cross-hand flux weighted average of the combineScan solutions across fields.
 # -----------------------------------------------------------------------
 
 target_to_secondary = dict(zip(target_names, target_cal_map))

@@ -1,23 +1,34 @@
 #!/usr/bin/env bash
 #
 # run_all_ms.sh -- run the full pipeline (0_GET_INFO -> 1GC -> 2GC -> RMSYNTH)
-# on every *.ms in a directory, one MS at a time.
+# on every *.ms in a directory, one MS at a time (or, on slurm, BATCH at a time).
 #
 # Fill in the INPUTS globals below, then run:
 #     ./run_all_ms.sh 2>&1 | tee run_all_ms.log
 #
-# Place this script one level above working_dir. For each MS, working_dir is
-# emptied, filled with a copy of the pipeline directory and a symlink to the
-# MS, and the stages are run inside it. A stage only starts once every job of
-# the previous one has finished. An MS counts as done once its obsid (leading
+# Place this script one level above working_dir. Each MS gets its own
+# working_dir/<obsid>, emptied and filled with a copy of the pipeline directory
+# and a symlink to the MS, and the stages are run inside it. A stage only
+# starts once every job of the previous one has finished (for that MS). An MS counts as done once its obsid (leading
 # number of the MS name) is in the tracking file, which RMSYNTH writes as its
 # very last step. An MS that fails is reported and the run moves on to the next.
 #
 # MSs whose obsid is already in the tracking file are skipped. Before starting,
 # it lists what it found and asks for confirmation.
 #
+# MS_DIR is rescanned before every MS, so MSs that are still being transferred
+# in when the run starts are picked up once they finish. An MS with any file
+# modified in the last SETTLE seconds (default 600) counts as still being
+# written and is not started; if nothing else is ready the script waits for it:
+#     SETTLE=1800 ./run_all_ms.sh
+#
 # On slurm the job queue is checked every POLL seconds (default 300):
 #     POLL=600 ./run_all_ms.sh
+#
+# BATCH (default 1, slurm only) is how many MSs run at once. Each runs through
+# its own stages independently, and as soon as one finishes (or fails) the next
+# waiting MS takes its place, so there are always up to BATCH in flight.
+#     BATCH=4 ./run_all_ms.sh
 #
 # ------------------------------------------------------------------ #
 # What a run actually does, step by step (for readers who don't know bash):
@@ -29,11 +40,13 @@
 #      matches the one passed on the command line -- otherwise a finished
 #      MS's products would be silently discarded, or never picked up as done.
 #   3. Lists every *.ms in ms_dir, splits it into "already done" (its obsid
-#      is in the tracking file) and "to run", prints the plan, and asks for
+#      is in the tracking file), "still being written" (modified in the last
+#      SETTLE seconds) and "to run", prints the plan, and asks for
 #      confirmation before doing anything.
-#   4. For each MS still to run, in order:
-#        a. Empties working_dir, copies a fresh copy of the pipeline into it,
-#           and symlinks that MS in.
+#   4. Keeps up to BATCH MSs running at once. Whenever a slot is free, rescans
+#      ms_dir and starts the next MS still to run; each MS, independently:
+#        a. Empties working_dir/<obsid>, copies a fresh copy of the pipeline
+#           into it, and symlinks that MS in.
 #        b. Runs each pipeline stage in turn (0_GET_INFO, 1GC, 2GC, RMSYNTH):
 #           generates that stage's job scripts, submits them (or runs them
 #           directly, in "node" mode), and waits for every job to finish
@@ -41,12 +54,12 @@
 #        c. Stops at the first stage that fails for that MS, records which
 #           stage that was in the failures file, and moves on to the next
 #           MS -- one bad MS never blocks the others.
-#   5. After each MS, checks the tracking file again: if RMSYNTH's last step
+#   5. When an MS finishes, checks the tracking file again: if RMSYNTH's last step
 #      added this obsid, that MS is counted as passed. If not, it's counted as
 #      failed -- unless STAGES was deliberately shortened to stop before
 #      RMSYNTH (e.g. for a quick test) and every stage that did run actually
 #      succeeded, in which case it's counted as PARTIAL, not failed.
-#   6. Once every MS has been tried, prints how many passed, failed, and
+#   6. Once nothing is left to run or wait for, prints how many passed, failed, and
 #      stopped early, and lists the failed and partial ones by name.
 # ------------------------------------------------------------------ #
 set -uo pipefail
@@ -59,9 +72,11 @@ INFRA='node'      # 'idia', 'hippo', or 'node'
 MS_DIR='/mnt/extraspace/tkat_reprocessing'     # directory containing the *.ms to process
 TRACKING='/mnt/scratchhdd/tkat_reprocessing/tracking/mahrez_tracking.txt'   # tracking file; must match RMSYNTH_TRACKING_FILE in the pipeline's oxkat/config.py
 PIPELINE='/mnt/scratchhdd/tkat_reprocessing/polkat_tkat_reprocessing'   # pipeline directory to run, e.g. 'polkat_tkat_reprocessing'
-WORK='/mnt/scratchhdd/tkat_reprocessing/working_dir'       # scratch working directory, rebuilt from scratch for every MS -- must be dedicated to this script, not shared with anything else
+WORK='/mnt/scratchhdd/tkat_reprocessing/working_dir'       # scratch working directory, emptied at the start; each MS runs in WORK/<obsid>, rebuilt for every MS -- must be dedicated to this script, not shared with anything else
 POLL=${POLL:-300}   # slurm queue poll interval in seconds, overridable via POLL=... in the environment
 FIRST_ONLY=false    # true: run only the first MS that is not already in the tracking file (debugging)
+BATCH=${BATCH:-1}   # slurm only: how many MSs run at once; a free slot is refilled as soon as an MS finishes. Overridable via BATCH=... in the environment
+SETTLE=${SETTLE:-600}   # an MS with any file modified in the last SETTLE seconds is treated as still transferring and not started; overridable via SETTLE=... in the environment
 
 # Refuse to start unless every input above has actually been filled in.
 REQUIRED=(INFRA MS_DIR TRACKING PIPELINE WORK)
@@ -91,6 +106,12 @@ case $INFRA in
   *)          echo "INFRA must be 'idia', 'hippo', or 'node' (got: '$INFRA')" >&2; exit 1 ;;
 esac
 
+[[ $BATCH =~ ^[1-9][0-9]*$ ]] || { echo "BATCH must be a positive integer (got: '$BATCH')" >&2; exit 1; }
+if [[ $MODE == node && $BATCH -gt 1 ]]; then
+  echo "BATCH=$BATCH ignored: batching is only for slurm (INFRA 'idia' or 'hippo'); node mode runs one MS at a time" >&2
+  BATCH=1
+fi
+
 # ROOT is fixed to this script's own location; STATE keeps each MS's own logs
 # and submitted job IDs around after WORK has been wiped for the next MS. WORK
 # itself is the INPUTS global above, not derived from ROOT, so it can live
@@ -117,7 +138,10 @@ STAGES=(
 STAGES_INCLUDE_RMSYNTH=false
 [[ " ${STAGES[*]} " == *"RMSYNTH.py"* ]] && STAGES_INCLUDE_RMSYNTH=true
 
-log() { echo "[$(date '+%F %T')] $*"; }
+# LOG_TAG is set to the obsid inside each background MS worker, so interleaved
+# lines from MSs running at once can be told apart.
+LOG_TAG=
+log() { echo "[$(date '+%F %T')]${LOG_TAG:+ [$LOG_TAG]} $*"; }
 
 # Confirm the given directories actually look like what they're supposed to
 # be before doing anything with them.
@@ -200,34 +224,64 @@ in_tracking() {
 record_failure() {
   local id=$1 msname=$2 stage=$3 reason=$4
   mkdir -p -- "$(dirname -- "$FAILED_FILE")"
-  [[ -f $FAILED_FILE ]] || echo '# obsid | ms_name | failed_utc | stage | reason' > "$FAILED_FILE"
-  echo "$id | $msname | $(date -u '+%Y-%m-%dT%H:%M:%S') | $stage | $reason" >> "$FAILED_FILE"
+  # Workers running at once can fail together, so create the header and append
+  # under a lock.
+  (
+    flock 9
+    [[ -f $FAILED_FILE ]] || echo '# obsid | ms_name | failed_utc | stage | reason' > "$FAILED_FILE"
+    echo "$id | $msname | $(date -u '+%Y-%m-%dT%H:%M:%S') | $stage | $reason" >> "$FAILED_FILE"
+  ) 9>> "$FAILED_FILE.lock"
 }
 
 # ------------------------------------------------------------------ #
 # What needs running
 # ------------------------------------------------------------------ #
 
-mapfile -t ALL_MS < <(find "$MS_DIR" -mindepth 1 -maxdepth 1 -name '*.ms' \( -type d -o -type l \) | sort)
+# True if anything inside MS $1 was modified within the last SETTLE seconds,
+# i.e. it is probably still being transferred.
+ms_busy() {
+  [[ -n $(find -L "$1" -newermt "$SETTLE seconds ago" -print -quit 2>/dev/null) ]]
+}
+
+# MSs started (pass or fail) in this run, keyed by obsid, so a failed MS is
+# not picked up again by the next scan.
+declare -A ATTEMPTED=()
+
+# Scans MS_DIR and sorts its *.ms into ALL_MS (everything found), DONE (obsid
+# in the tracking file), BUSY (still being written), and TODO (the rest, minus
+# anything already attempted in this run). Called before the summary and again
+# before every MS, so MSs that finish transferring mid-run are picked up.
+scan_ms() {
+  mapfile -t ALL_MS < <(find "$MS_DIR" -mindepth 1 -maxdepth 1 -name '*.ms' \( -type d -o -type l \) | sort)
+  TODO=()
+  DONE=()
+  BUSY=()
+  local ms id
+  for ms in "${ALL_MS[@]}"; do
+    id=$(obsid "$ms")
+    if in_tracking "$id"; then
+      DONE+=("$ms")
+    elif [[ -n ${ATTEMPTED[$id]:-} ]]; then
+      :
+    elif ms_busy "$ms"; then
+      BUSY+=("$ms")
+    else
+      TODO+=("$ms")
+    fi
+  done
+}
+
+scan_ms
 
 if [[ ${#ALL_MS[@]} -eq 0 ]]; then
   echo "No *.ms found in $MS_DIR"
   exit 0
 fi
 
-TODO=()
-DONE=()
-for ms in "${ALL_MS[@]}"; do
-  if in_tracking "$(obsid "$ms")"; then
-    DONE+=("$ms")
-  else
-    TODO+=("$ms")
-  fi
-done
-
 [[ $FIRST_ONLY == true || $FIRST_ONLY == false ]] || { echo "FIRST_ONLY must be 'true' or 'false' (got: '$FIRST_ONLY')" >&2; exit 1; }
 
 # With FIRST_ONLY, only the first MS to run is kept
+[[ $FIRST_ONLY == true ]] && BATCH=1
 HELD_BACK=0
 if [[ $FIRST_ONLY == true && ${#TODO[@]} -gt 1 ]]; then
   HELD_BACK=$(( ${#TODO[@]} - 1 ))
@@ -240,7 +294,12 @@ echo " SUMMARY"
 echo "=================================================================="
 echo "  Infrastructure : $INFRA ($MODE)"
 echo "  Pipeline       : $PIPELINE"
-echo "  Working dir    : $WORK (emptied before each MS)"
+echo "  Working dir    : $WORK (emptied at the start; each MS runs in $WORK/<obsid>)"
+if [[ $BATCH -gt 1 ]]; then
+  echo "  Batch size     : up to $BATCH MSs at once (a free slot is refilled as soon as an MS finishes)"
+else
+  echo "  Batch size     : 1 (one MS at a time)"
+fi
 echo "  MS directory   : $MS_DIR"
 if [[ -f $TRACKING ]]; then
   echo "  Tracking file  : $TRACKING"
@@ -262,9 +321,18 @@ else
 fi
 [[ $MODE == slurm ]] && echo "  Queue poll     : every ${POLL}s"
 echo
-echo "  Found ${#ALL_MS[@]} MS file(s): ${#DONE[@]} already in tracking, ${#TODO[@]} to run"
+echo "  Found ${#ALL_MS[@]} MS file(s): ${#DONE[@]} already in tracking, ${#BUSY[@]} still being written, ${#TODO[@]} to run"
+echo "  MS_DIR is rescanned before each MS, so MSs that finish transferring during the run are picked up"
+echo "  (an MS is 'still being written' if any of its files changed in the last ${SETTLE}s)"
 if [[ $FIRST_ONLY == true ]]; then
   echo "  FIRST_ONLY is true: only the first MS to run is kept ($HELD_BACK more not run)"
+fi
+if [[ ${#BUSY[@]} -gt 0 ]]; then
+  echo
+  echo "  Not started yet (still being written):"
+  for ms in "${BUSY[@]}"; do
+    echo "    $(obsid "$ms")  ${ms##*/}"
+  done
 fi
 if [[ ${#DONE[@]} -gt 0 ]]; then
   echo
@@ -283,13 +351,13 @@ fi
 echo "=================================================================="
 echo
 
-if [[ ${#TODO[@]} -eq 0 ]]; then
+if [[ ${#TODO[@]} -eq 0 && ${#BUSY[@]} -eq 0 ]]; then
   echo "Nothing to do"
   exit 0
 fi
 
 while :; do
-  read -r -p "Does this look right? Run the pipeline on these ${#TODO[@]} MS file(s)? [y/n] " answer
+  read -r -p "Does this look right? Run the pipeline on these ${#TODO[@]} MS file(s) (waiting for ${#BUSY[@]} still being written)? [y/n] " answer
   case $answer in
     [Yy]|[Yy][Ee][Ss]) break ;;
     [Nn]|[Nn][Oo])     echo "Aborted"; exit 0 ;;
@@ -322,7 +390,7 @@ submit_and_collect() {
 # Wait until none of the job IDs in $1 (comma-separated) are queued, then
 # check they all COMPLETED. One squeue call per poll, for this user's jobs only.
 wait_for() {
-  local ids=$1 q mine
+  local ids=$1 q mine status last_status=
   local pattern="^(${ids//,/|}) "
   while :; do
     if ! q=$(squeue -h -u "$USER" -o "%i %T %r" 2>&1); then
@@ -336,7 +404,9 @@ wait_for() {
       log "dependency never satisfied -- a job failed"
       return 1
     fi
-    log "  $(grep -c RUNNING <<< "$mine") running, $(grep -c PENDING <<< "$mine") pending"
+    status="$(grep -c RUNNING <<< "$mine") running, $(grep -c PENDING <<< "$mine") pending"
+    [[ $status == "$last_status" ]] || log "  $status"   # only when the counts change
+    last_status=$status
     sleep "$POLL"
   done
   local bad
@@ -366,7 +436,10 @@ run_stage_node() {
   bash "./$1"
 }
 
+# With an obsid argument, empties just WORK/<obsid> (other MSs may be running in
+# their own subdirectories); with none, empties all of WORK.
 clear_work() {
+  local id=${1:-}
   # WORK is a user-supplied global now, not a fixed path under this script, so
   # this is the actual safety gate before the recursive delete below.
   [[ $WORK != / ]] || { log "refusing to clear $WORK"; exit 1; }
@@ -392,11 +465,16 @@ clear_work() {
   esac
 
   mkdir -p "$WORK"
-  find "$WORK" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+  if [[ -n $id ]]; then
+    rm -rf -- "$WORK/$id"
+    mkdir -p "$WORK/$id"
+  else
+    find "$WORK" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+  fi
 }
 
-# Runs every stage for one MS inside working_dir; returns non-zero at the first
-# stage that fails
+# Runs every stage for one MS inside WORK/<obsid>; returns non-zero at the first
+# stage that fails. Runs in a background subshell, so its cd stays its own.
 run_ms() {
   local ms=$1 i setup subs stage
   local id=$(obsid "$ms")
@@ -406,10 +484,10 @@ run_ms() {
   # isn't even reached this time (e.g. it now fails earlier) never lingers.
   rm -rf -- "$state"
   mkdir -p "$state"
-  clear_work
-  cp -a "$PIPELINE/." "$WORK/"
-  ln -s "$(cd -- "$(dirname -- "$ms")" && pwd)/${ms##*/}" "$WORK/${ms##*/}"
-  cd "$WORK" || return 1
+  clear_work "$id"
+  cp -a "$PIPELINE/." "$WORK/$id/"
+  ln -s "$(cd -- "$(dirname -- "$ms")" && pwd)/${ms##*/}" "$WORK/$id/${ms##*/}"
+  cd "$WORK/$id" || return 1
 
   for ((i=0; i<${#STAGES[@]}; i++)); do
     setup=${STAGES[i]%%|*}
@@ -447,6 +525,7 @@ run_ms() {
       }
     fi
   done
+  return 0
 }
 
 # ------------------------------------------------------------------ #
@@ -459,19 +538,22 @@ FAILED=()
 PARTIAL=()
 n=0
 
-for ms in "${TODO[@]}"; do
-  n=$((n+1))
-  id=$(obsid "$ms")
-  log "=== [$n/${#TODO[@]}] $id: ${ms##*/} ==="
-  run_ms "$ms"
-  ran_ok=$?
-  cd "$ROOT" || exit 1
-  # Pass/fail is still decided by whether TRACKING now has this obsid, since
-  # only RMSYNTH's last step writes it -- but run_ms's own exit code is now
-  # checked too, to tell "every stage that ran actually succeeded, RMSYNTH
-  # just wasn't one of them" (STAGES was deliberately shortened, e.g. for a
-  # quick test) apart from "a stage genuinely failed". Either way this loop
-  # moves straight on to the next MS; there's no retry or abort here.
+# Workers still running: obsid -> background pid, and obsid -> MS path.
+declare -A PID_OF=()
+declare -A MS_RUNNING=()
+
+# On Ctrl-C / kill, stop the workers too. Submitted slurm jobs are left alone.
+trap 'kill "${PID_OF[@]}" 2>/dev/null; exit 130' INT TERM
+
+clear_work
+
+# Judge a finished worker. Pass/fail is still decided by whether TRACKING now
+# has this obsid, since only RMSYNTH's last step writes it -- but the worker's
+# own exit code ($2) is checked too, to tell "every stage that ran actually
+# succeeded, RMSYNTH just wasn't one of them" (STAGES was deliberately
+# shortened, e.g. for a quick test) apart from "a stage genuinely failed".
+finish_ms() {
+  local id=$1 ran_ok=$2 ms=${MS_RUNNING[$id]}
   if in_tracking "$id"; then
     log "=== $id complete ==="
     PASSED+=("$id")
@@ -482,6 +564,61 @@ for ms in "${TODO[@]}"; do
     log "=== $id FAILED (not in tracking) ==="
     FAILED+=("$id  ${ms##*/}")
   fi
+  unset "PID_OF[$id]" "MS_RUNNING[$id]"
+}
+
+# Up to BATCH MSs run at once, each in a background worker going through its
+# own stages independently. Each pass of this loop reaps any finished worker,
+# then -- if a slot is free -- rescans MS_DIR and starts the next MS. Scanning
+# is throttled to once per POLL seconds unless a worker just finished, so a
+# full wait doesn't walk every MS tree often. The loop itself wakes every POLL
+# seconds, so a freed slot is refilled within POLL seconds.
+TICK=$POLL
+last_scan=0
+last_busy_msg=
+just_finished=true
+while :; do
+  # Reap finished workers
+  just_finished=false
+  for id in "${!PID_OF[@]}"; do
+    if ! kill -0 "${PID_OF[$id]}" 2>/dev/null; then
+      wait "${PID_OF[$id]}"
+      finish_ms "$id" $?
+      just_finished=true
+    fi
+  done
+
+  # Fill free slots
+  now=$(date +%s)
+  if [[ ${#PID_OF[@]} -lt $BATCH && ! ( $FIRST_ONLY == true && $n -ge 1 ) ]] \
+     && [[ $just_finished == true || $last_scan -eq 0 || $((now - last_scan)) -ge $POLL ]]; then
+    last_scan=$now
+    scan_ms
+    for ms in "${TODO[@]}"; do
+      [[ ${#PID_OF[@]} -lt $BATCH ]] || break
+      [[ $FIRST_ONLY == true && $n -ge 1 ]] && break
+      id=$(obsid "$ms")
+      n=$((n+1))
+      ATTEMPTED[$id]=1
+      log "=== [$n] $id: ${ms##*/} (${#PID_OF[@]} already running, ${#TODO[@]} to run including this one) ==="
+      ( LOG_TAG=$id; run_ms "$ms" ) &
+      PID_OF[$id]=$!
+      MS_RUNNING[$id]=$ms
+    done
+    if [[ ${#PID_OF[@]} -lt $BATCH && ${#BUSY[@]} -gt 0 ]]; then
+      busy_msg="waiting for ${#BUSY[@]} MS(s) still being written: $(for b in "${BUSY[@]}"; do obsid "$b"; done | tr '\n' ' ')"
+      [[ $busy_msg == "$last_busy_msg" ]] || log "$busy_msg"   # only when the set changes
+      last_busy_msg=$busy_msg
+    fi
+  fi
+
+  # Done when nothing is running and nothing is left to start or wait for
+  if [[ ${#PID_OF[@]} -eq 0 ]]; then
+    if [[ $FIRST_ONLY == true && $n -ge 1 ]] || [[ ${#TODO[@]} -eq 0 && ${#BUSY[@]} -eq 0 ]]; then
+      break
+    fi
+  fi
+  sleep "$TICK"
 done
 
 echo
