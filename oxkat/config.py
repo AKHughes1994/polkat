@@ -499,11 +499,6 @@ CAL_2GC_YAML_COMPLEX = DATA+'/quartical/2GC_phase.yaml'
 # To use phase-only calibration for both stages (i.e. override the complex solve), uncomment:
 # CAL_2GC_YAML_COMPLEX = CAL_2GC_YAML
 
-# End of 2GC for every target: predict the final (pcalmask) model into MODEL_DATA, then average
-# DATA, CORRECTED_DATA and MODEL_DATA down to this many channels, into RESULTS. RESULTS is a
-# subdirectory, so the *.ms removal at the end of RMSYNTH does not touch the averaged MS.
-CAL_2GC_AVG_NCHANS = 32
-
 # Skip primary beam correction in post-processing
 SKIP_PB = False
 
@@ -1021,6 +1016,13 @@ RMSYNTH_ARCHIVE_DIR = '/mnt/scratchhdd/tkat_reprocessing/final_products'
 # Plain-text file (created if missing, appended to otherwise) with one line per
 # completed obsid: completion time and any interesting sources from that run
 RMSYNTH_TRACKING_FILE = '/mnt/scratchhdd/tkat_reprocessing/tracking/mahrez_tracking.txt'
+
+# Directory for each target's final residual MS. At the end of 2GC, for every target, the final
+# (pcalmask) model is predicted into MODEL_DATA, subtracted from CORRECTED_DATA, and the
+# CORRECTED_DATA (now the residuals) is split out as the DATA column of a new MS in this directory,
+# named after the target's MS. It is the only MS kept for the target. An absolute path outside the
+# working directory, so the archive step does not move it; leave blank ('') to skip the step.
+RMSYNTH_RESIDUAL_MS_DIR = '/mnt/extraspace/tkat_residual_ms'
 
 
 # ------------------------------------------------------------------------

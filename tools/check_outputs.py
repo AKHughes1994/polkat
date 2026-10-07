@@ -13,8 +13,8 @@
 # disk, so a field whose stage failed silently is still expected.
 #
 # 2GC: every field has IMAGES/<field>/ with a final MFS image (*pcalmask-MFS-*image.fits)
-# and every target also has its channel-averaged MS in RESULTS. Each missing output is
-# printed, and the exit status is 1 if any is missing.
+# and, unless RMSYNTH_RESIDUAL_MS_DIR is blank, every target also has its residual MS there.
+# Each missing output is printed, and the exit status is 1 if any is missing.
 
 import glob
 import json
@@ -57,16 +57,10 @@ def fields(project_info):
     return out
 
 
-def averaged_ms(ms):
-    """Path of the channel-averaged MS 2GC makes from a target's MS."""
+def residual_ms(ms):
+    """Path of the residual MS 2GC makes from a target's MS."""
 
-    name = o.basename(ms).replace('.ms', '_stage2.ms')
-    token = f'_{cfg.PRE_NCHANS}ch'
-    if token in name:
-        name = name.replace(token, f'_{cfg.CAL_2GC_AVG_NCHANS}ch')
-    else:
-        name = name.replace('.ms', f'_{cfg.CAL_2GC_AVG_NCHANS}ch.ms')
-    return o.join(cfg.RESULTS, name)
+    return o.join(cfg.RMSYNTH_RESIDUAL_MS_DIR, o.basename(ms))
 
 
 def check_2gc(project_info):
@@ -80,8 +74,8 @@ def check_2gc(project_info):
         elif not glob.glob(o.join(img_dir, '*pcalmask-MFS-*image.fits')):
             problems.append(f'{name}: no final MFS image (*pcalmask-MFS-*image.fits) in {img_dir}')
 
-        if is_target and not o.isdir(averaged_ms(ms)):
-            problems.append(f'{name}: no averaged MS {averaged_ms(ms)}')
+        if is_target and cfg.RMSYNTH_RESIDUAL_MS_DIR != '' and not o.isdir(residual_ms(ms)):
+            problems.append(f'{name}: no residual MS {residual_ms(ms)}')
 
     print(f'2GC: {len(checked)} field(s) checked, {len(problems)} problem(s)')
     for problem in problems:

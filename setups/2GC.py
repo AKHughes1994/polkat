@@ -140,6 +140,9 @@ def main():
     with open('project_info.json') as f:
         project_info = json.load(f)
     
+    # The leading number of the master MS name, as everywhere else the obsid is used
+    obsid = o.basename(str(project_info['master_ms'])).split('_')[0]
+
     band = project_info['band']
     target_ids = project_info['target_ids'] 
     target_names = project_info['target_names']
@@ -327,11 +330,13 @@ def main():
         img_dir = f"{IMAGES}/{filename_fieldname}"
         gen.setup_dir(img_dir)
         
-        # Create temp directory for wsclean intermediate files
+        # Create temp directory for wsclean intermediate files. Named with the
+        # obsid so that MSs running at once never share one (the shared
+        # OVERRIDE_TEMP_DIR is the same for every MS).
         if OVERRIDE_TEMP_DIR == '':
             temp_dir = f"{IMAGES}/{filename_fieldname}_temp"
         else:
-            temp_dir = f"{OVERRIDE_TEMP_DIR}/{filename_fieldname}_temp"
+            temp_dir = f"{OVERRIDE_TEMP_DIR}/{obsid}_{filename_fieldname}_temp"
         gen.setup_dir(temp_dir)
 
         # Image prefixes
@@ -943,29 +948,25 @@ def main():
         steps.append(step)
         n += 1
 
-        # Targets only: predict the final (PCALMASK) model into MODEL_DATA and average the
-        # data, corrected data and model down to CAL_2GC_AVG_NCHANS channels in RESULTS, as one job.
-        # This must come before the clean-up below, which removes the pcalmask channel model
-        # images the predict reads.
-        if is_target:
-            avg_name = o.basename(myms)
-            if f'_{cfg.PRE_NCHANS}ch' in avg_name:
-                avg_name = avg_name.replace(f'_{cfg.PRE_NCHANS}ch', f'_{cfg.CAL_2GC_AVG_NCHANS}ch')
-            else:
-                avg_name = avg_name.replace('.ms', f'_{cfg.CAL_2GC_AVG_NCHANS}ch.ms')
-            avg_ms = f'{cfg.RESULTS}/{avg_name}'
+        # Targets only: predict the final (PCALMASK) model into MODEL_DATA, subtract it from
+        # CORRECTED_DATA, and split the CORRECTED_DATA (now the residuals) out as the DATA column of
+        # the target's final MS in RMSYNTH_RESIDUAL_MS_DIR, as one job. This must come before the
+        # clean-up below, which removes the pcalmask channel model images the predict reads.
+        if is_target and cfg.RMSYNTH_RESIDUAL_MS_DIR != '':
+            residual_ms = f"{cfg.RMSYNTH_RESIDUAL_MS_DIR}/{o.basename(myms).replace('_stage2.ms', '.ms')}"
 
             step = {}
             step['step'] = n
-            step['comment'] = f'Predict the final PCALMASK model into MODEL_DATA, then average to {cfg.CAL_2GC_AVG_NCHANS} channels for source {fieldname}'
+            step['comment'] = f'Predict the final PCALMASK model, subtract it from CORRECTED_DATA and split the residuals into {residual_ms} for source {fieldname}'
             step['dependency'] = n - 1
-            step['id'] = 'PRAVG'+code
+            step['id'] = 'RESMS'+code
             step['glam_config'] = cfg.GLAM_MEDIUM
             step['slurm_config'] = cfg.SLURM_PREDICT
             step['pbs_config'] = cfg.PBS_WSCLEAN
             absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
             cores = '8' if FORCE_CORES_8 else step['glam_config']['CPUS']
             wsc_prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
+            py_prefix = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
             casa_prefix = CONTAINER_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
             calls = [wsc_prefix + 'python3 '+TOOLS+'/fix_nan_models.py ' + pcal_img_prefix,
                      wsc_prefix + gen.generate_syscall_predict(msname = myms,
@@ -974,7 +975,8 @@ def main():
                          absmem = absmem,
                          tempdir = temp_dir,
                          chanout = chanout_pcal),
-                     casa_prefix + gen.generate_syscall_casa(casascript=f'{cfg.OXKAT}/2GC_casa_average_channels.py {myms} {avg_ms} {cfg.CAL_2GC_AVG_NCHANS}')]
+                     py_prefix + f'python3 {TOOLS}/sum_MS_columns.py --src=MODEL_DATA --dest=CORRECTED_DATA --subtract {myms}',
+                     casa_prefix + gen.generate_syscall_casa(casascript=f'{cfg.OXKAT}/2GC_casa_split_residuals.py {myms} {residual_ms}')]
             step['syscall'] = '\n\n'.join(calls)
             steps.append(step)
             n += 1

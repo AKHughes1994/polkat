@@ -181,8 +181,11 @@ def process_one(input_file, identifier, full_dir, cutout_size):
 
     output_file, shape = create_zoom_cutout(input_file, output_file, cutout_size)
 
-    # Delete original unless it is an MFS image
-    if not ('MFS-' in base_name and '-image' in base_name):
+    # Delete original unless it is an MFS image, or the MFS residual or model of
+    # the pcalmask images (the full-field products that are kept)
+    keep = 'MFS-' in base_name and ('-image' in base_name
+                                    or (identifier == 'pcalmask' and ('-residual' in base_name or '-model' in base_name)))
+    if not keep:
         os.remove(input_file)
 
     return f'Created {output_file} {shape}'

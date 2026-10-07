@@ -16,19 +16,25 @@
 # MSs whose obsid is already in the tracking file are skipped. Before starting,
 # it lists what it found and asks for confirmation.
 #
+# START_AT (an obsid or MS name) starts the run at that MS and leaves out every
+# MS before it in the sorted list; with FIRST_ONLY=true that MS is the only one
+# run, which is the way to debug one particular MS.
+#
 # MS_DIR is rescanned before every MS, so MSs that are still being transferred
 # in when the run starts are picked up once they finish. An MS with any file
-# modified in the last SETTLE seconds (default 600) counts as still being
-# written and is not started; if nothing else is ready the script waits for it:
-#     SETTLE=1800 ./run_all_ms.sh
+# modified in the last SETTLE seconds counts as still being written and is not
+# started; if nothing else is ready the script waits for it.
 #
-# On slurm the job queue is checked every POLL seconds (default 300):
-#     POLL=600 ./run_all_ms.sh
+# On slurm the job queue is checked every POLL seconds.
 #
-# BATCH (default 1, slurm only) is how many MSs run at once. Each runs through
-# its own stages independently, and as soon as one finishes (or fails) the next
-# waiting MS takes its place, so there are always up to BATCH in flight.
-#     BATCH=4 ./run_all_ms.sh
+# BATCH is how many MSs run at once (slurm only). Each runs through its own
+# stages independently, and as soon as one finishes (or fails) the next waiting
+# MS takes its place, so there are always up to BATCH in flight.
+#
+# RESTART=true deletes the tracking, failures and interesting files, the
+# contents of the archive and residual-MS directories and this script's logs,
+# so every MS runs again. It asks twice (the second time "ARE YOU ABSOLUTELY
+# SURE") and only deletes once you have also accepted the run plan.
 #
 # ------------------------------------------------------------------ #
 # What a run actually does, step by step (for readers who don't know bash):
@@ -73,10 +79,12 @@ MS_DIR='/mnt/extraspace/tkat_reprocessing'     # directory containing the *.ms t
 TRACKING='/mnt/scratchhdd/tkat_reprocessing/tracking/mahrez_tracking.txt'   # tracking file; must match RMSYNTH_TRACKING_FILE in the pipeline's oxkat/config.py
 PIPELINE='/mnt/scratchhdd/tkat_reprocessing/polkat_tkat_reprocessing'   # pipeline directory to run, e.g. 'polkat_tkat_reprocessing'
 WORK='/mnt/scratchhdd/tkat_reprocessing/working_dir'       # scratch working directory, emptied at the start; each MS runs in WORK/<obsid>, rebuilt for every MS -- must be dedicated to this script, not shared with anything else
-POLL=${POLL:-300}   # slurm queue poll interval in seconds, overridable via POLL=... in the environment
-FIRST_ONLY=false    # true: run only the first MS that is not already in the tracking file (debugging)
-BATCH=${BATCH:-1}   # slurm only: how many MSs run at once; a free slot is refilled as soon as an MS finishes. Overridable via BATCH=... in the environment
-SETTLE=${SETTLE:-600}   # an MS with any file modified in the last SETTLE seconds is treated as still transferring and not started; overridable via SETTLE=... in the environment
+POLL=300            # slurm queue poll interval in seconds; also how often the main loop wakes
+FIRST_ONLY=true     # true: run only the first MS that is not already in the tracking file (debugging)
+START_AT='1549688122_2026-07-10T12-10-15_1Lf.ms'         # obsid or MS name: start the run at this MS, skipping every MS before it in the sorted list. With FIRST_ONLY=true, only this MS runs. Must not already be in the tracking file. '' = no start MS
+BATCH=4             # slurm only: how many MSs run at once; a free slot is refilled as soon as an MS finishes. Ignored (1) on 'node' and when FIRST_ONLY is true
+SETTLE=600          # seconds: an MS with any file modified in the last SETTLE seconds is treated as still transferring and not started
+RESTART=false       # true: DELETE the tracking, failures and interesting files, the archive and residual-MS directories' contents and this script's logs, so every MS runs again. Asks twice before anything is deleted
 
 # Refuse to start unless every input above has actually been filled in.
 REQUIRED=(INFRA MS_DIR TRACKING PIPELINE WORK)
@@ -107,10 +115,8 @@ case $INFRA in
 esac
 
 [[ $BATCH =~ ^[1-9][0-9]*$ ]] || { echo "BATCH must be a positive integer (got: '$BATCH')" >&2; exit 1; }
-if [[ $MODE == node && $BATCH -gt 1 ]]; then
-  echo "BATCH=$BATCH ignored: batching is only for slurm (INFRA 'idia' or 'hippo'); node mode runs one MS at a time" >&2
-  BATCH=1
-fi
+# Batching is only for slurm (INFRA 'idia' or 'hippo'); node mode runs one MS at a time
+[[ $MODE == node ]] && BATCH=1
 
 # ROOT is fixed to this script's own location; STATE keeps each MS's own logs
 # and submitted job IDs around after WORK has been wiped for the next MS. WORK
@@ -212,6 +218,7 @@ obsid() {
 # True if obsid $1 already has a completed line in the tracking file -- i.e.
 # that MS was already run successfully and can be skipped.
 in_tracking() {
+  [[ $WIPE_PENDING == true ]] && return 1
   [[ -f $TRACKING ]] || return 1
   awk -F'|' -v id="$1" '
     /^#/ { next }
@@ -234,6 +241,117 @@ record_failure() {
 }
 
 # ------------------------------------------------------------------ #
+# RESTART -- wipe the records and products of every earlier run
+#
+# With RESTART=true this script, once the plan below has been confirmed,
+# deletes: the tracking file, the failures file (and its lock), the interesting
+# file, everything inside the archive directory (RMSYNTH_ARCHIVE_DIR) and the
+# residual-MS directory (RMSYNTH_RESIDUAL_MS_DIR) from config.py, and this
+# script's own logs. It never touches MS_DIR, the pipeline or WORK's parents.
+# Two confirmations are asked for before the run starts, and until the wipe
+# happens every MS is treated as not done, so the plan shown is the real one.
+# ------------------------------------------------------------------ #
+
+[[ $RESTART == true || $RESTART == false ]] || { echo "RESTART must be 'true' or 'false' (got: '$RESTART')" >&2; exit 1; }
+
+# While true, in_tracking reports nothing as done
+WIPE_PENDING=false
+WIPE_FILES=()
+WIPE_DIRS=()
+
+# Refuse a path that is not absolute and at least 3 levels deep, or that is, contains or sits
+# inside anything this script must not lose
+check_wipe_path() {
+  local path=$1 other
+  if [[ ! $path =~ ^/[^/]+/[^/]+/. ]]; then
+    echo "RESTART: refusing to wipe '$path' (not an absolute path at least 3 levels deep)" >&2
+    exit 1
+  fi
+  case "$(canon "$HOME")/" in
+    "$path"/*) echo "RESTART: refusing to wipe $path: it contains $HOME" >&2; exit 1 ;;
+  esac
+  for other in "$MS_DIR" "$PIPELINE" "$WORK" "$ROOT"; do
+    other=$(canon "$other")
+    case "$other/" in
+      "$path"/*) echo "RESTART: refusing to wipe $path: it contains $other" >&2; exit 1 ;;
+    esac
+    case "$path/" in
+      "$other"/*) echo "RESTART: refusing to wipe $path: it is inside $other" >&2; exit 1 ;;
+    esac
+  done
+}
+
+# y/N, default N
+confirm() {
+  local reply
+  read -r -p "$1 [y/N] " reply
+  [[ $reply == [Yy] || $reply == [Yy][Ee][Ss] ]]
+}
+
+if [[ $RESTART == true ]]; then
+  CFG_INTERESTING_FILE=$(cfg_value RMSYNTH_INTERESTING_FILE)
+  CFG_RESIDUAL_MS_DIR=$(cfg_value RMSYNTH_RESIDUAL_MS_DIR)
+
+  WIPE_FILES=("$(canon "$TRACKING")" "$(canon "$FAILED_FILE")" "$(canon "$FAILED_FILE.lock")")
+  [[ -n $CFG_INTERESTING_FILE ]] && WIPE_FILES+=("$(canon "$CFG_INTERESTING_FILE")")
+  WIPE_DIRS=("$(canon "$CFG_ARCHIVE_DIR")")
+  [[ -n $CFG_RESIDUAL_MS_DIR ]] && WIPE_DIRS+=("$(canon "$CFG_RESIDUAL_MS_DIR")")
+
+  for path in "${WIPE_FILES[@]}" "${WIPE_DIRS[@]}"; do
+    check_wipe_path "$path"
+  done
+
+  echo
+  echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+  echo " RESTART IS TRUE -- THIS WILL PERMANENTLY DELETE:"
+  echo
+  echo "  Files (tracking / failures / interesting):"
+  for path in "${WIPE_FILES[@]}"; do
+    if [[ -e $path ]]; then echo "    $path"; else echo "    $path  (does not exist)"; fi
+  done
+  echo
+  echo "  Everything inside these directories (final products):"
+  for path in "${WIPE_DIRS[@]}"; do
+    if [[ -d $path ]]; then
+      echo "    $path  ($(find "$path" -mindepth 1 -maxdepth 1 | wc -l) entries)"
+    else
+      echo "    $path  (does not exist)"
+    fi
+  done
+  echo
+  echo "  This script's own logs:"
+  echo "    $STATE"
+  echo
+  echo "  Every MS will then be run again from scratch. $MS_DIR is NOT touched."
+  echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+  echo
+
+  confirm "Delete all of the above?" || { echo "Aborted, nothing was deleted"; exit 0; }
+  confirm "ARE YOU ABSOLUTELY SURE? This cannot be undone." || { echo "Aborted, nothing was deleted"; exit 0; }
+  WIPE_PENDING=true
+fi
+
+# Does the deletion that RESTART asked for, then lets in_tracking read the (now empty) files again
+wipe_now() {
+  local path
+  for path in "${WIPE_FILES[@]}"; do
+    if [[ -e $path ]]; then
+      log "RESTART: removing $path"
+      rm -f -- "$path"
+    fi
+  done
+  for path in "${WIPE_DIRS[@]}"; do
+    if [[ -d $path ]]; then
+      log "RESTART: emptying $path"
+      find "$path" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+    fi
+  done
+  log "RESTART: removing $STATE"
+  rm -rf -- "$STATE"
+  WIPE_PENDING=false
+}
+
+# ------------------------------------------------------------------ #
 # What needs running
 # ------------------------------------------------------------------ #
 
@@ -249,16 +367,28 @@ declare -A ATTEMPTED=()
 
 # Scans MS_DIR and sorts its *.ms into ALL_MS (everything found), DONE (obsid
 # in the tracking file), BUSY (still being written), and TODO (the rest, minus
-# anything already attempted in this run). Called before the summary and again
+# anything already attempted in this run). With START_AT set, every MS before
+# it in the sorted list is left out of all of those, and START_MS is set to
+# the MS it matched (empty if none did). Called before the summary and again
 # before every MS, so MSs that finish transferring mid-run are picked up.
 scan_ms() {
   mapfile -t ALL_MS < <(find "$MS_DIR" -mindepth 1 -maxdepth 1 -name '*.ms' \( -type d -o -type l \) | sort)
   TODO=()
   DONE=()
   BUSY=()
-  local ms id
+  START_MS=
+  local ms id reached=false
+  [[ -n $START_AT ]] || reached=true
   for ms in "${ALL_MS[@]}"; do
     id=$(obsid "$ms")
+    if [[ $reached == false ]]; then
+      if [[ $id == "$START_AT" || ${ms##*/} == "$START_AT" || ${ms##*/} == "$START_AT.ms" ]]; then
+        reached=true
+        START_MS=$ms
+      else
+        continue
+      fi
+    fi
     if in_tracking "$id"; then
       DONE+=("$ms")
     elif [[ -n ${ATTEMPTED[$id]:-} ]]; then
@@ -279,6 +409,19 @@ if [[ ${#ALL_MS[@]} -eq 0 ]]; then
 fi
 
 [[ $FIRST_ONLY == true || $FIRST_ONLY == false ]] || { echo "FIRST_ONLY must be 'true' or 'false' (got: '$FIRST_ONLY')" >&2; exit 1; }
+
+# START_AT must name an MS that can actually be run
+if [[ -n $START_AT ]]; then
+  [[ -n $START_MS ]] || { echo "START_AT '$START_AT' does not match any MS in $MS_DIR (use an obsid or an MS name)" >&2; exit 1; }
+  if in_tracking "$(obsid "$START_MS")"; then
+    echo "START_AT ${START_MS##*/} is already in the tracking file ($TRACKING) -- remove its line to run it again" >&2
+    exit 1
+  fi
+  if ms_busy "$START_MS"; then
+    echo "START_AT ${START_MS##*/} is still being written (a file changed in the last ${SETTLE}s)" >&2
+    exit 1
+  fi
+fi
 
 # With FIRST_ONLY, only the first MS to run is kept
 [[ $FIRST_ONLY == true ]] && BATCH=1
@@ -324,6 +467,13 @@ echo
 echo "  Found ${#ALL_MS[@]} MS file(s): ${#DONE[@]} already in tracking, ${#BUSY[@]} still being written, ${#TODO[@]} to run"
 echo "  MS_DIR is rescanned before each MS, so MSs that finish transferring during the run are picked up"
 echo "  (an MS is 'still being written' if any of its files changed in the last ${SETTLE}s)"
+if [[ $RESTART == true ]]; then
+  echo "  RESTART is true: the files and directories listed above WILL BE DELETED when you confirm below,"
+  echo "  and every MS is treated as not done (the counts here already assume that)"
+fi
+if [[ -n $START_AT ]]; then
+  echo "  START_AT is set: starting at ${START_MS##*/}, MSs before it in the sorted list are left out"
+fi
 if [[ $FIRST_ONLY == true ]]; then
   echo "  FIRST_ONLY is true: only the first MS to run is kept ($HELD_BACK more not run)"
 fi
@@ -364,6 +514,8 @@ while :; do
     *)                 echo "Please answer y or n" ;;
   esac
 done
+
+[[ $WIPE_PENDING == true ]] && wipe_now
 
 # ------------------------------------------------------------------ #
 # Stage runners
@@ -514,7 +666,7 @@ run_ms() {
     else
       run_stage_node "$subs" || log "  $subs exited non-zero, continuing"
     fi
-    # Whatever a stage reported, 2GC must have left its images and averaged MS
+    # Whatever a stage reported, 2GC must have left its images and residual MS
     # before RMSYNTH runs on them
     if [[ $stage == 2GC ]]; then
       python3 tools/check_outputs.py 2GC > "$state/check_stage$i.log" 2>&1 || {
