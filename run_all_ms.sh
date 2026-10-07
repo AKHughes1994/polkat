@@ -270,7 +270,7 @@ check_wipe_path() {
   case "$(canon "$HOME")/" in
     "$path"/*) echo "RESTART: refusing to wipe $path: it contains $HOME" >&2; exit 1 ;;
   esac
-  for other in "$MS_DIR" "$PIPELINE" "$WORK" "$ROOT"; do
+  for other in "$MS_DIR" "$PIPELINE" "$WORK"; do
     other=$(canon "$other")
     case "$other/" in
       "$path"/*) echo "RESTART: refusing to wipe $path: it contains $other" >&2; exit 1 ;;
@@ -279,6 +279,11 @@ check_wipe_path() {
       "$other"/*) echo "RESTART: refusing to wipe $path: it is inside $other" >&2; exit 1 ;;
     esac
   done
+  # ROOT (this script's own directory) normally holds the tracking, archive and
+  # working directories, so only refuse a path that is ROOT or contains it
+  case "$(canon "$ROOT")/" in
+    "$path"/*) echo "RESTART: refusing to wipe $path: it contains $ROOT" >&2; exit 1 ;;
+  esac
 }
 
 # y/N, default N
