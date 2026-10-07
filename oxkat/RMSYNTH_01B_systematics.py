@@ -263,6 +263,10 @@ def find_cal_images(cal_name, stokes='I'):
     scan_pattern    = cfg.IMAGES + f'/*{cal_name}*scan*diagnostic-MFS-{stokes}-image.fits'
     nonscan_pattern = cfg.IMAGES + f'/*{cal_name}*diagnostic-MFS-{stokes}-image.fits'
 
+    msg(f'Locating {cal_name} diagnostic MFS Stokes {stokes} images in {cfg.IMAGES}:')
+    msg(f'  scan pattern     : {scan_pattern}')
+    msg(f'  non-scan pattern : {nonscan_pattern}')
+
     scan_images    = sorted(glob.glob(scan_pattern))
     nonscan_images = sorted(glob.glob(nonscan_pattern))
     used_fallback  = False
@@ -287,10 +291,30 @@ def find_cal_images(cal_name, stokes='I'):
 
     else:
         msg(f'No images found for {cal_name} Stokes {stokes} '
-            f'(tried scan and non-scan patterns)')
+            f'(tried scan and non-scan patterns above)')
         prefixes = []
 
     return prefixes, used_fallback
+
+
+def complete_stokes_prefixes(cal_name, prefixes, stokes=('I', 'Q', 'U', 'V')):
+    """
+    Return the scan prefixes that have an MFS image for every Stokes in
+    `stokes` (the systematics need all four), logging the scans that are
+    missing some and a summary count.
+    """
+    complete = []
+    for prefix in prefixes:
+        missing = [s for s in stokes if not os.path.exists(f'{prefix}-MFS-{s}-image.fits')]
+        if missing:
+            msg(f'  {os.path.basename(prefix)}: missing MFS Stokes {",".join(missing)} image(s)')
+        else:
+            complete.append(prefix)
+
+    msg(f'{len(complete)}/{len(prefixes)} scan(s) of {cal_name} have full Stokes '
+        f'{"".join(stokes)} MFS images')
+
+    return complete
 
 
 def cal_json_path(cal_name, first_prefix):
@@ -1381,6 +1405,9 @@ def main():
 
         if not bpcal_prefixes:
             msg(f'WARNING: No images found for {bpcal_name} -- skipping Step 1')
+        elif not complete_stokes_prefixes(bpcal_name, bpcal_prefixes):
+            msg(f'WARNING: No scan of {bpcal_name} has full Stokes IQUV MFS images -- '
+                f'skipping Step 1 (the leakage terms need I, Q, U and V)')
         else:
             bpcal_result = get_primary_systematic(bpcal_name, bpcal_pos)
             systematics['BPCAL_RESIDUAL_QFRAC'] = bpcal_result['BPCAL_RESIDUAL_QFRAC']
@@ -1407,6 +1434,9 @@ def main():
 
         if not pacal_prefixes:
             msg(f'WARNING: No images found for {pacal_name} -- skipping Step 2')
+        elif not complete_stokes_prefixes(pacal_name, pacal_prefixes):
+            msg(f'WARNING: No scan of {pacal_name} has full Stokes IQUV MFS images -- '
+                f'skipping Step 2 (the V/I term needs I, Q, U and V)')
         else:
             pacal_json_matches = glob.glob(
                 f'{cfg.RESULTS}/*{pacal_name}*_polarization.json')

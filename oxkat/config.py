@@ -593,7 +593,7 @@ WSC_BLIND_CHANNELSOUT = 8     # Blind (shallow, no mask) image — used only to 
 WSC_PCAL_CHANNELSOUT  = 64     # Final self-calibrated (pcalmask) image
 WSC_DMASK_CHANNELSOUT = WSC_PCAL_CHANNELSOUT  # Data-masked image (stage 1 selfcal model);
                                                # set independently if a different channelisation is needed
-WSC_CAL_CHANNELSOUT   = WSC_PCAL_CHANNELSOUT    # Calibrator images (secondaries / primary)
+WSC_CAL_CHANNELSOUT   = WSC_DMASK_CHANNELSOUT    # Calibrator images (secondaries / primary)
 
 # Memory-safe channel chunking: if WSC_MAX_CHANNELS < channels-out, wsclean is called
 # multiple times in channel-range blocks of WSC_MAX_CHANNELS, then the results are
@@ -973,7 +973,7 @@ RMSYN_INFO_FILE           = DATA + '/rmsynth/rmsynth_info.json'  # Source list +
                                     # by the RMSYNTH extraction scripts. Change this to point at a
                                     # different info file without moving/renaming your dataset copy.
 
-RMSYN_OVERWRITE           = True    # Re-run fitting even when the output JSON already exists.
+RMSYN_OVERWRITE           = False    # Re-run fitting even when the output JSON already exists.
                                     # Set False to skip to plotting only.
 
 RMSYN_FORCE_FIX_STOKES_V  = True   # Always anchor the Stokes V position to Stokes I regardless
@@ -990,6 +990,11 @@ RMSYN_SPEC_INDEX_MAD_CLIP  = 10     # Iterative MAD outlier rejection threshold 
 RMSYN_MAX_I_DRIFT_PIX      = False  # Maximum pixel drift allowed for a Stokes I fitted position
                                     # before the fit is re-run with the position fixed.
                                     # False = no drift check; float = threshold in pixels.
+
+RMSYN_USE_RESIDUAL_RMS     = False  # True: measure the noise annulus on the matching *-residual.fits
+                                    # image (post-CLEAN noise, not biased by source flux or sidelobes),
+                                    # falling back to the restored image where none exists.
+                                    # False: measure it on the restored image.
 
 # --- rmsynth1d (RM-Tools) ---
 

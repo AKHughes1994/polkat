@@ -43,11 +43,12 @@ SPEC_PLOT_SNR_THRESH  = cfg.RMSYN_SPEC_PLOT_SNR_THRESH
 SPEC_INDEX_SNR_THRESH = cfg.RMSYN_SPEC_INDEX_SNR_THRESH
 SPEC_INDEX_MAD_CLIP   = cfg.RMSYN_SPEC_INDEX_MAD_CLIP
 MAX_I_DRIFT_PIX       = cfg.RMSYN_MAX_I_DRIFT_PIX
+USE_RESIDUAL_RMS      = cfg.RMSYN_USE_RESIDUAL_RMS
 
 # No polarization angle calibrator: the U/V-merged companion RM synthesis file
 # is built from a linear cross-hand phase fit (see fit_linear_xy_phase).
 UVFIX_MAX_DELAY_NS    = 10.0  # Half-width of the cross-hand delay search, +/- ns
-UVFIX_MIN_SNR         = 6.0   # Minimum coherent S/N of the fit to write the file
+UVFIX_MIN_SNR         = 6.0   # Coherent S/N below which the fit is flagged unreliable (file still written)
 
 # =============================================================================
 
@@ -536,12 +537,19 @@ def fit_linear_xy_phase(freq_hz, U, V, rms_U, rms_V, max_delay_ns, oversample=8)
         floor = np.sqrt(4.0 * n_chan)
 
     return {
-        'tau_s'    : float(tau_fine[best]),
-        'phi0_rad' : float(0.5 * np.angle(Z_fine[best])),
-        'nu_ref_hz': float(nu_ref),
-        'snr'      : float(np.abs(Z_fine[best]) / floor),
-        'n_chan'   : n_chan,
-        'at_edge'  : bool(abs(tau_fine[best]) >= 0.95 * tau_max),
+        'tau_s'       : float(tau_fine[best]),
+        'phi0_rad'    : float(0.5 * np.angle(Z_fine[best])),
+        'nu_ref_hz'   : float(nu_ref),
+        'snr'         : float(np.abs(Z_fine[best]) / floor),
+        'n_chan'      : n_chan,
+        'at_edge'     : bool(abs(tau_fine[best]) >= 0.95 * tau_max),
+        # For the diagnostic plot: the delay search, its noise floor, and the
+        # squared phasor the fit was made to
+        'floor'       : float(floor),
+        'tau_grid_s'  : tau,
+        'Z_abs'       : np.abs(Z),
+        'freq_used_hz': freq[good],
+        'z'           : z,
     }
 
 
@@ -585,6 +593,82 @@ def mad_rms_outlier_channels(rms_arrays, nsigma=5.0):
 
 
 
+def plot_uvfix_diagnostics(out_png, freq, U, V, rms_U, rms_V, U_alt, V_res, rms_U_alt, rms_V_res, fit, summary):
+    '''
+    Diagnostics of the linear cross-hand phase fit, for fits that pass and for
+    fits that do not (when nothing else is written):
+        1. delay search: |Z(tau)| over the search range, with the best delay,
+           the noise floor and the S/N threshold
+        2. phase of (U + iV)^2 against frequency, with the fitted 2*phi(nu)
+           (dots are more opaque the higher their S/N^2)
+        3. observed U and V
+        4. U and V after derotating by the fit; V should be consistent with
+           zero if the assumption holds
+    '''
+
+    from matplotlib.colors import to_rgba
+
+    ok = summary['status'] == 'ok'
+    fghz = freq / 1e9
+    fused = fit['freq_used_hz'] / 1e9
+
+    try:
+        fig = plt.figure(figsize=(9, 14), constrained_layout=True)
+        ax_per, ax_ph, ax_obs, ax_fix = fig.subplots(4, 1)
+
+        # 1. delay search
+        ax_per.plot(fit['tau_grid_s'] * 1e9, fit['Z_abs'], lw=0.8, color='C0')
+        ax_per.axvline(fit['tau_s'] * 1e9, color='C3', ls='--', label=f'best tau = {fit["tau_s"] * 1e9:.3f} ns')
+        ax_per.axhline(fit['floor'], color='0.5', ls=':', label='noise floor')
+        ax_per.axhline(UVFIX_MIN_SNR * fit['floor'], color='C1', ls='-.', label=f'threshold ({UVFIX_MIN_SNR:g} x floor)')
+        ax_per.set_xlim(-UVFIX_MAX_DELAY_NS, UVFIX_MAX_DELAY_NS)
+        ax_per.set_xlabel('Cross-hand delay tau (ns)')
+        ax_per.set_ylabel('|Z(tau)|')
+        ax_per.set_title('Delay search: coherent S/N = %.1f%s%s' % (
+            fit['snr'],
+            '' if ok else ' -- below threshold, derotation unreliable',
+            ' -- best delay at the edge of the search range' if fit['at_edge'] else ''), fontsize=9)
+        ax_per.legend(loc='best', fontsize=8)
+
+        # 2. phase of the squared phasor against the fit
+        weight = np.abs(fit['z'])
+        alpha  = np.clip(weight / max(np.percentile(weight, 95), 1e-12), 0.05, 1.0)
+        rgba   = np.tile(to_rgba('C0'), (len(weight), 1))
+        rgba[:, 3] = alpha
+        psi_model = 2.0 * fit['phi0_rad'] + 4.0 * np.pi * fit['tau_s'] * (fit['freq_used_hz'] - fit['nu_ref_hz'])
+        ax_ph.scatter(fused, np.degrees(np.angle(fit['z'])), c=rgba, s=10, label='phase of (U+iV)^2')
+        ax_ph.scatter(fused, np.degrees(np.angle(np.exp(1j * psi_model))), c='C3', s=2, label='fitted 2*phi(nu)')
+        ax_ph.set_ylim(-190, 190)
+        ax_ph.set_yticks(range(-180, 181, 90))
+        ax_ph.set_ylabel('Phase (deg)')
+        ax_ph.set_title('Cross-hand phase: %.1f turn(s) across the band' % summary['xy_phase_turns_across_band'], fontsize=9)
+        ax_ph.legend(loc='upper right', fontsize=8)
+
+        # 3 and 4. observed and derotated spectra
+        ax_obs.errorbar(fghz, U * 1e3, rms_U * 1e3, fmt='.', ms=3, lw=0.5, label='U (observed)')
+        ax_obs.errorbar(fghz, V * 1e3, rms_V * 1e3, fmt='.', ms=3, lw=0.5, label='V (observed)')
+        ax_fix.errorbar(fghz, U_alt * 1e3, rms_U_alt * 1e3, fmt='.', ms=3, lw=0.5, label='U (derotated)')
+        ax_fix.errorbar(fghz, V_res * 1e3, rms_V_res * 1e3, fmt='.', ms=3, lw=0.5, label='V (residual)')
+        ax_fix.set_title('V residual chi2_red = %.2f%s' % (
+            summary['V_residual_chi2_red'], '' if ok else ' (fit below threshold)'), fontsize=9)
+        for ax in (ax_ph, ax_obs, ax_fix):
+            ax.set_xlim(fghz.min(), fghz.max())
+        for ax in (ax_obs, ax_fix):
+            ax.axhline(0, color='k', lw=0.5)
+            ax.set_ylabel('Flux density (mJy)')
+            ax.legend(loc='best', fontsize=8)
+        ax_ph.set_xlabel('Frequency (GHz)')
+        ax_fix.set_xlabel('Frequency (GHz)')
+
+        fig.suptitle('%s: %d channel(s) used, %d MAD-clipped' % (
+            os.path.basename(out_png), fit['n_chan'], summary['n_mad_clipped']), fontsize=9)
+        fig.savefig(out_png, dpi=100)
+        plt.close(fig)
+    except Exception as e:
+        msg(f'  WARNING: could not write U/V fix diagnostics plot ({e})')
+
+
+
 def write_uvfix_rmsynth(rmsynth_fname, rmsynth_arr, V, rms_V):
     '''
     No polarization angle calibrator: write a companion to an RM synthesis
@@ -600,11 +684,13 @@ def write_uvfix_rmsynth(rmsynth_fname, rmsynth_arr, V, rms_V):
 
     Outputs, alongside rmsynth_fname (<base> = rmsynth_fname minus '.txt'):
         <base>_UVfix.txt       freq, I, Q, U_derotated, dI, dQ, dU_derotated
-                               (the same format as the usual file); only
-                               written if the fit reaches UVFIX_MIN_SNR
+                               (the same format as the usual file); written
+                               whenever a fit could be made, with a warning if
+                               its coherent S/N is below UVFIX_MIN_SNR
         <base>_UVfix_fit.json  fit parameters, significance and V residual
                                statistics (always written)
-        <base>_UVfix.png       observed vs derotated U and V (only with the file)
+        <base>_UVfix.png       diagnostics of the fit (plot_uvfix_diagnostics),
+                               written whenever the fit could be made
     '''
 
     base     = rmsynth_fname[:-len('.txt')] + '_UVfix'
@@ -640,55 +726,201 @@ def write_uvfix_rmsynth(rmsynth_fname, rmsynth_arr, V, rms_V):
             'tau_ns'      : fit['tau_s'] * 1e9,
             'phi0_deg'    : float(np.degrees(fit['phi0_rad'])),
             'nu_ref_GHz'  : fit['nu_ref_hz'] / 1e9,
+            'xy_phase_turns_across_band': float(abs(fit['tau_s']) * (freq.max() - freq.min())),
             'coherent_snr': fit['snr'],
+            'noise_floor' : fit['floor'],
             'n_chan_used' : fit['n_chan'],
             'at_search_edge': fit['at_edge'],
             'status'      : 'ok' if fit['snr'] >= UVFIX_MIN_SNR else 'coherent S/N below threshold',
         })
 
-    if summary['status'] == 'ok':
+        # Derotated even when the fit is below threshold, for the diagnostics
         U_alt, V_res, rms_U_alt, rms_V_res = derotate_uv(freq, U, V, rms_U, rms_V, fit)
-
         usable = np.isfinite(V_res) & np.isfinite(rms_V_res) & (rms_V_res > 0)
         summary['V_residual_chi2_red'] = float(np.mean((V_res[usable] / rms_V_res[usable]) ** 2))
 
-        np.savetxt(out_txt, np.array([freq, I, Q, U_alt, rms_I, rms_Q, rms_U_alt]).T)
-        msg(f'  U/V-merged RM synthesis file written: {out_txt}')
-        msg(f'    tau = {summary["tau_ns"]:.3f} ns, phi0 = {summary["phi0_deg"]:.1f} deg, '
-            f'coherent S/N = {fit["snr"]:.1f}, V residual chi2_red = {summary["V_residual_chi2_red"]:.2f}')
+        msg(f'  U/V fix: tau = {summary["tau_ns"]:.3f} ns ({summary["xy_phase_turns_across_band"]:.1f} turn(s) across the band), '
+            f'phi0 = {summary["phi0_deg"]:.1f} deg, coherent S/N = {fit["snr"]:.1f} (threshold {UVFIX_MIN_SNR:g}), '
+            f'V residual chi2_red = {summary["V_residual_chi2_red"]:.2f}')
         if fit['at_edge']:
             msg(f'    WARNING: fitted delay is at the edge of the +/-{UVFIX_MAX_DELAY_NS:.1f} ns search range')
 
-        try:
-            fig, (ax_obs, ax_fix) = plt.subplots(2, 1, sharex=True, figsize=(8, 6))
-            fghz = freq / 1e9
-            ax_obs.errorbar(fghz, U * 1e3, rms_U * 1e3, fmt='.', ms=3, lw=0.5, label='U (observed)')
-            ax_obs.errorbar(fghz, V * 1e3, rms_V * 1e3, fmt='.', ms=3, lw=0.5, label='V (observed)')
-            ax_fix.errorbar(fghz, U_alt * 1e3, rms_U_alt * 1e3, fmt='.', ms=3, lw=0.5, label='U (derotated)')
-            ax_fix.errorbar(fghz, V_res * 1e3, rms_V_res * 1e3, fmt='.', ms=3, lw=0.5, label='V (residual)')
-            for ax in (ax_obs, ax_fix):
-                ax.axhline(0, color='k', lw=0.5)
-                ax.set_ylabel('Flux density (mJy)')
-                ax.legend(loc='best', fontsize=8)
-            ax_fix.set_xlabel('Frequency (GHz)')
-            ax_obs.set_title(f'tau = {summary["tau_ns"]:.3f} ns, phi0 = {summary["phi0_deg"]:.1f} deg, '
-                             f'coherent S/N = {fit["snr"]:.1f}, V residual chi2_red = {summary["V_residual_chi2_red"]:.2f}',
-                             fontsize=9)
-            fig.tight_layout()
-            fig.savefig(out_png, dpi=100)
-            plt.close(fig)
-        except Exception as e:
-            msg(f'  WARNING: could not write U/V fix plot ({e})')
+    if fit is not None:
+        np.savetxt(out_txt, np.array([freq, I, Q, U_alt, rms_I, rms_Q, rms_U_alt]).T)
+        msg(f'  U/V-merged RM synthesis file written: {out_txt}')
+        if summary['status'] != 'ok':
+            msg(f'  WARNING: coherent S/N = {fit["snr"]:.1f} is below the threshold ({UVFIX_MIN_SNR:g}) -- '
+                f'file written anyway, treat the derotation as unreliable')
     else:
-        # Drop outputs from an earlier run so a stale file is never picked up
-        for stale in (out_txt, out_png):
-            if os.path.exists(stale):
-                os.remove(stale)
-        msg(f'  U/V-merged RM synthesis file NOT written: {summary["status"]}'
-            + (f' (coherent S/N = {fit["snr"]:.1f} < {UVFIX_MIN_SNR})' if fit is not None else ''))
+        # Drop an earlier run's file so a stale one is never picked up
+        if os.path.exists(out_txt):
+            os.remove(out_txt)
+        msg(f'  U/V-merged RM synthesis file NOT written: {summary["status"]}')
+
+    if fit is not None:
+        plot_uvfix_diagnostics(out_png, freq, U, V, rms_U, rms_V, U_alt, V_res, rms_U_alt, rms_V_res, fit, summary)
+        msg(f'  U/V fix diagnostics written: {out_png}')
+    elif os.path.exists(out_png):
+        os.remove(out_png)
 
     with open(out_json, 'w') as j:
         json.dump(summary, j, indent=4)
+
+
+
+def scan_stokes_images(src_im_identifier, mfs_im_suffix, chan_im_suffix, pol_flag):
+    '''
+    Locate the MFS and per-channel images for one source, matching every image
+    to its Stokes parameter by name, and decide whether full Stokes (I, P, Q,
+    U, V) can be fitted or only Stokes I.
+
+    Multi-Stokes images are named '{prefix}-MFS-{stokes}-{suffix}' and
+    '{prefix}-{chan}-{stokes}-{suffix}'; Stokes I only imaging has no Stokes
+    tag, '{prefix}-MFS-{suffix}' and '{prefix}-{chan}-{suffix}'. P is Plin
+    when pol_flag (a polarization angle calibrator was used), Ptot otherwise.
+
+    Full Stokes is used if ANY prefix has the complete MFS set (I, P, Q, U, V)
+    and at least one complete channel set; otherwise every prefix is fitted as
+    Stokes I only. In a full Stokes run a prefix (time interval) without a
+    complete MFS set is dropped, since its I and polarization results could not
+    line up with the other epochs, and a channel without a complete set of
+    Stokes images (e.g. a flagged channel) is left out. A prefix with a complete
+    MFS set but no complete channel set is kept for its MFS results only.
+
+    Returns a dict:
+        prefixes     prefixes to fit, sorted: those with an MFS Stokes I image,
+                     or in a full Stokes run those with a complete MFS set
+        mfs          {prefix: {'I'|'P'|'Q'|'U'|'V': path}}
+        chan_groups  {prefix: [[paths], ...]}, one group per channel in
+                     frequency order: [I, P, Q, U, V] or [I]
+        full_stokes  True if full Stokes will be fitted
+        notes        why Stokes I only was chosen (empty if full Stokes)
+        n_chan_incomplete  {prefix: channels left out for missing Stokes}
+    '''
+
+    p_tag      = 'Plin' if pol_flag else 'Ptot'
+    tag_to_key = {'I': 'I', 'Q': 'Q', 'U': 'U', 'V': 'V', p_tag: 'P'}
+    full_keys  = ['I', 'P', 'Q', 'U', 'V']
+    tag_re     = '|'.join(['I', 'Q', 'U', 'V', 'Plin', 'Ptot'])
+
+    mfs_re  = re.compile(rf'(?P<prefix>.+?)-MFS-(?:(?P<tag>{tag_re})-)?{re.escape(mfs_im_suffix)}')
+    chan_re = re.compile(rf'(?P<prefix>.+)-(?P<chan>\d+)-(?:(?P<tag>{tag_re})-)?{re.escape(chan_im_suffix)}')
+
+    def add(entry, tag, path):
+        # A tagged Stokes I image is part of the multi-Stokes set and takes
+        # precedence over an untagged one; the unused P type is ignored.
+        if tag is None:
+            entry.setdefault('I', path)
+        elif tag in tag_to_key:
+            entry[tag_to_key[tag]] = path
+
+    def count_tags(counts, tag):
+        label = 'I (untagged)' if tag is None else tag
+        counts[label] = counts.get(label, 0) + 1
+
+    def tag_summary(counts):
+        return ', '.join(f'{k}={counts[k]}' for k in sorted(counts))
+
+    mfs_pattern = f'{src_im_identifier}*MFS*{mfs_im_suffix}'
+    msg(f'Locating MFS images: {mfs_pattern}')
+    mfs_files = glob.glob(mfs_pattern)
+    mfs, mfs_counts, mfs_unmatched = {}, {}, []
+    for f in mfs_files:
+        m = mfs_re.fullmatch(f)
+        if m is None:
+            mfs_unmatched.append(f)
+            continue
+        count_tags(mfs_counts, m.group('tag'))
+        add(mfs.setdefault(m.group('prefix'), {}), m.group('tag'), f)
+    msg(f'  {len(mfs_files)} file(s) matched; by Stokes: {tag_summary(mfs_counts) or "none"}')
+    if mfs_unmatched:
+        msg(f'  {len(mfs_unmatched)} file(s) not recognised as MFS Stokes images and ignored, e.g. '
+            f'{os.path.basename(sorted(mfs_unmatched)[0])}')
+    unused_p = 'Ptot' if pol_flag else 'Plin'
+    if unused_p in mfs_counts:
+        msg(f'  Ignoring {mfs_counts[unused_p]} {unused_p} MFS image(s): '
+            f'{p_tag} is used {"with" if pol_flag else "without"} a polarization angle calibrator')
+
+    # One glob for the channel images of every prefix, partitioned in memory.
+    # Filtered by a '-MFS-' substring check rather than a [!MFS] glob bracket,
+    # since fnmatch's '*' backtracking can defeat that bracket.
+    chan_pattern = f'{src_im_identifier}*-{chan_im_suffix}'
+    msg(f'Locating channel images: {chan_pattern}')
+    chan, chan_counts, chan_unmatched, n_chan_files = {}, {}, [], 0
+    for f in glob.glob(chan_pattern):
+        if '-MFS-' in f:
+            continue
+        n_chan_files += 1
+        m = chan_re.fullmatch(f)
+        if m is None:
+            chan_unmatched.append(f)
+            continue
+        count_tags(chan_counts, m.group('tag'))
+        add(chan.setdefault(m.group('prefix'), {}).setdefault(int(m.group('chan')), {}), m.group('tag'), f)
+    msg(f'  {n_chan_files} file(s) matched; by Stokes: {tag_summary(chan_counts) or "none"}')
+    if chan_unmatched:
+        msg(f'  {len(chan_unmatched)} file(s) not recognised as channel Stokes images and ignored, e.g. '
+            f'{os.path.basename(sorted(chan_unmatched)[0])}')
+    if unused_p in chan_counts:
+        msg(f'  Ignoring {chan_counts[unused_p]} {unused_p} channel image(s)')
+
+    prefixes = sorted(p for p in mfs if 'I' in mfs[p])
+    for p in sorted(set(mfs) - set(prefixes)):
+        msg(f'  WARNING: {os.path.basename(p)} has MFS images but no Stokes I image -- skipped')
+    msg(f'  {len(prefixes)} prefix(es) with an MFS Stokes I image')
+
+    groups_full, groups_I, n_incomplete = {}, {}, {}
+    for p in prefixes:
+        channels = sorted(chan.get(p, {}).items())
+        groups_I[p]     = [[ch['I']] for _, ch in channels if 'I' in ch]
+        groups_full[p]  = [[ch[k] for k in full_keys] for _, ch in channels if all(k in ch for k in full_keys)]
+        n_incomplete[p] = len(groups_I[p]) - len(groups_full[p])
+
+    no_mfs   = {p: [k for k in full_keys if k not in mfs[p]] for p in prefixes}
+    complete = [p for p in prefixes if not no_mfs[p]]
+    usable   = [p for p in complete if groups_full[p]]
+    full_stokes = bool(usable)
+
+    def missing_text(p):
+        return (f'{os.path.basename(p)}: MFS image(s) missing for {",".join(no_mfs[p])}'
+                + (f' (is {p_tag} made by make_pol_images.py?)' if 'P' in no_mfs[p] else ''))
+
+    notes = []
+    if not full_stokes:
+        if not prefixes:
+            notes.append('no MFS Stokes I image found')
+        elif not any(set(mfs[p]) - {'I'} for p in prefixes):
+            notes.append('no polarization images found (Stokes I only imaging)')
+        else:
+            notes.append(f'no prefix has a complete set of {",".join(full_keys)} images in both MFS and at least one channel')
+            notes += [missing_text(p) for p in [p for p in prefixes if no_mfs[p]][:5]]
+            notes += [f'{os.path.basename(p)}: MFS set complete but no channel has a complete set'
+                      for p in [p for p in complete if not groups_full[p]][:5]]
+
+    kept = prefixes
+    if full_stokes:
+        kept = complete
+        dropped = [p for p in prefixes if no_mfs[p]]
+        msg(f'  Full Stokes: {len(usable)} prefix(es) with a complete MFS set and at least one complete channel set')
+        for p in dropped[:10]:
+            msg(f'  WARNING: {missing_text(p)} -- prefix dropped (flagged interval?)')
+        if dropped:
+            msg(f'  {len(dropped)} of {len(prefixes)} prefix(es) dropped for missing polarization images')
+        for p in kept:
+            if not groups_full[p]:
+                msg(f'  {os.path.basename(p)}: MFS set complete but no complete channel set -- MFS results only')
+            elif n_incomplete[p]:
+                msg(f'  {os.path.basename(p)}: {len(groups_full[p])} complete channel set(s), '
+                    f'{n_incomplete[p]} channel(s) missing a Stokes image')
+
+    return {
+        'prefixes'         : kept,
+        'mfs'              : {p: mfs[p] for p in kept},
+        'chan_groups'      : {p: (groups_full if full_stokes else groups_I)[p] for p in kept},
+        'full_stokes'      : full_stokes,
+        'notes'            : notes,
+        'n_chan_incomplete': {p: (n_incomplete[p] if full_stokes else 0) for p in kept},
+    }
 
         
 
@@ -735,8 +967,17 @@ def get_imstat_values(image, xpix, ypix, manual_rms_region = False):
     xpix = ims['maxpos'][0]
     ypix = ims['maxpos'][1]
 
-    # Extract RMS
-    rms = imstat(image, region = rms_region)['rms'][0]
+    # Extract RMS: on the matching residual image when USE_RESIDUAL_RMS is set and
+    # one exists, otherwise on the image itself
+    rms_image = image
+    if USE_RESIDUAL_RMS:
+        residual = re.sub(r'-image(\.homogenized)?\.fits$', r'-residual\1.fits', image)
+        if os.path.exists(residual):
+            rms_image = residual
+        elif not getattr(get_imstat_values, 'warned', False):
+            msg(f'  WARNING: no residual image for the RMS (e.g. {os.path.basename(residual)}); using the image itself')
+            get_imstat_values.warned = True
+    rms = imstat(rms_image, region = rms_region)['rms'][0]
 
     return [flux, xpix, ypix, rms, rms_region]
     
@@ -1145,6 +1386,11 @@ def fit_channel_group_batch(jobs):
     return [fit_channel_group(job) for job in jobs]
 
 
+def case_insensitive(text):
+    """Glob pattern for text in any letter case."""
+    return ''.join(f'[{c.lower()}{c.upper()}]' if c.isalpha() else glob.escape(c) for c in text)
+
+
 def _try_get_ms_timing(src_name, n_intervals):
     """
     Derive per-interval MJD timing from the measurement set for src_name.
@@ -1173,9 +1419,10 @@ def _try_get_ms_timing(src_name, n_intervals):
 
     _target_names = _pinfo.get('target_names', [])
     _target_ms    = _pinfo.get('target_ms',    [])
+    _target_lower = [name.lower() for name in _target_names]
 
-    if src_name in _target_names:
-        _idx = _target_names.index(src_name)
+    if src_name.lower() in _target_lower:
+        _idx = _target_lower.index(src_name.lower())
         _candidate = _target_ms[_idx] if _idx < len(_target_ms) else None
         if _candidate and os.path.exists(_candidate):
             _ms_to_use = _candidate
@@ -1186,8 +1433,8 @@ def _try_get_ms_timing(src_name, n_intervals):
         if _working and os.path.exists(_working):
             _ms_to_use = _working
             _target_ids = _pinfo.get('target_ids', [])
-            if src_name in _target_names:
-                _idx = _target_names.index(src_name)
+            if src_name.lower() in _target_lower:
+                _idx = _target_lower.index(src_name.lower())
                 if _idx < len(_target_ids):
                     _field_id = int(_target_ids[_idx])
             msg(f'  [timing] split MS absent; using working MS: {os.path.basename(_ms_to_use)}'
@@ -1337,6 +1584,7 @@ def extract_polarization_properties(src_name,
         msg(f'  RMS region       : MANUAL -- {manual_rms_region}')
     else:
         msg(f'  RMS region       : default annulus (~500 beam areas) centred on source')
+    msg(f'  RMS image        : {"matching residual where it exists" if USE_RESIDUAL_RMS else "the image itself"}')
     msg(f'  Polarization angle calibrator present: {pol_flag}')
     msg(f'  Fix secondary component positions    : {fix_additional_comps}')
     msg(f'{"="*70}')
@@ -1360,71 +1608,63 @@ def extract_polarization_properties(src_name,
     # Locate images and determine the correct suffix to use
     # ------------------------------------------------------------------
 
+    # The requested suffix is used for the MFS images and for the channel images
+    # wherever images with it exist. Homogenized images stand in for a type with
+    # none, as when the channelisation had to be chunked and no plain image could
+    # be made.
+    other_suffix = 'image.homogenized.fits' if src_im_suffix == 'image.fits' else 'image.fits'
+
+    def pick_suffix(mfs):
+        for suffix in (src_im_suffix, other_suffix):
+            if any(('-MFS-' in f) == mfs for f in glob.glob(f'{src_im_identifier}*{suffix}')):
+                return suffix
+        return None
+
+    mfs_found, chan_found = pick_suffix(True), pick_suffix(False)
+
     # Confirm at least some images exist before proceeding
-    test_images = glob.glob(f'{src_im_identifier}*{src_im_suffix}')
-    if not test_images:
+    if mfs_found is None and chan_found is None:
         raise FileNotFoundError(
-            f'No images found matching: {src_im_identifier}*{src_im_suffix}\n'
+            f'No images found matching: {src_im_identifier}*{src_im_suffix} or *{other_suffix}\n'
             f'Check the image_directory and image_identifier fields in rmsynth_info.json.')
-    msg(f'Found images matching pattern (example): {test_images[0]}')
 
-    # MFS images may use 'image.homogenized.fits' if per-channel splitting
-    # has already consumed the standard image.fits products
-    mfs_im_suffix = src_im_suffix[:]
-    if not glob.glob(f'{src_im_identifier}*MFS*{src_im_suffix}'):
-        msg(f'WARNING: No MFS {src_im_suffix} images found; '
-            f'falling back to image.homogenized.fits')
-        mfs_im_suffix = 'image.homogenized.fits'
-    else:
-        msg(f'MFS image suffix: {mfs_im_suffix}')
+    mfs_im_suffix = mfs_found or src_im_suffix
+    chan_im_suffix = chan_found or src_im_suffix
+    for kind, found in (('MFS', mfs_found), ('channel', chan_found)):
+        if found is None:
+            msg(f'WARNING: No {kind} images found with {src_im_suffix} or {other_suffix}')
+        elif found != src_im_suffix:
+            msg(f'WARNING: No {kind} {src_im_suffix} images found; using {found}')
+    src_im_suffix = chan_im_suffix
+    msg(f'MFS image suffix: {mfs_im_suffix}; channel image suffix: {src_im_suffix}')
 
-    # Check whether polarization images (Q, U, V, P) exist, or if this run
-    # is Stokes I only (e.g. early-stage pipeline without polarization calibration)
-    if not glob.glob(f'{src_im_identifier}*MFS-I-{mfs_im_suffix}'):
-        only_intensity = True
-        msg('No MFS polarization images found -- running in Stokes I only mode')
-    else:
-        only_intensity = False
-        msg('MFS polarization images found -- fitting full Stokes IQUV')
-
-    # Build the list of unique image prefixes.  Each prefix corresponds to one
-    # time interval (or the full observation if image_timing=false in rmsynth_info.json).
-    _mfs_glob_all = glob.glob(f'{src_im_identifier}*MFS*{mfs_im_suffix}')
-    prefix_arr = sorted(list(set([x.split('-MFS')[0] for x in _mfs_glob_all])))
+    # Match every MFS and CHAN image to its Stokes by name and decide between
+    # full Stokes (some prefix has a complete set of I, P, Q, U, V images) and
+    # Stokes I only.
+    # Each prefix corresponds to one time interval (or the full observation if
+    # image_timing=false in rmsynth_info.json). One directory scan serves every
+    # prefix -- with hundreds of timesteps this avoids hundreds of repeated
+    # full-directory scans.
+    stokes_scan    = scan_stokes_images(src_im_identifier, mfs_im_suffix, src_im_suffix, pol_flag)
+    prefix_arr     = stokes_scan['prefixes']
+    only_intensity = not stokes_scan['full_stokes']
     is_time_resolved = len(prefix_arr) > 1
+
+    if only_intensity:
+        msg('Fitting Stokes I only:')
+        for _note in stokes_scan['notes']:
+            msg(f'  {_note}')
+    else:
+        msg(f'Full Stokes images found -- fitting I, {"Plin" if pol_flag else "Ptot"}, Q, U, V')
     msg(f'Found {len(prefix_arr)} prefix(es) (time interval(s)) to process')
 
-    # Cache each prefix's MFS images from the single glob above, in memory,
-    # instead of re-globbing the same (potentially huge) directory once per
-    # prefix -- with hundreds of timesteps this turns hundreds of repeated
-    # full-directory scans into zero additional filesystem calls.
-    _mfs_images_by_prefix = {}
-    for _f in _mfs_glob_all:
-        _mfs_images_by_prefix.setdefault(_f.split('-MFS')[0], []).append(_f)
-    msg(f'Cached MFS images for {len(_mfs_images_by_prefix)} prefix(es) from one directory scan.')
-
-    # One glob for CHAN images across all prefixes, partitioned in memory by
-    # prefix -- channel counts vary per timestep (flagging differs per
-    # snapshot), so each prefix needs its own real result, not a suffix set
-    # learned from prefix 0. Filtered by a '-MFS-' substring check rather than
-    # a [!MFS] glob bracket, since fnmatch's '*' backtracking can defeat that
-    # bracket and falsely match an MFS image.
-    _all_chan_glob = glob.glob(f'{src_im_identifier}*-{src_im_suffix}')
-    _chan_images_by_prefix = {}
-    for _f in _all_chan_glob:
-        if '-MFS-' in _f:
-            continue
-        # CHAN filenames are '{prefix}-{chan}-{stokes}-{suffix}' and chan/
-        # stokes/suffix are all hyphen-free, so the prefix is always
-        # everything before the last 3 hyphens.
-        _prefix_key = _f.rsplit('-', 3)[0]
-        _chan_images_by_prefix.setdefault(_prefix_key, []).append(_f)
-
-    _n_chan_total = sum(len(v) for v in _chan_images_by_prefix.values())
-    _n_stokes_per_chan = 1 if only_intensity else 5
-    msg(f'Cached CHAN images for {len(_chan_images_by_prefix)} prefix(es) '
-        f'({_n_chan_total} image(s) total, ~{_n_chan_total // max(1, len(_chan_images_by_prefix)) // max(1, _n_stokes_per_chan)} '
+    _n_chan_total = sum(len(v) for v in stokes_scan['chan_groups'].values())
+    msg(f'Cached CHAN images for {len(prefix_arr)} prefix(es) '
+        f'({_n_chan_total} channel(s) total, ~{_n_chan_total // max(1, len(prefix_arr))} '
         f'channel(s)/prefix on average) from one directory scan.')
+    _n_chan_skipped = sum(stokes_scan['n_chan_incomplete'].values())
+    if _n_chan_skipped > 0:
+        msg(f'WARNING: {_n_chan_skipped} channel(s) left out because a Stokes image is missing')
 
     # Pre-compute timing before the prefix loop.
     #   Time-resolved: read DATE-OBS from each prefix's MFS image header; the
@@ -1436,8 +1676,7 @@ def extract_polarization_properties(src_name,
         _ms_timings = None
         _hdr_mjds   = []
         for _pfx in prefix_arr:
-            _pfx_imgs = sorted(_mfs_images_by_prefix.get(_pfx, []))
-            _pfx_dobs = imhead(_pfx_imgs[0], mode='get', hdkey='DATE-OBS').replace('/','-',2).replace('/','T')
+            _pfx_dobs = imhead(stokes_scan['mfs'][_pfx]['I'], mode='get', hdkey='DATE-OBS').replace('/','-',2).replace('/','T')
             _hdr_mjds.append(_iso_to_mjd(_pfx_dobs))
         _hdr_mjds   = np.array(_hdr_mjds)
         _hdr_diffs  = np.diff(_hdr_mjds) * 86400.0         # seconds between adjacent prefixes
@@ -1517,19 +1756,13 @@ def extract_polarization_properties(src_name,
         msg('')
         msg(f'--- Prefix {k+1}/{len(prefix_arr)}: {os.path.basename(prefix)} ---')
 
-        # Collect MFS images for this prefix. sorted() puts them in the order
-        # I, P(lin/tot), Q, U, V which is the order the rest of the code assumes.
+        # MFS images for this prefix in the order the rest of the code assumes:
+        # I, P (Plin with a polarization angle calibrator, Ptot without), Q, U, V
+        _mfs = stokes_scan['mfs'][prefix]
         if only_intensity:
-            MFS_images = [f'{prefix}-MFS-{mfs_im_suffix}']
+            MFS_images = [_mfs['I']]
         else:
-            MFS_images = _mfs_images_by_prefix.get(prefix, [])
-            # Exclude whichever polarized intensity type is not in use:
-            # pol_flag=True  --> pol angle calibrator present --> use Plin (sqrt(Q^2+U^2))
-            # pol_flag=False --> no pol angle calibrator       --> use Ptot (sqrt(Q^2+U^2+V^2))
-            if pol_flag:
-                MFS_images = sorted([im for im in MFS_images if '-Ptot-' not in im])
-            else:
-                MFS_images = sorted([im for im in MFS_images if '-Plin-' not in im])
+            MFS_images = [_mfs[_stokes] for _stokes in ('I', 'P', 'Q', 'U', 'V')]
 
         msg(f'MFS images selected ({len(MFS_images)}):')
         for MFS_image in MFS_images:
@@ -1884,22 +2117,10 @@ def extract_polarization_properties(src_name,
 
         msg(f'Fitting CHAN image(s) for prefix {k} with {src_im_suffix}: {prefix}')
 
-        # Look up this prefix's actual CHAN images from the one-time cached
-        # scan above -- no glob here, and each prefix's own real channel
-        # count/list is used (not assumed identical across timesteps).
-        CHAN_images = sorted(_chan_images_by_prefix.get(prefix, []))
-
-        # Reshape to so that each component is a set of Stokes parameters
-        if only_intensity:
-            CHAN_images_arr = np.array(CHAN_images).reshape(len(CHAN_images), 1)
-
-        else:
-            if pol_flag:
-               CHAN_images = sorted([im for im in CHAN_images if '-Ptot-' not in im])
-            else:
-               CHAN_images = sorted([im for im in CHAN_images if '-Plin-' not in im])
-
-            CHAN_images_arr = np.array(CHAN_images).reshape(int(len(CHAN_images) / 5), 5) # reshape to group in frequency for each set of Stokes parameters
+        # This prefix's own channels from the one-time scan above (channel
+        # counts vary per timestep, as flagging differs per snapshot): one
+        # group per channel, [I] or [I, P, Q, U, V]
+        CHAN_images_arr = stokes_scan['chan_groups'][prefix]
 
         # Build one job per frequency channel, fully self-contained so it can
         # run in a parallel worker (see fit_channel_group). MFS_P_ra_pix/dec
@@ -2082,9 +2303,12 @@ def extract_polarization_properties(src_name,
 
                 # No polarization angle calibrator: also write the U/V-merged companion
                 if not pol_flag:
-                    write_uvfix_rmsynth(rmsynth_fname, rmsynth_arr,
-                                        np.array(output_dictionary['CHAN'][component]['V_flux_mJy'][k]) / 1e3,
-                                        np.array(output_dictionary['CHAN'][component]['V_rms_mJy'][k]) / 1e3)
+                    try:
+                        write_uvfix_rmsynth(rmsynth_fname, rmsynth_arr,
+                                            np.array(output_dictionary['CHAN'][component]['V_flux_mJy'][k]) / 1e3,
+                                            np.array(output_dictionary['CHAN'][component]['V_rms_mJy'][k]) / 1e3)
+                    except Exception as e:
+                        msg(f'  WARNING: U/V fix failed for {component} ({e}) -- continuing without it')
 
         # Compute the spectral index for every epoch unconditionally (stored in
         # JSON) -- this compute-only pass (save_plot=False) is NOT gated by
@@ -2692,7 +2916,7 @@ def main():
     with open(cfg.RMSYN_INFO_FILE, 'r') as j:
         rmsynth_info = json.load(j)
 
-    # Check to see if there is a Polarization angle calibrator -- pol_flag = Trye means that you do have
+    # Check to see if there is a Polarization angle calibrator -- pol_flag = True means that you do have
     pol_flag=False
     if cfg.POLANG_NAME != '':
         pol_flag = True
@@ -2711,12 +2935,12 @@ def main():
 
         # Construct image identifier based on input options
         if rmsynth_info["image_timing"][k]:
-            src_im_identifier = cfg.CWD +'/{}/*{}*.ms_{}-t'.format(rmsynth_info["image_directory"][k], 
-                                                                                            rmsynth_info["source_name"][k], 
+            src_im_identifier = cfg.CWD +'/{}/*{}*.ms_{}-t'.format(rmsynth_info["image_directory"][k],
+                                                                                            case_insensitive(rmsynth_info["source_name"][k]),
                                                                                             rmsynth_info["image_identifier"][k])
         else:
-            src_im_identifier = cfg.CWD +'/{}/*{}*.ms_{}-'.format(rmsynth_info["image_directory"][k], 
-                                                                                            rmsynth_info["source_name"][k], 
+            src_im_identifier = cfg.CWD +'/{}/*{}*.ms_{}-'.format(rmsynth_info["image_directory"][k],
+                                                                                            case_insensitive(rmsynth_info["source_name"][k]),
                                                                                            rmsynth_info["image_identifier"][k])                                                                                           
         # Parse source positions from rmsynth_info.json using parse_casa_position().
         # Accepts both CASA HMS/DMS format ('HH:MM:SS.SS,+-DD.MM.SS.SS') and

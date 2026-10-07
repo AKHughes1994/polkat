@@ -67,6 +67,7 @@ def main():
     gen.setup_dir(IMAGES)
     gen.setup_dir(cfg.LOGS)
     gen.setup_dir(cfg.SCRIPTS)
+    gen.close_dir_notes()
 
     INFRASTRUCTURE, CONTAINER_PATH = gen.set_infrastructure(sys.argv)
     CONTAINER_RUNNER = 'singularity exec ' if CONTAINER_PATH is not None else ''
@@ -431,6 +432,7 @@ def main():
             automask          = cfg.WSC_AUTOMASK,
             localrms          = cfg.WSC_INTER_LOCALRMS,
             autothreshold     = cfg.WSC_INTER_AUTOTHRESHOLD,
+            pol               = 'IQUV',   # Always full Stokes: the systematics (RMSYNTH_01B) need I, Q, U and V whatever WSC_POL is
             joinpolarizations = False,
             multiscale        = False,
             splitpol          = True,
@@ -460,22 +462,21 @@ def main():
             steps.append(step)
             n += 1
 
-        if cfg.WSC_POL != 'I':
-            # Only make Plin images
-            only_Plin = True
-            if project_info['polang_name'] == '':
-                only_Plin = False
+        # Only make Plin images
+        only_Plin = True
+        if project_info['polang_name'] == '':
+            only_Plin = False
 
-            step = {}
-            step['step']       = n
-            step['comment']    = f'Make polarization intensity images for {fieldname}'
-            step['dependency'] = n - 1
-            step['id']         = 'MKLPI' + code
-            syscall  = CONTAINER_RUNNER + PYTHON3_CONTAINER + ' ' if USE_SINGULARITY else ''
-            syscall += f'python3 {cfg.TOOLS}/make_pol_images.py {cfg.IMAGES} {fieldname} {only_Plin}'
-            step['syscall'] = syscall
-            steps.append(step)
-            n += 1
+        step = {}
+        step['step']       = n
+        step['comment']    = f'Make polarization intensity images for {fieldname}'
+        step['dependency'] = n - 1
+        step['id']         = 'MKLPI' + code
+        syscall  = CONTAINER_RUNNER + PYTHON3_CONTAINER + ' ' if USE_SINGULARITY else ''
+        syscall += f'python3 {cfg.TOOLS}/make_pol_images.py {cfg.IMAGES} {fieldname} {only_Plin}'
+        step['syscall'] = syscall
+        steps.append(step)
+        n += 1
 
         all_steps.append((steps, kill_file, fieldname))
 

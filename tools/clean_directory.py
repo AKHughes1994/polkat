@@ -26,7 +26,7 @@ def safe_remove(patterns):
 # Combined patterns
 patterns = [
     f"{cfg.CWD}/*.log",
-    f"{cfg.CWD}/*.txt",
+    f"{cfg.CWD}/estimate*.txt",
     f"{cfg.CWD}/*.last",
     f"{cfg.CWD}/*scan*.ms",
     # f"{cfg.CWD}/*1024ch_*.ms",  # Optional

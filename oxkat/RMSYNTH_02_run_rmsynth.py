@@ -13,6 +13,15 @@ print = partial(print, flush=True)
 
 def main():
 
+    # The usual rmsynth input files, plus the U/V-merged companions that
+    # RMSYNTH_01 writes when there is no polarization angle calibrator. There
+    # are none for Stokes I only extractions.
+    fnames = sorted(glob.glob(cfg.RESULTS + '/*_rmsynth.txt') + glob.glob(cfg.RESULTS + '/*_rmsynth_UVfix.txt'))
+
+    if len(fnames) == 0:
+        print(gen.col('RM Synthesis')+'No *_rmsynth.txt or *_rmsynth_UVfix.txt files in '+cfg.RESULTS+' -- nothing to do')
+        return
+
     # Build rmsynth1d flags from config
     rmsyn_flags  = f'-S -v -l {cfg.RMSYN_FARADAY_RANGE} -o {cfg.RMSYN_POLY_ORDER} -s {cfg.RMSYN_RMSF_SAMPLES}'
     if cfg.RMSYN_SUPER_RESOLUTION:
@@ -31,9 +40,6 @@ def main():
     print(gen.col('rmsynth1d flags')+rmsyn_flags)
     print(gen.col('rmclean1d flags')+rmclean_flags)
     gen.print_spacer()
-
-    # Iterate through all rmsynth.txt files in the RESULTS directory
-    fnames = glob.glob(cfg.RESULTS + '/*_rmsynth.txt')
 
     for fname in fnames:
         subprocess.run([f'rmsynth1d {fname} {rmsyn_flags}'],  shell=True)
