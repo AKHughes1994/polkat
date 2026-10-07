@@ -991,7 +991,7 @@ RMSYN_MAX_I_DRIFT_PIX      = False  # Maximum pixel drift allowed for a Stokes I
                                     # before the fit is re-run with the position fixed.
                                     # False = no drift check; float = threshold in pixels.
 
-RMSYN_USE_RESIDUAL_RMS     = False  # True: measure the noise annulus on the matching *-residual.fits
+RMSYN_USE_RESIDUAL_RMS     = True  # True: measure the noise annulus on the matching *-residual.fits
                                     # image (post-CLEAN noise, not biased by source flux or sidelobes),
                                     # falling back to the restored image where none exists.
                                     # False: measure it on the restored image.
