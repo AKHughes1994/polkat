@@ -28,7 +28,7 @@ sys.path.append(o.abspath(o.join(o.dirname(sys.modules[__name__].__file__), ".."
 from oxkat import config as cfg
 
 from casatasks import imfit, imstat, imhead
-from casatools import table
+from casatools import table, measures, quanta
 tb = table()
 
 
@@ -49,6 +49,7 @@ USE_RESIDUAL_RMS      = cfg.RMSYN_USE_RESIDUAL_RMS
 # is built from a linear cross-hand phase fit (see fit_linear_xy_phase).
 UVFIX_MAX_DELAY_NS    = 10.0  # Half-width of the cross-hand delay search, +/- ns
 UVFIX_MIN_SNR         = 6.0   # Coherent S/N below which the fit is flagged unreliable (file still written)
+UVFIX_OBSERVATORY     = 'MeerKAT'  # Site for the parallactic angle
 
 # =============================================================================
 
@@ -573,6 +574,44 @@ def derotate_uv(freq_hz, U, V, rms_U, rms_V, fit):
 
 
 
+def parallactic_angle_deg(ra_deg, dec_deg, mjd_days, observatory=UVFIX_OBSERVATORY):
+    '''
+    Parallactic angle in degrees, wrapped to (-180, 180], of (ra_deg, dec_deg) (J2000) at mjd_days (UTC):
+    the position angle between the field direction and the local zenith, from the CASA measures tool.
+    '''
+
+    # The measures frame is global to the tool, so each call gets fresh tools
+    me = measures()
+    qa = quanta()
+    try:
+        me.doframe(me.observatory(observatory))
+        me.doframe(me.epoch('utc', qa.quantity(mjd_days, 'd')))
+        field  = me.direction('J2000', qa.quantity(ra_deg, 'deg'), qa.quantity(dec_deg, 'deg'))
+        zenith = me.direction('AZELGEO', '0deg', '90deg')
+        chi    = qa.convert(me.posangle(field, zenith), 'deg')['value']
+    finally:
+        me.done()
+        qa.done()
+
+    return float(((chi + 180.0) % 360.0) - 180.0)
+
+
+
+def rotate_to_sky(Q, U, rms_Q, rms_U, chi_deg):
+    '''Rotate (Q, U) from the feed frame to the sky frame by -2*chi, propagating the errors.'''
+
+    rot = np.radians(-2.0 * chi_deg)
+    cos_r, sin_r = np.cos(rot), np.sin(rot)
+
+    Q_sky = Q * cos_r + U * sin_r
+    U_sky = -Q * sin_r + U * cos_r
+    rms_Q_sky = np.sqrt((cos_r * rms_Q) ** 2 + (sin_r * rms_U) ** 2)
+    rms_U_sky = np.sqrt((sin_r * rms_Q) ** 2 + (cos_r * rms_U) ** 2)
+
+    return Q_sky, U_sky, rms_Q_sky, rms_U_sky
+
+
+
 def mad_rms_outlier_channels(rms_arrays, nsigma=5.0):
     '''
     True for channels where ANY of the noise arrays is a MAD outlier (more than
@@ -669,13 +708,13 @@ def plot_uvfix_diagnostics(out_png, freq, U, V, rms_U, rms_V, U_alt, V_res, rms_
 
 
 
-def write_uvfix_rmsynth(rmsynth_fname, rmsynth_arr, V, rms_V):
+def write_uvfix_rmsynth(rmsynth_fname, rmsynth_arr, V, rms_V, ra_deg, dec_deg, mjd_days):
     '''
     No polarization angle calibrator: write a companion to an RM synthesis
     input file in which all of the linear polarization is assumed to be U,
     spread into V by a linear cross-hand phase (see fit_linear_xy_phase).
 
-    rmsynth_arr is the usual (freq, I, Q, U, dI, dQ, dU) array in Hz and Jy;
+    rmsynth_arr is the (freq, I, Q, U, dI, dQ, dU) array in Hz and Jy;
     V and rms_V are the matching Stokes V spectrum and noise in Jy.
 
     Channels whose I, Q, U or V noise is a MAD outlier (mad_rms_outlier_channels)
@@ -683,8 +722,8 @@ def write_uvfix_rmsynth(rmsynth_fname, rmsynth_arr, V, rms_V):
     channels with non-finite U or V.
 
     Outputs, alongside rmsynth_fname (<base> = rmsynth_fname minus '.txt'):
-        <base>_UVfix.txt       freq, I, Q, U_derotated, dI, dQ, dU_derotated
-                               (the same format as the usual file); written
+        <base>_UVfix.txt       freq, I, Q, U, dI, dQ, dU, cross-hand phase and
+                               parallactic angle corrected; written
                                whenever a fit could be made, with a warning if
                                its coherent S/N is below UVFIX_MIN_SNR
         <base>_UVfix_fit.json  fit parameters, significance and V residual
@@ -739,6 +778,15 @@ def write_uvfix_rmsynth(rmsynth_fname, rmsynth_arr, V, rms_V):
         usable = np.isfinite(V_res) & np.isfinite(rms_V_res) & (rms_V_res > 0)
         summary['V_residual_chi2_red'] = float(np.mean((V_res[usable] / rms_V_res[usable]) ** 2))
 
+        # Feed frame -> sky frame, after the cross-hand phase is removed
+        chi_deg = parallactic_angle_deg(ra_deg, dec_deg, mjd_days)
+        Q_sky, U_sky, rms_Q_sky, rms_U_sky = rotate_to_sky(Q, U_alt, rms_Q, rms_U_alt, chi_deg)
+        summary['parang_deg'] = chi_deg
+        summary['parang_mjd'] = float(mjd_days)
+        summary['parang_ra_deg'] = float(ra_deg)
+        summary['parang_dec_deg'] = float(dec_deg)
+        msg(f'  U/V fix: parallactic angle chi = {chi_deg:+.3f} deg at MJD {mjd_days:.5f}; (Q, U) rotated by {-2.0 * chi_deg:+.3f} deg')
+
         msg(f'  U/V fix: tau = {summary["tau_ns"]:.3f} ns ({summary["xy_phase_turns_across_band"]:.1f} turn(s) across the band), '
             f'phi0 = {summary["phi0_deg"]:.1f} deg, coherent S/N = {fit["snr"]:.1f} (threshold {UVFIX_MIN_SNR:g}), '
             f'V residual chi2_red = {summary["V_residual_chi2_red"]:.2f}')
@@ -746,7 +794,7 @@ def write_uvfix_rmsynth(rmsynth_fname, rmsynth_arr, V, rms_V):
             msg(f'    WARNING: fitted delay is at the edge of the +/-{UVFIX_MAX_DELAY_NS:.1f} ns search range')
 
     if fit is not None:
-        np.savetxt(out_txt, np.array([freq, I, Q, U_alt, rms_I, rms_Q, rms_U_alt]).T)
+        np.savetxt(out_txt, np.array([freq, I, Q_sky, U_sky, rms_I, rms_Q_sky, rms_U_sky]).T)
         msg(f'  U/V-merged RM synthesis file written: {out_txt}')
         if summary['status'] != 'ok':
             msg(f'  WARNING: coherent S/N = {fit["snr"]:.1f} is below the threshold ({UVFIX_MIN_SNR:g}) -- '
@@ -2306,7 +2354,10 @@ def extract_polarization_properties(src_name,
                     try:
                         write_uvfix_rmsynth(rmsynth_fname, rmsynth_arr,
                                             np.array(output_dictionary['CHAN'][component]['V_flux_mJy'][k]) / 1e3,
-                                            np.array(output_dictionary['CHAN'][component]['V_rms_mJy'][k]) / 1e3)
+                                            np.array(output_dictionary['CHAN'][component]['V_rms_mJy'][k]) / 1e3,
+                                            float(np.nanmedian(output_dictionary['CHAN'][component]['I_RA_deg'][k])),
+                                            float(np.nanmedian(output_dictionary['CHAN'][component]['I_DEC_deg'][k])),
+                                            _time_ctr_mjd)
                     except Exception as e:
                         msg(f'  WARNING: U/V fix failed for {component} ({e}) -- continuing without it')
 
