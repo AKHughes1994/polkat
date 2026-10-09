@@ -486,10 +486,9 @@ CAL_1GC_LINE_FILLGAPS = 48
 # 2GC settings — QuartiCal self-calibration
 #
 
-# Legacy CASA gaincal solution intervals (not used by QuartiCal; kept for reference)
-CAL_2GC_UVRANGE = '>150m'            # UV range for baseline selection during gain solving
-CAL_2GC_PSOLINT = '32s'              # Phase-only solution interval (DEFUNCT in QuartiCal version)
-CAL_2GC_APSOLINT = 'inf'             # Amplitude+phase solution interval (DEFUNCT in QuartiCal version)
+# If True, 2GC self-calibration is done with CASA (2GC_casa_selfcal.py) instead of QuartiCal.
+# The CASA parameters (mode, parang, solints, min S/N) can be changed at the top of that file.
+CAL_2GC_USE_CASA = False
 
 # QuartiCal YAML configurations
 # See the individual .yaml files and the QuartiCal docs for full parameter details.
