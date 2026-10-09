@@ -278,10 +278,10 @@ def rad_to_deg_scalar(xrad):
 
 def compute_parallactic_angle(vis, field_name, time_mjd, field_id=None):
     """
-    Compute parallactic angle at specified time using CASA AZ/EL method.
+    Compute parallactic angle at specified time using CASA measures posangle.
 
-    χ = atan2(-sin(A), tan(φ)cos(e) - cos(A)sin(e))
-    where A=azimuth, e=elevation, φ=site latitude.
+    χ is the position angle between the field direction (J2000) and the local
+    zenith (AZELGEO 90 deg elevation), wrapped to [-180, 180) degrees.
 
     Returns chi_deg (float) and diagnostics (dict).
     """
@@ -314,16 +314,13 @@ def compute_parallactic_angle(vis, field_name, time_mjd, field_id=None):
 
     me.doframe(pos_meas)
     me.doframe(me.epoch('utc', qa.quantity(time_mjd, 's')))
-    azel = me.measure(phase_dir, 'azel')
+    zenith = me.direction('AZELGEO', '0deg', '90deg')
+    chi_deg = float(qa.convert(me.posangle(phase_dir, zenith), 'deg')['value'])
+    chi_deg = ((chi_deg + 180.0) % 360.0) - 180.0
 
+    azel = me.measure(phase_dir, 'azelgeo')
     az_rad = q_to_rad_scalar(azel['m0'])
     el_rad = q_to_rad_scalar(azel['m1'])
-
-    num = -np.sin(az_rad)
-    den = np.tan(lat_rad) * np.cos(el_rad) - np.cos(az_rad) * np.sin(el_rad)
-    chi_rad = np.arctan2(num, den)
-    chi_deg = rad_to_deg_scalar(chi_rad)
-    chi_deg = ((chi_deg + 180.0) % 360.0) - 180.0
 
     diagnostics = {
         'az_deg': rad_to_deg_scalar(az_rad),

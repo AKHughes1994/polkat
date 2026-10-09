@@ -1005,7 +1005,8 @@ RMCLEAN_WINDOW             = -4     # CLEAN window half-width; negative = multip
 # target epoch from every run that is bright (MFS Stokes I > 10 mJy), polarised
 # (peak-channel P/I > 1% at >= 10 sigma), and/or spans a large parallactic
 # angle range across its own scan(s) (> 10 deg -- a lot of parallactic angle
-# is being averaged together), with the reason(s)
+# is being averaged together), and/or has an RM-CLEAN peak S/N >= 10 (RMCLEAN),
+# with the reason(s)
 RMSYNTH_INTERESTING_FILE = '/mnt/scratchhdd/tkat_reprocessing/tracking/mahrez_interesting.txt'
 
 # Directory under which the entire working directory is moved at the end of the

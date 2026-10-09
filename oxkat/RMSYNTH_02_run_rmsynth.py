@@ -32,8 +32,8 @@ def main():
     print(gen.col('rmclean1d flags')+rmclean_flags)
     gen.print_spacer()
 
-    # Iterate through all rmsynth.txt files in the RESULTS directory
-    fnames = glob.glob(cfg.RESULTS + '/*_rmsynth.txt')
+    # Iterate through all rmsynth.txt and rmsynth_UVfix.txt files in the RESULTS directory
+    fnames = sorted(glob.glob(cfg.RESULTS + '/*_rmsynth.txt') + glob.glob(cfg.RESULTS + '/*_rmsynth_UVfix.txt'))
 
     for fname in fnames:
         subprocess.run([f'rmsynth1d {fname} {rmsyn_flags}'],  shell=True)

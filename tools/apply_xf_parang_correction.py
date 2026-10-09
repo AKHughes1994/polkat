@@ -10,8 +10,9 @@ Iterates through RESULTS for RMSYNTH per-source '*_iquv.txt' files, applies:
      [identical convention to manual_XF_solver.correct_crosshand_phase]
   2. Parallactic angle correction: (Q,U) rotated feed -> sky by -2*chi
      [identical convention to manual_XF_solver.correct_parallactic_angle]
-     chi computed at the epoch middle MJD via the CASA AZ/EL method using the
-     source position from the file header (no MS required).
+     chi computed at the epoch middle MJD with astropy (position angle between
+     the source and the local zenith) using the source position from the file
+     header (no MS required).
 
 Xf solutions are drawn from the perScan Xf table produced by
 global_crosshand_phase.py, restricted to PA-calibrator fields whose names
@@ -55,9 +56,9 @@ Files already ending in the correction suffix are skipped, as are I-only
 files (no Q/U/V columns).
 
 RUNTIME: plain Python with python-casacore (pyrap) — no CASA installation or
-casatools instance is required.  Table access uses casacore.tables and the
-parallactic angle uses casacore.measures (legacy pyrap namespaces are
-supported as a fallback).
+casatools instance is required.  Table access uses casacore.tables (legacy
+pyrap namespaces are supported as a fallback) and the parallactic angle uses
+astropy.
 """
 
 import argparse
@@ -77,21 +78,16 @@ from oxkat import config as cfg
 # Prefers the modern python-casacore namespace, falls back to legacy pyrap.
 try:
     from casacore.tables import table as casatable
-    from casacore.measures import measures as _measures_ctor
-    from casacore import quanta as dq
 except ImportError:                                    # legacy pyrap installs
     from pyrap.tables import table as casatable
-    from pyrap.measures import measures as _measures_ctor
-    from pyrap import quanta as dq
 
-dm = _measures_ctor()
-# python-casacore names the frame setter do_frame; old pyrap used doframe
-_do_frame = getattr(dm, 'do_frame', None) or getattr(dm, 'doframe')
+from astropy.coordinates import SkyCoord, EarthLocation, AltAz
+from astropy.time import Time
+import astropy.units as units
 
-
-def _qval(q, unit):
-    """Value of a casacore quantity (dict) in the requested unit."""
-    return dq.quantity(q).get_value(unit)
+# MeerKAT site for the parallactic angle
+MEERKAT = EarthLocation.from_geodetic(lon="21:26:35.736", lat="-30:42:44.838",
+                                      height=1059.662443 * units.m)
 
 
 # =============================================================================
@@ -143,30 +139,18 @@ def correct_parallactic_angle(q, u, parang_deg):
 
 
 def compute_parang_from_header(ra_deg, dec_deg, mjd_days,
-                               observatory='MeerKAT'):
-    """Parallactic angle (deg) at mjd_days for (ra, dec) using the CASA
-    AZ/EL method — same formula as manual_XF_solver.compute_parallactic_angle,
-    but driven by the file-header position instead of an MS, and evaluated
-    with casacore measures (no CASA instance required)."""
+                               observatory=MEERKAT):
+    """Parallactic angle (deg, wrapped to (-180, 180]) at mjd_days (UTC) for
+    (ra, dec) in ICRS: the position angle, east of north, between the source
+    and the local zenith, from astropy. Driven by the file-header position
+    instead of an MS (no CASA instance required)."""
     ra_deg = float(ra_deg) % 360.0
-    pos_meas = dm.observatory(observatory)
-    pos_wgs  = dm.measure(pos_meas, 'WGS84')
-    lat_rad  = _qval(pos_wgs['m1'], 'rad')
-
-    _do_frame(pos_meas)
-    _do_frame(dm.epoch('utc', dq.quantity(mjd_days, 'd')))
-    dirm = dm.direction('J2000',
-                        dq.quantity(ra_deg, 'deg'),
-                        dq.quantity(dec_deg, 'deg'))
-    azel = dm.measure(dirm, 'AZEL')
-
-    az_rad = _qval(azel['m0'], 'rad')
-    el_rad = _qval(azel['m1'], 'rad')
-
-    num = -np.sin(az_rad)
-    den = np.tan(lat_rad) * np.cos(el_rad) - np.cos(az_rad) * np.sin(el_rad)
-    chi_deg = np.degrees(np.arctan2(num, den))
-    return ((chi_deg + 180.0) % 360.0) - 180.0
+    field  = SkyCoord(ra=ra_deg * units.deg, dec=float(dec_deg) * units.deg, frame='icrs')
+    zenith = SkyCoord(AltAz(alt=90 * units.deg, az=0 * units.deg,
+                            obstime=Time(mjd_days, format='mjd', scale='utc'),
+                            location=observatory)).transform_to('icrs')
+    chi    = field.position_angle(zenith).wrap_at(180 * units.deg)
+    return float(chi.degree)
 
 
 # =============================================================================

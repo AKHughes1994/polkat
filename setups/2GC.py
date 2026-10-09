@@ -509,7 +509,7 @@ def main():
         for call in imcall: 
             syscall += prefix + call + '\n\n'
             if ENABLE_CLEANUP:
-                syscall += f'find {img_dir} -type f -name "*{os.path.basename(data_img_prefix)}*" ! -name "*model.fits" ! -name "*MFS*image.fits" -delete\n\n'
+                syscall += f'find {img_dir} -type f -name "*{os.path.basename(data_img_prefix)}*" ! -name "*model.fits" ! -name "*MFS*image.fits" ! -name "*MFS*residual.fits" -delete\n\n'
         step['syscall'] = syscall
         step['grouping'] = 2 if ENABLE_CLEANUP else None
         steps.append(step)
@@ -562,7 +562,7 @@ def main():
                 tempdir = temp_dir,
                 chanout = chanout_dmask)
         if ENABLE_CLEANUP:
-            syscall += '\n\nfind ' + img_dir + ' -type f -name "*' + os.path.basename(data_img_prefix) + '*" ! -name "*MFS*image.fits" ! -name "*MFS*model.fits" -delete'
+            syscall += '\n\nfind ' + img_dir + ' -type f -name "*' + os.path.basename(data_img_prefix) + '*" ! -name "*MFS*image.fits" ! -name "*MFS*model.fits" ! -name "*MFS*residual.fits" -delete'
         step['syscall'] = syscall
         steps.append(step)
         n += 1

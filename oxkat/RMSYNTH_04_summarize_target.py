@@ -127,14 +127,21 @@ def write_rmsynth_block(line, rmclean, rmsynth):
     line('Pol. fraction, representative (AMP_eff/I0, %)', fmt(representative_frac_pol(rmclean, rmsynth)))
 
 
+def rmclean_json_path(pol_json_path):
+    """Path of the epoch's RM-CLEAN JSON: the _UVfix_RMclean.json if it exists, else the _RMclean.json."""
+
+    base =pol_json_path.replace(f'_{IDENTIFIER}_polarization.json', f'_{IDENTIFIER}_rmsynth')
+    uvfix_path = base + '_UVfix_RMclean.json'
+    return uvfix_path if o.isfile(uvfix_path) else base + '_RMclean.json'
+
+
 def summarize_epoch(out, line, pol_json_path):
 
     with open(pol_json_path) as f:
         pol = json.load(f)
     mfs = pol.get('MFS', {})
 
-    rmclean_path = pol_json_path.replace(f'_{IDENTIFIER}_polarization.json',
-                                          f'_{IDENTIFIER}_rmsynth_RMclean.json')
+    rmclean_path = rmclean_json_path(pol_json_path)
     rmsynth_path = rmclean_path.replace('_RMclean.json', '_RMsynth.json')
     rmclean = {}
     if o.isfile(rmclean_path):
@@ -174,6 +181,7 @@ def summarize_epoch(out, line, pol_json_path):
     line('Exposure time (s)', fmt(mfs.get('time_dt')))
     line('Central frequency (GHz)', fmt(mfs.get('freq_GHz')))
     if rmclean or rmsynth:
+        line('RM synthesis input', 'U/V-merged' if '_UVfix_' in rmclean_path else 'Q/U')
         write_rmsynth_block(line, rmclean, rmsynth)
     peak = peak_chan_frac_pol(pol)
     ptype = pol.get('pol_image_type', 'P')

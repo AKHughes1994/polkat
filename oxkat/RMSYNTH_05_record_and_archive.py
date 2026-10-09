@@ -9,9 +9,10 @@
 #        BRIGHT    -- MFS Stokes I > BRIGHT_I_MJY, and/or
 #        POLARISED -- peak-channel P/I > POL_FRAC_PCT with
 #                     (P/I) / err(P/I) >= POL_SIGMA, and/or
-#        PARANG    -- parallactic angle range across the epoch's own scan(s)
+#        PARANG WARN -- parallactic angle range across the epoch's own scan(s)
 #                     > PARANG_DELTA_DEG: a lot of parallactic angle is being
-#                     averaged together
+#                     averaged together, and/or
+#        RMCLEAN   -- RM-CLEAN peak S/N (snrPIfit) >= RMCLEAN_SNR
 #      (peak channel and its P/I +/- error as in RMSYNTH_04_summarize_target.py).
 #   2. Writes <obsid>_archive_summary.txt to the working directory (date, target,
 #      MFS flux density, peak-channel P/I, interesting or not, per target epoch).
@@ -45,6 +46,9 @@
 #                                      scan(s) (deg); absent for a polarization.json
 #                                      written before 1GC_08_casa_split_targets.py
 #                                      recorded it
+#
+#   RESULTS/*<target>*_pcalmask_rmsynth[_UVfix]_RMclean.json (the _UVfix one when it exists)
+#       snrPIfit                    -- S/N of the RM-CLEAN peak, for the RMCLEAN test
 
 import datetime
 import fcntl
@@ -58,19 +62,21 @@ import sys
 sys.path.append(o.abspath(o.join(o.dirname(sys.modules[__name__].__file__), "..")))
 
 from oxkat import config as cfg
-from oxkat.RMSYNTH_04_summarize_target import IDENTIFIER, fmt, peak_chan_frac_pol
+from oxkat.RMSYNTH_04_summarize_target import IDENTIFIER, fmt, peak_chan_frac_pol, rmclean_json_path
 
 BRIGHT_I_MJY = 10.0   # MFS Stokes I above this (mJy) is BRIGHT
 POL_FRAC_PCT = 1.0    # Peak-channel P/I above this (%) ...
 POL_SIGMA    = 10.0   # ... at at least this significance, (P/I)/err(P/I), is POLARISED
 
 # Parallactic angle range (parang_delta_deg, from 1GC_08_casa_split_targets.py
-# via the target's polarization.json) above this (deg) is PARANG: a lot of
+# via the target's polarization.json) above this (deg) is PARANG WARN: a lot of
 # parallactic angle is being averaged together across this epoch.
 PARANG_DELTA_DEG = 10.0
 
+RMCLEAN_SNR  = 10.0   # RM-CLEAN peak S/N (snrPIfit) at or above this is RMCLEAN
+
 INTERESTING_HEADER = ('# obsid | source | date_centre_utc | MFS_I_mJy | '
-                      'peak_chan_P/I_pct | peak_chan_freq_GHz | parang_delta_deg | reason\n')
+                      'peak_chan_P/I_pct | peak_chan_freq_GHz | parang_delta_deg | RMclean_SNR | reason\n')
 TRACKING_HEADER    = '# obsid | completed_utc | interesting sources (reason)\n'
 
 
@@ -91,6 +97,20 @@ def get_obsid(project_info):
     return o.basename(str(myms).rstrip('/')).split('_')[0]
 
 
+def rmclean_snr(pol_json_path):
+    """RM-CLEAN peak S/N (snrPIfit) of the epoch, or None without a usable RMclean.json."""
+
+    rmclean_path = rmclean_json_path(pol_json_path)
+    if not o.isfile(rmclean_path):
+        return None
+    try:
+        with open(rmclean_path) as f:
+            return json.load(f).get('snrPIfit')
+    except (OSError, ValueError) as e:
+        msg(f'WARNING: could not read {rmclean_path} ({e})')
+        return None
+
+
 def epoch_record(target, pol_json_path):
     """Values reported for one target epoch, plus the reasons it is interesting (if any)."""
 
@@ -105,6 +125,7 @@ def epoch_record(target, pol_json_path):
     I_flux = mfs.get('I_flux_mJy')
     peak = peak_chan_frac_pol(pol)
     parang_delta = mfs.get('parang_delta_deg')
+    rm_snr = rmclean_snr(pol_json_path)
 
     reasons = []
     if I_flux is not None and I_flux > BRIGHT_I_MJY:
@@ -114,7 +135,9 @@ def epoch_record(target, pol_json_path):
         if frac > POL_FRAC_PCT and frac_err > 0 and frac / frac_err >= POL_SIGMA:
             reasons.append('POLARISED')
     if parang_delta is not None and parang_delta > PARANG_DELTA_DEG:
-        reasons.append('PARANG')
+        reasons.append('PARANG WARN')
+    if rm_snr is not None and rm_snr >= RMCLEAN_SNR:
+        reasons.append('RMCLEAN')
 
     return {
         'target':       target,
@@ -125,6 +148,7 @@ def epoch_record(target, pol_json_path):
         'ptype':        pol.get('pol_image_type', 'P'),
         'peak':         peak,
         'parang_delta': parang_delta,
+        'rmclean_snr':  rm_snr,
         'reasons':      reasons,
     }
 
@@ -176,8 +200,8 @@ def write_interesting(obsid, records):
         peak_str, freq_str = fmt_peak(rec)
         lines.append(f"{obsid} | {rec['target']} | {rec['date'] or 'N/A'} | {fmt_flux(rec)} | "
                      f"{peak_str} | {freq_str} | {fmt_num(rec['parang_delta'], 2)} | "
-                     f"{', '.join(rec['reasons'])}\n")
-        if 'PARANG' in rec['reasons']:
+                     f"{fmt_num(rec['rmclean_snr'], 1)} | {', '.join(rec['reasons'])}\n")
+        if 'PARANG WARN' in rec['reasons']:
             msg(f"WARNING: {rec['target']} ({rec['epoch']}) spans "
                 f"{rec['parang_delta']:.2f} deg of parallactic angle -- a lot of "
                 f"parallactic angle is being averaged together.")
@@ -214,6 +238,7 @@ def write_archive_summary(path, obsid, project_info, records, missing):
             line('Peak channel P/I (%)', peak_str)
             line('Peak channel frequency (GHz)', freq_str)
             line('Parallactic angle range (deg)', fmt_num(rec['parang_delta'], 2))
+            line('RM-CLEAN peak S/N', fmt_num(rec['rmclean_snr'], 1))
             line('Interesting', ', '.join(rec['reasons']) if rec['reasons'] else 'no')
 
         for target in missing:

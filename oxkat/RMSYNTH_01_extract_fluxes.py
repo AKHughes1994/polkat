@@ -23,6 +23,9 @@ import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from scipy.spatial.distance import cdist
 from astropy.io import fits
+from astropy.coordinates import SkyCoord, EarthLocation, AltAz
+from astropy.time import Time
+import astropy.units as u
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -64,6 +67,13 @@ V_FORCE_EXCLUDED_SUBSTRINGS = []
 SPEC_INDEX_SNR_THRESH = cfg.RMSYN_SPEC_INDEX_SNR_THRESH  # Minimum MFS Stokes I S/N to attempt the fit
 SPEC_INDEX_MAD_CLIP   = cfg.RMSYN_SPEC_INDEX_MAD_CLIP    # Iterative MAD outlier rejection threshold (sigma)
 MAX_I_DRIFT_PIX       = cfg.RMSYN_MAX_I_DRIFT_PIX        # Max pixel drift of fitted Stokes I from the input seed position; False = no check
+
+# --- No polarization angle calibrator: U/V-merged RM synthesis input ---------
+# Cross-hand phase fit on U and V, then (Q, U) rotated from the feed to the sky frame by -2*chi
+UVFIX_MAX_DELAY_NS    = 10.0  # Half-width of the cross-hand delay search, +/- ns
+UVFIX_MIN_SNR         = 6.0   # Coherent S/N below which the fit is flagged unreliable (file still written)
+UVFIX_OBSERVATORY     = EarthLocation.from_geodetic(lon="21:26:35.736", lat="-30:42:44.838",
+                                                    height=1059.662443 * u.m)  # MeerKAT site for the parallactic angle
 
 # =============================================================================
 
@@ -1787,6 +1797,355 @@ def create_polang_raw_file(project_info, src_name, output_dict, timestamp_prefix
     msg(f'Saved polang raw data file to: {raw_file}')
 
 
+def fit_linear_xy_phase(freq_hz, U, V, rms_U, rms_V, max_delay_ns, oversample=8):
+    """
+    Fit a linear (delay + offset) cross-hand phase to uncalibrated U and V.
+
+    With no polarization angle calibrator and Stokes V intrinsically zero, the observed U + iV is
+    the true U rotated by an unknown phase: U + iV = U_true * exp(i * phi), phi = phi0 + 2*pi*tau*(nu - nu_ref).
+    Squaring removes the sign of U_true, and tau is found by a coherent delay search over the whole band,
+    weighting channels by S/N^2. The sign of U_true is unrecoverable, so phi0 is returned in (-pi/2, pi/2].
+
+    Returns a dict with tau_s, phi0_rad, nu_ref_hz, snr (coherent S/N), n_chan and at_edge (best delay
+    within 5% of the search limit) plus the arrays the diagnostic plot needs, or None if fewer than 8
+    channels are usable.
+    """
+
+    freq  = np.asarray(freq_hz, dtype=float)
+    U     = np.asarray(U, dtype=float)
+    V     = np.asarray(V, dtype=float)
+    rms_U = np.asarray(rms_U, dtype=float)
+    rms_V = np.asarray(rms_V, dtype=float)
+
+    good = (np.isfinite(freq) & np.isfinite(U) & np.isfinite(V) &
+            np.isfinite(rms_U) & np.isfinite(rms_V) & (rms_U > 0) & (rms_V > 0))
+    n_chan = int(good.sum())
+    if n_chan < 8:
+        return None
+
+    nu_ref = np.mean(freq[good])
+    dnu    = freq[good] - nu_ref
+
+    # Squaring removes the sign of U_true (phi0 is then defined modulo pi); the noise bias rms_U^2 - rms_V^2 is subtracted
+    c2 = (U[good] + 1j * V[good]) ** 2 - (rms_U[good] ** 2 - rms_V[good] ** 2)
+    z  = c2 / (0.5 * (rms_U[good] ** 2 + rms_V[good] ** 2))
+
+    # The squared phase advances by 4*pi*tau*dnu, so one cycle across the band is tau = 1/(2*bandwidth)
+    bandwidth = dnu.max() - dnu.min()
+    step    = 1.0 / (2.0 * bandwidth * oversample)
+    tau_max = max_delay_ns * 1e-9
+    tau     = np.arange(-tau_max, tau_max + step, step)
+    Z       = np.exp(-4j * np.pi * np.outer(tau, dnu)) @ z
+
+    # Refine the best grid point on a finer grid spanning its neighbours
+    tau_fine = np.linspace(tau[np.argmax(np.abs(Z))] - step, tau[np.argmax(np.abs(Z))] + step, 41)
+    Z_fine   = np.exp(-4j * np.pi * np.outer(tau_fine, dnu)) @ z
+    best     = np.argmax(np.abs(Z_fine))
+
+    # Noise floor of |Z|: the Rayleigh median over the delay grid, or the analytic value for a band too narrow to sample it
+    if 4.0 * tau_max * bandwidth >= 16:
+        floor = np.median(np.abs(Z)) / np.sqrt(2.0 * np.log(2.0))
+    else:
+        floor = np.sqrt(4.0 * n_chan)
+
+    return {
+        'tau_s'       : float(tau_fine[best]),
+        'phi0_rad'    : float(0.5 * np.angle(Z_fine[best])),
+        'nu_ref_hz'   : float(nu_ref),
+        'snr'         : float(np.abs(Z_fine[best]) / floor),
+        'n_chan'      : n_chan,
+        'at_edge'     : bool(abs(tau_fine[best]) >= 0.95 * tau_max),
+        # For the diagnostic plot
+        'floor'       : float(floor),
+        'tau_grid_s'  : tau,
+        'Z_abs'       : np.abs(Z),
+        'freq_used_hz': freq[good],
+        'z'           : z,
+    }
+
+
+def derotate_uv(freq_hz, U, V, rms_U, rms_V, fit):
+    """Rotate (U, V) by minus the fitted cross-hand phase; returns derotated U and residual V with propagated errors."""
+
+    phi = fit['phi0_rad'] + 2.0 * np.pi * fit['tau_s'] * (np.asarray(freq_hz, dtype=float) - fit['nu_ref_hz'])
+    cos_phi, sin_phi = np.cos(phi), np.sin(phi)
+
+    U_alt = U * cos_phi + V * sin_phi
+    V_res = V * cos_phi - U * sin_phi
+    rms_U_alt = np.sqrt((cos_phi * rms_U) ** 2 + (sin_phi * rms_V) ** 2)
+    rms_V_res = np.sqrt((sin_phi * rms_U) ** 2 + (cos_phi * rms_V) ** 2)
+
+    return U_alt, V_res, rms_U_alt, rms_V_res
+
+
+def parallactic_angle_deg(ra_deg, dec_deg, mjd_days, observatory=UVFIX_OBSERVATORY):
+    """
+    Parallactic angle in degrees, wrapped to (-180, 180], of (ra_deg, dec_deg) (ICRS) at mjd_days (UTC):
+    the position angle, east of north, between the field direction and the local zenith, from astropy.
+    """
+
+    field  = SkyCoord(ra=ra_deg * u.deg, dec=dec_deg * u.deg, frame='icrs')
+    zenith = SkyCoord(AltAz(alt=90 * u.deg, az=0 * u.deg, obstime=Time(mjd_days, format='mjd', scale='utc'),
+                            location=observatory)).transform_to('icrs')
+    chi    = field.position_angle(zenith).wrap_at(180 * u.deg)
+
+    return float(chi.degree)
+
+
+def rotate_to_sky(Q, U, rms_Q, rms_U, chi_deg):
+    """Rotate (Q, U) from the feed frame to the sky frame by -2*chi, propagating the errors."""
+
+    rot = np.radians(-2.0 * chi_deg)
+    cos_r, sin_r = np.cos(rot), np.sin(rot)
+
+    Q_sky = Q * cos_r + U * sin_r
+    U_sky = -Q * sin_r + U * cos_r
+    rms_Q_sky = np.sqrt((cos_r * rms_Q) ** 2 + (sin_r * rms_U) ** 2)
+    rms_U_sky = np.sqrt((sin_r * rms_Q) ** 2 + (cos_r * rms_U) ** 2)
+
+    return Q_sky, U_sky, rms_Q_sky, rms_U_sky
+
+
+def mad_rms_outlier_channels(rms_arrays, nsigma=5.0):
+    """True for channels where any of the noise arrays is a MAD outlier (more than nsigma robust sigmas from its median) or non-finite."""
+
+    bad = np.zeros(len(rms_arrays[0]), dtype=bool)
+    for rms in rms_arrays:
+        rms = np.asarray(rms, dtype=float)
+        med = np.nanmedian(rms)
+        sig = 1.4826 * np.nanmedian(np.abs(rms - med))
+        if sig > 0:
+            bad |= ~(np.abs(rms - med) <= nsigma * sig)
+
+    return bad
+
+
+def plot_uvfix_diagnostics(out_png, freq, U, V, rms_U, rms_V, U_alt, V_res, rms_U_alt, rms_V_res, fit, summary):
+    """
+    Diagnostics of the cross-hand phase fit, for fits that pass and fits that do not: the delay search
+    with the noise floor and S/N threshold, the phase of (U + iV)^2 with the fitted 2*phi(nu), and the U
+    and V spectra before and after derotation (V should be consistent with zero afterwards).
+    """
+
+    from matplotlib.colors import to_rgba
+
+    ok = summary['status'] == 'ok'
+    fghz = freq / 1e9
+    fused = fit['freq_used_hz'] / 1e9
+
+    try:
+        fig = plt.figure(figsize=(9, 14), constrained_layout=True)
+        ax_per, ax_ph, ax_obs, ax_fix = fig.subplots(4, 1)
+
+        # 1. delay search
+        ax_per.plot(fit['tau_grid_s'] * 1e9, fit['Z_abs'], lw=0.8, color='C0')
+        ax_per.axvline(fit['tau_s'] * 1e9, color='C3', ls='--', label=f'best tau = {fit["tau_s"] * 1e9:.3f} ns')
+        ax_per.axhline(fit['floor'], color='0.5', ls=':', label='noise floor')
+        ax_per.axhline(UVFIX_MIN_SNR * fit['floor'], color='C1', ls='-.', label=f'threshold ({UVFIX_MIN_SNR:g} x floor)')
+        ax_per.set_xlim(-UVFIX_MAX_DELAY_NS, UVFIX_MAX_DELAY_NS)
+        ax_per.set_xlabel('Cross-hand delay tau (ns)')
+        ax_per.set_ylabel('|Z(tau)|')
+        ax_per.set_title('Delay search: coherent S/N = %.1f%s%s' % (
+            fit['snr'],
+            '' if ok else ' -- below threshold, derotation unreliable',
+            ' -- best delay at the edge of the search range' if fit['at_edge'] else ''), fontsize=9)
+        ax_per.legend(loc='best', fontsize=8)
+
+        # 2. phase of the squared phasor against the fit
+        weight = np.abs(fit['z'])
+        alpha  = np.clip(weight / max(np.percentile(weight, 95), 1e-12), 0.05, 1.0)
+        rgba   = np.tile(to_rgba('C0'), (len(weight), 1))
+        rgba[:, 3] = alpha
+        psi_model = 2.0 * fit['phi0_rad'] + 4.0 * np.pi * fit['tau_s'] * (fit['freq_used_hz'] - fit['nu_ref_hz'])
+        ax_ph.scatter(fused, np.degrees(np.angle(fit['z'])), c=rgba, s=10, label='phase of (U+iV)^2')
+        ax_ph.scatter(fused, np.degrees(np.angle(np.exp(1j * psi_model))), c='C3', s=2, label='fitted 2*phi(nu)')
+        ax_ph.set_ylim(-190, 190)
+        ax_ph.set_yticks(range(-180, 181, 90))
+        ax_ph.set_ylabel('Phase (deg)')
+        ax_ph.set_title('Cross-hand phase: %.1f turn(s) across the band' % summary['xy_phase_turns_across_band'], fontsize=9)
+        ax_ph.legend(loc='upper right', fontsize=8)
+
+        # 3 and 4. observed and derotated spectra
+        ax_obs.errorbar(fghz, U * 1e3, rms_U * 1e3, fmt='.', ms=3, lw=0.5, label='U (observed)')
+        ax_obs.errorbar(fghz, V * 1e3, rms_V * 1e3, fmt='.', ms=3, lw=0.5, label='V (observed)')
+        ax_fix.errorbar(fghz, U_alt * 1e3, rms_U_alt * 1e3, fmt='.', ms=3, lw=0.5, label='U (derotated)')
+        ax_fix.errorbar(fghz, V_res * 1e3, rms_V_res * 1e3, fmt='.', ms=3, lw=0.5, label='V (residual)')
+        ax_fix.set_title('V residual chi2_red = %.2f%s' % (
+            summary['V_residual_chi2_red'], '' if ok else ' (fit below threshold)'), fontsize=9)
+        for ax in (ax_ph, ax_obs, ax_fix):
+            ax.set_xlim(fghz.min(), fghz.max())
+        for ax in (ax_obs, ax_fix):
+            ax.axhline(0, color='k', lw=0.5)
+            ax.set_ylabel('Flux density (mJy)')
+            ax.legend(loc='best', fontsize=8)
+        ax_ph.set_xlabel('Frequency (GHz)')
+        ax_fix.set_xlabel('Frequency (GHz)')
+
+        fig.suptitle('%s: %d channel(s) used, %d MAD-clipped' % (
+            os.path.basename(out_png), fit['n_chan'], summary['n_mad_clipped']), fontsize=9)
+        fig.savefig(out_png, dpi=100)
+        plt.close(fig)
+    except Exception as e:
+        msg(f'  WARNING: could not write U/V fix diagnostics plot ({e})')
+
+
+def write_uvfix_rmsynth(rmsynth_fname, rmsynth_arr, V, rms_V, ra_deg, dec_deg, mjd_days):
+    """
+    No polarization angle calibrator: write a companion to an RM synthesis
+    input file in which all of the linear polarization is assumed to be U,
+    spread into V by a linear cross-hand phase (see fit_linear_xy_phase).
+    After the cross-hand phase is removed, (Q, U) are rotated from the feed
+    frame to the sky frame by the parallactic angle at (ra_deg, dec_deg) and
+    mjd_days (UTC days).
+
+    rmsynth_arr is the (freq, I, Q, U, dI, dQ, dU) array in Hz and Jy;
+    V and rms_V are the matching Stokes V spectrum and noise in Jy.
+
+    Channels whose I, Q, U or V noise is a MAD outlier (mad_rms_outlier_channels)
+    are excluded from the fit and dropped from the companion file, as are
+    channels with non-finite U or V.
+
+    Outputs, alongside rmsynth_fname (<base> = rmsynth_fname minus '.txt'):
+        <base>_UVfix.txt       freq, I, Q, U, dI, dQ, dU after the cross-hand
+                               phase and parallactic angle corrections; written
+                               whenever a fit could be made, with a warning if
+                               its coherent S/N is below UVFIX_MIN_SNR
+        <base>_UVfix_fit.json  fit parameters, significance, parallactic angle
+                               and V residual statistics (always written)
+        <base>_UVfix.png       diagnostics of the fit (plot_uvfix_diagnostics),
+                               written whenever the fit could be made
+    """
+
+    base     = rmsynth_fname[:-len('.txt')] + '_UVfix'
+    out_txt  = base + '.txt'
+    out_json = base + '_fit.json'
+    out_png  = base + '.png'
+
+    rmsynth_arr = np.asarray(rmsynth_arr, dtype=float)
+    V           = np.asarray(V, dtype=float)
+    rms_V       = np.asarray(rms_V, dtype=float)
+
+    mad_clipped = mad_rms_outlier_channels([rmsynth_arr[4], rmsynth_arr[5], rmsynth_arr[6], rms_V])
+    use = ~mad_clipped & np.isfinite(rmsynth_arr[3]) & np.isfinite(V)
+
+    freq, I, Q, U, rms_I, rms_Q, rms_U = rmsynth_arr[:, use]
+    V, rms_V = V[use], rms_V[use]
+
+    fit = fit_linear_xy_phase(freq, U, V, rms_U, rms_V, UVFIX_MAX_DELAY_NS)
+
+    summary = {
+        'max_delay_ns'   : UVFIX_MAX_DELAY_NS,
+        'min_snr'        : UVFIX_MIN_SNR,
+        'n_chan_total'   : int(len(use)),
+        'n_mad_clipped'  : int(mad_clipped.sum()),
+    }
+    if mad_clipped.any():
+        msg(f'  U/V fix: excluding {int(mad_clipped.sum())}/{len(use)} MAD-clipped channels (outlier RMS)')
+
+    if fit is None:
+        summary['status'] = 'too few usable channels'
+    else:
+        summary.update({
+            'tau_ns'      : fit['tau_s'] * 1e9,
+            'phi0_deg'    : float(np.degrees(fit['phi0_rad'])),
+            'nu_ref_GHz'  : fit['nu_ref_hz'] / 1e9,
+            'xy_phase_turns_across_band': float(abs(fit['tau_s']) * (freq.max() - freq.min())),
+            'coherent_snr': fit['snr'],
+            'noise_floor' : fit['floor'],
+            'n_chan_used' : fit['n_chan'],
+            'at_search_edge': fit['at_edge'],
+            'status'      : 'ok' if fit['snr'] >= UVFIX_MIN_SNR else 'coherent S/N below threshold',
+        })
+
+        # Derotated even when the fit is below threshold, for the diagnostics
+        U_alt, V_res, rms_U_alt, rms_V_res = derotate_uv(freq, U, V, rms_U, rms_V, fit)
+        usable = np.isfinite(V_res) & np.isfinite(rms_V_res) & (rms_V_res > 0)
+        summary['V_residual_chi2_red'] = float(np.mean((V_res[usable] / rms_V_res[usable]) ** 2))
+
+        # Feed frame -> sky frame, after the cross-hand phase is removed
+        chi_deg = parallactic_angle_deg(ra_deg, dec_deg, mjd_days)
+        Q_sky, U_sky, rms_Q_sky, rms_U_sky = rotate_to_sky(Q, U_alt, rms_Q, rms_U_alt, chi_deg)
+        summary['parang_deg'] = chi_deg
+        summary['parang_mjd'] = float(mjd_days)
+        summary['parang_ra_deg'] = float(ra_deg)
+        summary['parang_dec_deg'] = float(dec_deg)
+
+        msg(f'  U/V fix: tau = {summary["tau_ns"]:.3f} ns ({summary["xy_phase_turns_across_band"]:.1f} turn(s) across the band), '
+            f'phi0 = {summary["phi0_deg"]:.1f} deg, coherent S/N = {fit["snr"]:.1f} (threshold {UVFIX_MIN_SNR:g}), '
+            f'V residual chi2_red = {summary["V_residual_chi2_red"]:.2f}')
+        msg(f'  U/V fix: parallactic angle chi = {chi_deg:+.3f} deg at MJD {mjd_days:.5f}; '
+            f'(Q, U) rotated by {-2.0 * chi_deg:+.3f} deg')
+        if fit['at_edge']:
+            msg(f'    WARNING: fitted delay is at the edge of the +/-{UVFIX_MAX_DELAY_NS:.1f} ns search range')
+
+    if fit is not None:
+        np.savetxt(out_txt, np.array([freq, I, Q_sky, U_sky, rms_I, rms_Q_sky, rms_U_sky]).T)
+        msg(f'  U/V-merged RM synthesis file written: {out_txt}')
+        if summary['status'] != 'ok':
+            msg(f'  WARNING: coherent S/N = {fit["snr"]:.1f} is below the threshold ({UVFIX_MIN_SNR:g}) -- '
+                f'file written anyway, treat the derotation as unreliable')
+    else:
+        # Drop an earlier run's file so a stale one is never picked up
+        if os.path.exists(out_txt):
+            os.remove(out_txt)
+        msg(f'  U/V-merged RM synthesis file NOT written: {summary["status"]}')
+
+    if fit is not None:
+        plot_uvfix_diagnostics(out_png, freq, U, V, rms_U, rms_V, U_alt, V_res, rms_U_alt, rms_V_res, fit, summary)
+        msg(f'  U/V fix diagnostics written: {out_png}')
+    elif os.path.exists(out_png):
+        os.remove(out_png)
+
+    with open(out_json, 'w') as j:
+        json.dump(summary, j, indent=4)
+
+
+def create_uvfix_file(project_info, src_name, output_dict, timestamp_prefix, is_target):
+    """
+    No polarization angle calibrator (polang_name empty): write the U/V-merged
+    companion of the RM synthesis input file for a target, from the extracted
+    channel spectra (see write_uvfix_rmsynth). The cross-hand phase fit uses
+    Stokes V, and the parallactic angle uses the MFS position and the centre of
+    the field's time range, so nothing is written for Stokes-I-only extractions
+    or when the time range was not found.
+    """
+
+    if project_info.get('polang_name', ''):
+        return
+
+    if not is_target:
+        return
+
+    chan = output_dict.get('CHAN', {})
+    mfs  = output_dict.get('MFS', {})
+
+    if 'Q_flux_mJy' not in chan:
+        msg('Skipping U/V fix (Stokes-I-only mode)')
+        return
+
+    missing = [key for key in ('I_RA_deg', 'I_DEC_deg', 'time_ctr_mjd') if mfs.get(key) is None]
+    if missing:
+        msg(f'Skipping U/V fix: MFS {", ".join(missing)} not available')
+        return
+
+    msg('Creating U/V-merged RM synthesis file (no polarization angle calibrator)')
+
+    def jy(key):
+        return np.array(chan[key], dtype=float) / 1e3
+
+    rmsynth_fname = cfg.RESULTS + f'/{timestamp_prefix}{src_name}_{IDENTIFIER}_rmsynth.txt'
+    rmsynth_arr = np.array([
+        np.array(chan['freq_GHz'], dtype=float) * 1e9,
+        jy('I_flux_mJy'), jy('Q_flux_mJy'), jy('U_flux_mJy'),
+        jy('I_rms_mJy'),  jy('Q_rms_mJy'),  jy('U_rms_mJy')])
+
+    try:
+        write_uvfix_rmsynth(rmsynth_fname, rmsynth_arr, jy('V_flux_mJy'), jy('V_rms_mJy'),
+                            mfs['I_RA_deg'] % 360.0, mfs['I_DEC_deg'], mfs['time_ctr_mjd'])
+    except Exception as e:
+        msg(f'WARNING: U/V fix failed for {src_name} ({e}) -- continuing without it')
+
+
 def _mad_ylim(arr, err=None, k=10.0, pad=0.10):
     """
     Robust MAD-based y-axis limits.
@@ -2388,6 +2747,7 @@ def main():
                 force_fix_V_to_I = force_fix_V_to_I,
                 use_plin = use_plin)
             create_polang_raw_file(project_info, timed_name, output_dict, timestamp_prefix)
+            create_uvfix_file(project_info, timed_name, output_dict, timestamp_prefix, is_target)
             plot_stokes_spectrum(output_dict, timed_name, timestamp_prefix)
             plot_total_pol_fraction(output_dict, timed_name, timestamp_prefix)
             # Trailing '*' before .txt also catches the per-channel estimate/check_pos
@@ -2414,6 +2774,7 @@ def main():
             force_fix_V_to_I = force_fix_V_to_I,
             use_plin = use_plin)
         create_polang_raw_file(project_info, source_name, output_dict, timestamp_prefix)
+        create_uvfix_file(project_info, source_name, output_dict, timestamp_prefix, is_target)
         plot_stokes_spectrum(output_dict, source_name, timestamp_prefix)
         plot_total_pol_fraction(output_dict, source_name, timestamp_prefix)
         # Trailing '*' before .txt also catches the per-channel estimate/check_pos
