@@ -161,7 +161,7 @@ def main():
     step['comment'] = 'Split out the target MS files'
     step['dependency'] = plvis_step
     step['id'] = 'SPTRG'+code
-    syscall = CONTAINER_RUNNER+SHADEMS_CONTAINER+' ' if USE_SINGULARITY else ''
+    syscall = cfg.CASA_RUNNER+SHADEMS_CONTAINER+' ' if USE_SINGULARITY else ''
     syscall += gen.generate_syscall_casa(casascript=cfg.OXKAT+'/1GC_08_casa_split_targets.py')
     step['syscall'] = syscall
     step['glam_config'] = cfg.GLAM_CASA

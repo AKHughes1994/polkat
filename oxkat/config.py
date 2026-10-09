@@ -66,7 +66,7 @@ GLAM_CONTAINER_PATH = ['/mnt/users/hughesa', '/mnt/extraspace/thunderkat_pol', C
 
 PYTHON3_PATTERN = 'polkat-0.2.5'
 CASA_PATTERN = PYTHON3_PATTERN
-CASA_RUNNER = 'singularity exec --env MPLBACKEND=Agg '  # Prefix for every CASA call (headless matplotlib backend)
+CASA_RUNNER = 'singularity exec --env MPLBACKEND=Agg,DISPLAY= '  # Prefix for every CASA call (headless: Agg matplotlib backend, no X display)
 QUARTICAL_PATTERN = PYTHON3_PATTERN
 WSCLEAN_PATTERN = PYTHON3_PATTERN
 SHADEMS_PATTERN = PYTHON3_PATTERN
