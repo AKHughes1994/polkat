@@ -17,7 +17,7 @@
 # it lists what it found and asks for confirmation.
 #
 # START_AT (an obsid or MS name) starts the run at that MS and leaves out every
-# MS before it in the sorted list; with FIRST_ONLY=true that MS is the only one
+# MS before it in the sorted list; with FIRST_N=1 that MS is the only one
 # run, which is the way to debug one particular MS.
 #
 # MS_DIR is rescanned before every MS, so MSs that are still being transferred
@@ -80,9 +80,9 @@ TRACKING='/mnt/scratchhdd/tkat_reprocessing/tracking/mahrez_tracking.txt'   # tr
 PIPELINE='/mnt/scratchhdd/tkat_reprocessing/polkat_tkat_reprocessing'   # pipeline directory to run, e.g. 'polkat_tkat_reprocessing'
 WORK='/mnt/scratchhdd/tkat_reprocessing/working_dir'       # scratch working directory, emptied at the start; each MS runs in WORK/<obsid>, rebuilt for every MS -- must be dedicated to this script, not shared with anything else
 POLL=300            # slurm queue poll interval in seconds; also how often the main loop wakes
-FIRST_ONLY=true     # true: run only the first MS that is not already in the tracking file (debugging)
-START_AT='1549688122_2026-07-10T12-10-15_1Lf.ms'         # obsid or MS name: start the run at this MS, skipping every MS before it in the sorted list. With FIRST_ONLY=true, only this MS runs. Must not already be in the tracking file. '' = no start MS
-BATCH=4             # slurm only: how many MSs run at once; a free slot is refilled as soon as an MS finishes. Ignored (1) on 'node' and when FIRST_ONLY is true
+FIRST_N=5           # run only the first N MSs that are not already in the tracking file (debugging); 0 = no limit
+START_AT=''         # obsid or MS name: start the run at this MS, skipping every MS before it in the sorted list. With FIRST_N=1, only this MS runs. Must not already be in the tracking file. '' = no start MS
+BATCH=4             # slurm only: how many MSs run at once; a free slot is refilled as soon as an MS finishes. Ignored (1) on 'node'
 SETTLE=600          # seconds: an MS with any file modified in the last SETTLE seconds is treated as still transferring and not started
 RESTART=false       # true: DELETE the tracking, failures and interesting files, the archive and residual-MS directories' contents and this script's logs, so every MS runs again. Asks twice before anything is deleted
 
@@ -413,7 +413,8 @@ if [[ ${#ALL_MS[@]} -eq 0 ]]; then
   exit 0
 fi
 
-[[ $FIRST_ONLY == true || $FIRST_ONLY == false ]] || { echo "FIRST_ONLY must be 'true' or 'false' (got: '$FIRST_ONLY')" >&2; exit 1; }
+[[ $FIRST_N =~ ^[0-9]+$ ]] || { echo "FIRST_N must be a whole number, 0 for no limit (got: '$FIRST_N')" >&2; exit 1; }
+FIRST_N=$((10#$FIRST_N))
 
 # START_AT must name an MS that can actually be run
 if [[ -n $START_AT ]]; then
@@ -428,12 +429,11 @@ if [[ -n $START_AT ]]; then
   fi
 fi
 
-# With FIRST_ONLY, only the first MS to run is kept
-[[ $FIRST_ONLY == true ]] && BATCH=1
+# With FIRST_N, only the first N MSs to run are kept
 HELD_BACK=0
-if [[ $FIRST_ONLY == true && ${#TODO[@]} -gt 1 ]]; then
-  HELD_BACK=$(( ${#TODO[@]} - 1 ))
-  TODO=("${TODO[0]}")
+if [[ $FIRST_N -gt 0 && ${#TODO[@]} -gt $FIRST_N ]]; then
+  HELD_BACK=$(( ${#TODO[@]} - FIRST_N ))
+  TODO=("${TODO[@]:0:FIRST_N}")
 fi
 
 echo
@@ -479,8 +479,8 @@ fi
 if [[ -n $START_AT ]]; then
   echo "  START_AT is set: starting at ${START_MS##*/}, MSs before it in the sorted list are left out"
 fi
-if [[ $FIRST_ONLY == true ]]; then
-  echo "  FIRST_ONLY is true: only the first MS to run is kept ($HELD_BACK more not run)"
+if [[ $FIRST_N -gt 0 ]]; then
+  echo "  FIRST_N is $FIRST_N: only the first $FIRST_N MS(s) to run are kept ($HELD_BACK more not run)"
 fi
 if [[ ${#BUSY[@]} -gt 0 ]]; then
   echo
@@ -747,13 +747,13 @@ while :; do
 
   # Fill free slots
   now=$(date +%s)
-  if [[ ${#PID_OF[@]} -lt $BATCH && ! ( $FIRST_ONLY == true && $n -ge 1 ) ]] \
+  if [[ ${#PID_OF[@]} -lt $BATCH && ! ( $FIRST_N -gt 0 && $n -ge $FIRST_N ) ]] \
      && [[ $just_finished == true || $last_scan -eq 0 || $((now - last_scan)) -ge $POLL ]]; then
     last_scan=$now
     scan_ms
     for ms in "${TODO[@]}"; do
       [[ ${#PID_OF[@]} -lt $BATCH ]] || break
-      [[ $FIRST_ONLY == true && $n -ge 1 ]] && break
+      [[ $FIRST_N -gt 0 && $n -ge $FIRST_N ]] && break
       id=$(obsid "$ms")
       n=$((n+1))
       ATTEMPTED[$id]=1
@@ -771,7 +771,7 @@ while :; do
 
   # Done when nothing is running and nothing is left to start or wait for
   if [[ ${#PID_OF[@]} -eq 0 ]]; then
-    if [[ $FIRST_ONLY == true && $n -ge 1 ]] || [[ ${#TODO[@]} -eq 0 && ${#BUSY[@]} -eq 0 ]]; then
+    if [[ $FIRST_N -gt 0 && $n -ge $FIRST_N ]] || [[ ${#TODO[@]} -eq 0 && ${#BUSY[@]} -eq 0 ]]; then
       break
     fi
   fi
