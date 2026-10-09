@@ -159,7 +159,7 @@ def main():
             step['comment'] = 'Splitting out field '+targetname
             step['dependency'] = dependency
             step['id'] = 'SNPTS'+code
-            syscall = CONTAINER_RUNNER + CASA_CONTAINER+' ' if USE_SINGULARITY else ''
+            syscall = cfg.CASA_RUNNER + CASA_CONTAINER+' ' if USE_SINGULARITY else ''
             syscall += gen.generate_syscall_casa(casascript=cfg.OXKAT+f'/SNAP_split_sources.py {targetname}')
             step['syscall'] = syscall
             steps.append(step)

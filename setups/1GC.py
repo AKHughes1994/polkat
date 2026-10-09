@@ -87,7 +87,7 @@ def main():
         step['comment'] = 'Set the feed offset angle to zero'
         step['dependency'] = n - 1
         step['id'] = 'ZEROF'+code
-        syscall = CONTAINER_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
+        syscall = cfg.CASA_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
         syscall += gen.generate_syscall_casa(casascript=cfg.OXKAT+'/1GC_02_zero_feed.py ' + myms)
         step['syscall'] = syscall
         step['glam_config'] = cfg.GLAM_CASA
@@ -99,7 +99,7 @@ def main():
     step['comment'] = 'Apply basic flagging steps to all fields'
     step['dependency'] = None if n == 0 else n - 1  
     step['id'] = 'FGBAS'+code
-    syscall = CONTAINER_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
+    syscall = cfg.CASA_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
     syscall += gen.generate_syscall_casa(casascript=cfg.OXKAT+'/1GC_03_casa_basic_flags.py')
     step['syscall'] = syscall
     step['glam_config'] = cfg.GLAM_CASA
@@ -111,7 +111,7 @@ def main():
     step['comment'] = 'Run auto-flaggers on calibrators'
     step['dependency'] = n - 1
     step['id'] = 'FGCAL'+code
-    syscall = CONTAINER_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
+    syscall = cfg.CASA_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
     syscall += gen.generate_syscall_casa(casascript=cfg.OXKAT+'/1GC_04_casa_autoflag_cals_DATA.py')
     step['syscall'] = syscall
     step['glam_config'] = cfg.GLAM_CASA
@@ -123,7 +123,7 @@ def main():
     step['comment'] = 'Using reference calibrators perform full polarization calibration'
     step['dependency'] = n - 1
     step['id'] = 'CL1GC'+code
-    syscall = CONTAINER_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
+    syscall = cfg.CASA_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
     syscall += gen.generate_syscall_casa(casascript=cfg.OXKAT+'/1GC_05_casa_refcal.py')
     step['syscall'] = syscall
     step['glam_config'] = cfg.GLAM_COREHEAVY

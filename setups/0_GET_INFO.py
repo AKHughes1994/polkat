@@ -70,7 +70,7 @@ def main():
     syscall += ' python3 '+cfg.TOOLS+'/get_elevation_range.py '+myms+'\n'
     syscall += CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
     syscall += ' python3 '+cfg.OXKAT+'/1GC_00_setup.py '+myms+'\n'
-    syscall += CONTAINER_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
+    syscall += cfg.CASA_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
     syscall += gen.generate_syscall_casa(casascript=cfg.OXKAT+'/PRE_casa_average_to_1k_add_wtspec.py')
     step['syscall'] = syscall
     step['glam_config'] = cfg.GLAM_CASA

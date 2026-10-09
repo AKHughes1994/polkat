@@ -275,7 +275,7 @@ def main():
         step['id'] = f'EXT{field_code}_{step_i}'
         extraction_job_ids.append(step['id'])
         
-        syscall = CONTAINER_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
+        syscall = cfg.CASA_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
         syscall += 'python-pycasa '+cfg.OXKAT+f'/RMSYNTH_01_extract_fluxes.py {fieldname}'
         step['syscall'] = syscall
         steps.append(step)

@@ -672,7 +672,7 @@ def main():
             step['dependency'] = n - 1
             step['id'] = 'SPLCD'+code
             step['glam_config'] = cfg.GLAM_CASA
-            syscall = CONTAINER_RUNNER + CASA_CONTAINER+' ' if USE_SINGULARITY else ''
+            syscall = cfg.CASA_RUNNER + CASA_CONTAINER+' ' if USE_SINGULARITY else ''
             syscall += gen.generate_syscall_casa(casascript=f'{cfg.TOOLS}/casa_split_corrected_ms.py {myms} {stage2_ms}')
             step['syscall'] = syscall
             steps.append(step)
@@ -967,7 +967,7 @@ def main():
             cores = '8' if FORCE_CORES_8 else step['glam_config']['CPUS']
             wsc_prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
             py_prefix = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
-            casa_prefix = CONTAINER_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
+            casa_prefix = cfg.CASA_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
             calls = [wsc_prefix + 'python3 '+TOOLS+'/fix_nan_models.py ' + pcal_img_prefix,
                      wsc_prefix + gen.generate_syscall_predict(msname = myms,
                          imgname = pcal_img_prefix,
