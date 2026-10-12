@@ -20,6 +20,9 @@ import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from scipy.spatial.distance import cdist
 from astropy.io import fits
+from astropy.coordinates import SkyCoord, EarthLocation, AltAz
+from astropy.time import Time
+import astropy.units as u
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -28,7 +31,7 @@ sys.path.append(o.abspath(o.join(o.dirname(sys.modules[__name__].__file__), ".."
 from oxkat import config as cfg
 
 from casatasks import imfit, imstat, imhead
-from casatools import table, measures, quanta
+from casatools import table
 tb = table()
 
 
@@ -49,7 +52,8 @@ USE_RESIDUAL_RMS      = cfg.RMSYN_USE_RESIDUAL_RMS
 # is built from a linear cross-hand phase fit (see fit_linear_xy_phase).
 UVFIX_MAX_DELAY_NS    = 10.0  # Half-width of the cross-hand delay search, +/- ns
 UVFIX_MIN_SNR         = 6.0   # Coherent S/N below which the fit is flagged unreliable (file still written)
-UVFIX_OBSERVATORY     = 'MeerKAT'  # Site for the parallactic angle
+UVFIX_OBSERVATORY     = EarthLocation.from_geodetic(lon="21:26:35.736", lat="-30:42:44.838",
+                                                    height=1059.662443 * u.m)  # MeerKAT site for the parallactic angle
 
 # =============================================================================
 
@@ -576,24 +580,16 @@ def derotate_uv(freq_hz, U, V, rms_U, rms_V, fit):
 
 def parallactic_angle_deg(ra_deg, dec_deg, mjd_days, observatory=UVFIX_OBSERVATORY):
     '''
-    Parallactic angle in degrees, wrapped to (-180, 180], of (ra_deg, dec_deg) (J2000) at mjd_days (UTC):
-    the position angle between the field direction and the local zenith, from the CASA measures tool.
+    Parallactic angle in degrees, wrapped to (-180, 180], of (ra_deg, dec_deg) (ICRS) at mjd_days (UTC):
+    the position angle, east of north, between the field direction and the local zenith, from astropy.
     '''
 
-    # The measures frame is global to the tool, so each call gets fresh tools
-    me = measures()
-    qa = quanta()
-    try:
-        me.doframe(me.observatory(observatory))
-        me.doframe(me.epoch('utc', qa.quantity(mjd_days, 'd')))
-        field  = me.direction('J2000', qa.quantity(ra_deg, 'deg'), qa.quantity(dec_deg, 'deg'))
-        zenith = me.direction('AZELGEO', '0deg', '90deg')
-        chi    = qa.convert(me.posangle(field, zenith), 'deg')['value']
-    finally:
-        me.done()
-        qa.done()
+    field  = SkyCoord(ra=ra_deg * u.deg, dec=dec_deg * u.deg, frame='icrs')
+    zenith = SkyCoord(AltAz(alt=90 * u.deg, az=0 * u.deg, obstime=Time(mjd_days, format='mjd', scale='utc'),
+                            location=observatory)).transform_to('icrs')
+    chi    = field.position_angle(zenith).wrap_at(180 * u.deg)
 
-    return float(((chi + 180.0) % 360.0) - 180.0)
+    return float(chi.degree)
 
 
 
