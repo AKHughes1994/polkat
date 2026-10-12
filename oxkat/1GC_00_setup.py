@@ -26,6 +26,12 @@ bands = [(815e6,1080e6,'UHF'),
     (2406e6,3281e6,'S3'), # 2843.75
     (2625e6,3499e6,'S4')] # 3062.50 1653833475
 
+# Tags and positions (deg) for the preferred primary calibrators, and how close
+# (deg) a field must be to one of them to be taken as that calibrator
+PREFERRED_PRIMARIES = [('1934',294.85427795833334,-63.71267375),
+    ('0408',62.084911833333344,-65.75252238888889)]
+PRIMARY_MATCH_SEP_DEG = 3e-3
+
 
 def get_dummy():
 
@@ -218,8 +224,13 @@ def get_states(master_ms,
 
     """ Provide the partial string matches for primary, secondary and target scan
     intents and the corresponding integer STATE_IDs are extracted from the STATE
-    table, along with any UNKNOWN states.
+    table, along with any UNKNOWN states. A state with no matching intent is None.
     """
+
+    primary_state = None
+    secondary_state = None
+    target_state = None
+    unknown_state = None
 
     state_tab = table(master_ms+'/STATE',ack=False)
     modes = state_tab.getcol('OBS_MODE')
@@ -352,18 +363,41 @@ def get_targets(master_ms,
     return target_dirs, target_names, target_ids
 
 
+def get_primary_by_position(field_dirs,
+                field_names,
+                field_ids):
+
+    """ Identify primary calibrator candidates by position alone, for an MS
+    where no field carries the primary intent: every field within
+    PRIMARY_MATCH_SEP_DEG of a preferred primary calibrator is a candidate.
+    """
+
+    candidate_ids = []
+    candidate_names = []
+    candidate_dirs = []
+
+    for i in range(0,len(field_ids)):
+        field_dir = field_dirs[i]
+        for cal in PREFERRED_PRIMARIES:
+            if calcsep(field_dir[0][0],field_dir[0][1],cal[1],cal[2]) < PRIMARY_MATCH_SEP_DEG:
+                candidate_dirs.append(field_dir)
+                candidate_names.append(field_names[i])
+                candidate_ids.append(str(field_ids[i]))
+                break
+
+    return candidate_dirs, candidate_names, candidate_ids
+
+
 def get_primary_tag(candidate_dirs,
                 candidate_names,
                 candidate_ids):
 
-    """ Use a positional match to identify whether a source is 1934 or 0408 
+    """ Use a positional match to identify whether a source is 1934 or 0408
     from a list of candidates. Manual model required for 0408, and different
     flux scale standards required in setjy for 0408 and everything else.
     """
 
-    # Tags and positions for the preferred primary calibrators
-    preferred_cals = [('1934',294.85427795833334,-63.71267375),
-        ('0408',62.084911833333344,-65.75252238888889)]
+    preferred_cals = PREFERRED_PRIMARIES
 
     primary_tag = ''
 
@@ -374,7 +408,7 @@ def get_primary_tag(candidate_dirs,
 
         for cal in preferred_cals:
             primary_sep = calcsep(candidate_dir[0],candidate_dir[1],cal[1],cal[2])
-            if primary_sep < 3e-3:
+            if primary_sep < PRIMARY_MATCH_SEP_DEG:
                 primary_name = candidate_name
                 primary_id = str(candidate_id)
                 primary_tag = cal[0]
@@ -666,6 +700,12 @@ def main():
                                                             CAL_1GC_SECONDARY_INTENT,
                                                             CAL_1GC_TARGET_INTENT)
 
+    for role, intent, state in (('primary', CAL_1GC_PRIMARY_INTENT, primary_state),
+                                ('secondary', CAL_1GC_SECONDARY_INTENT, secondary_state),
+                                ('target', CAL_1GC_TARGET_INTENT, target_state)):
+        if state is None:
+            mylogger.warning("No STATE with the "+role+" intent '"+intent+"' in "+master_ms)
+
 
     # ------------------------------------------------------------------------------
     #
@@ -681,6 +721,25 @@ def main():
                                                             field_dirs,
                                                             field_names,
                                                             field_ids)
+        if len(candidate_names) == 0:
+            mylogger.warning("No field has the primary intent '"+CAL_1GC_PRIMARY_INTENT+"', looking for a known primary calibrator by position")
+            candidate_dirs, candidate_names, candidate_ids = get_primary_by_position(field_dirs,
+                                                            field_names,
+                                                            field_ids)
+            if len(candidate_names) == 0:
+                mylogger.error('')
+                mylogger.error('ERROR: could not find a primary (bandpass) calibrator in '+o.basename(master_ms))
+                mylogger.error('  - no scan is labelled '+CAL_1GC_PRIMARY_INTENT+' in the MS, and')
+                mylogger.error('  - no field is at the position of '+' or '.join(c[0] for c in PREFERRED_PRIMARIES)+'.')
+                mylogger.error('')
+                mylogger.error('Fields in this MS:')
+                for i in range(0,len(field_ids)):
+                    mylogger.error('  '+str(field_ids[i])+': '+str(field_names[i]))
+                mylogger.error('')
+                mylogger.error('To fix: set CAL_1GC_PRIMARY in oxkat/config.py to the field ID of your primary')
+                mylogger.error("calibrator from the list above (e.g. CAL_1GC_PRIMARY = '0'), then run again.")
+                sys.exit(1)
+            mylogger.warning('Primary calibrator identified by position: '+', '.join(str(i)+': '+n for i,n in zip(candidate_ids,candidate_names)))
 
     primary_name, primary_id, primary_tag, primary_sep = get_primary_tag(candidate_dirs, candidate_names, candidate_ids)
 
