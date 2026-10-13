@@ -57,6 +57,9 @@
 #           generates that stage's job scripts, submits them (or runs them
 #           directly, in "node" mode), and waits for every job to finish
 #           before starting the next stage.
+#        b2. After 0_GET_INFO, if project_info.json lists no science targets,
+#           marks the MS complete in the tracking file ("none (no targets)")
+#           and runs none of the remaining stages.
 #        c. Stops at the first stage that fails for that MS, records which
 #           stage that was in the failures file, and moves on to the next
 #           MS -- one bad MS never blocks the others.
@@ -238,6 +241,36 @@ record_failure() {
     [[ -f $FAILED_FILE ]] || echo '# obsid | ms_name | failed_utc | stage | reason' > "$FAILED_FILE"
     echo "$id | $msname | $(date -u '+%Y-%m-%dT%H:%M:%S') | $stage | $reason" >> "$FAILED_FILE"
   ) 9>> "$FAILED_FILE.lock"
+}
+
+# Number of science targets in ./project_info.json: target_names that are also
+# in working_names (the fields this run keeps), as RMSYNTH counts them. Prints
+# nothing and fails if project_info.json is missing or unreadable.
+n_targets() {
+  python3 -c '
+import json
+info = json.load(open("project_info.json"))
+working = info.get("working_names")
+print(len([t for t in info.get("target_names", []) if working is None or t in working]))' 2>/dev/null
+}
+
+# Marks obsid $1 complete in TRACKING with "none (no targets)" in place of the
+# interesting-sources column, so it is skipped from now on. Same line format,
+# header and lock (fcntl, which bash's flock does not interoperate with) as
+# RMSYNTH_05's write_tracking.
+mark_no_targets() {
+  python3 - "$TRACKING" "$1" <<'PYEOF'
+import datetime, fcntl, os, sys
+path, obsid = sys.argv[1:]
+os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+with open(path, 'a') as f:
+    fcntl.lockf(f, fcntl.LOCK_EX)
+    f.seek(0, os.SEEK_END)
+    if f.tell() == 0:
+        f.write('# obsid | completed_utc | interesting sources (reason)\n')
+    utc = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
+    f.write(f'{obsid} | {utc} | none (no targets)\n')
+PYEOF
 }
 
 # ------------------------------------------------------------------ #
@@ -671,6 +704,26 @@ run_ms() {
     else
       run_stage_node "$subs" || log "  $subs exited non-zero, continuing"
     fi
+    # An MS with no science targets is finished once INFO has run: mark it
+    # complete in TRACKING and skip the remaining stages
+    if [[ $stage == 0_GET_INFO ]]; then
+      local nt
+      nt=$(n_targets) || {
+        log "  project_info.json missing or unreadable after $stage"
+        record_failure "$id" "${ms##*/}" "$stage" "project_info.json missing or unreadable"
+        return 1
+      }
+      if [[ $nt -eq 0 ]]; then
+        log "  no science targets in project_info.json -- marking complete, remaining stages skipped"
+        mark_no_targets "$id" || {
+          record_failure "$id" "${ms##*/}" "$stage" "no targets, but could not write to $TRACKING"
+          return 1
+        }
+        touch "$state/no_targets"
+        return 0
+      fi
+      log "  $nt science target(s)"
+    fi
     # Whatever a stage reported, 2GC must have left its images and residual MS
     # before RMSYNTH runs on them
     if [[ $stage == 2GC ]]; then
@@ -693,6 +746,7 @@ mkdir -p "$STATE"
 PASSED=()
 FAILED=()
 PARTIAL=()
+NO_TARGETS=()
 n=0
 
 # Workers still running: obsid -> background pid, and obsid -> MS path.
@@ -711,7 +765,10 @@ clear_work
 # shortened, e.g. for a quick test) apart from "a stage genuinely failed".
 finish_ms() {
   local id=$1 ran_ok=$2 ms=${MS_RUNNING[$id]}
-  if in_tracking "$id"; then
+  if [[ -f $STATE/$id/no_targets ]]; then
+    log "=== $id complete (no science targets -- stages after 0_GET_INFO skipped) ==="
+    NO_TARGETS+=("$id  ${ms##*/}")
+  elif in_tracking "$id"; then
     log "=== $id complete ==="
     PASSED+=("$id")
   elif [[ $ran_ok -eq 0 && $STAGES_INCLUDE_RMSYNTH == false ]]; then
@@ -779,7 +836,10 @@ while :; do
 done
 
 echo
-log "Finished: ${#PASSED[@]} completed, ${#FAILED[@]} failed, ${#PARTIAL[@]} stopped early (STAGES incomplete)"
+log "Finished: ${#PASSED[@]} completed, ${#NO_TARGETS[@]} with no targets, ${#FAILED[@]} failed, ${#PARTIAL[@]} stopped early (STAGES incomplete)"
+for f in "${NO_TARGETS[@]}"; do
+  echo "  NO TARGETS  $f  (marked complete after 0_GET_INFO)"
+done
 for f in "${FAILED[@]}"; do
   echo "  FAILED   $f"
 done

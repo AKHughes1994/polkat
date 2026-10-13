@@ -602,6 +602,39 @@ def read_time_info(time_file, field_name, scan=None):
     return time_data
 
 
+def interval_time_info(time_info, starts):
+    """
+    Per-interval copies of the field's time_info for time-interval imaging.
+    starts maps each interval suffix (e.g. 't0003') to its start MJD (the
+    DATE-OBS of its MFS image). Each interval runs to the start of the next;
+    the last runs to the end of the field's time range, or for the median
+    interval length when that is unknown. The parallactic angle range stays
+    that of the whole field. Returns {suffix: time_info}.
+    """
+    order = sorted(starts, key=starts.get)
+    mjds = [starts[t] for t in order]
+    step = float(np.median(np.diff(mjds))) if len(mjds) > 1 else None
+    field_end = (time_info or {}).get('end_mjd')
+
+    intervals = {}
+    for i, tsuf in enumerate(order):
+        start = mjds[i]
+        if i + 1 < len(mjds):
+            end = mjds[i + 1]
+        elif field_end is not None and field_end > start:
+            end = field_end
+        elif step:
+            end = start + step
+        else:
+            continue
+        info = dict(time_info or {})
+        info.update(start_mjd=start, end_mjd=end, middle_mjd=(start + end) / 2.0,
+                    duration_hours=(end - start) * 24.0)
+        intervals[tsuf] = info
+        msg(f'  Interval {tsuf}: MJD {start:.6f} to {end:.6f} ({(end - start) * 86400.0:.0f} s)')
+    return intervals
+
+
 def get_imfit_values(fname, image, xpix, ypix):
 
     '''
@@ -710,8 +743,9 @@ def get_imstat_values(image, xpix, ypix, manual_rms_region = False):
     rms_image = re.sub(r'-image(\.homogenized)?\.fits$', r'-residual\1.fits', image)
     if not os.path.exists(rms_image):
         rms_image = image
-    else:
-        msg(f'  Found residual image for RMS fit: {rms_image}')
+    elif not getattr(get_imstat_values, 'logged', False):
+        msg(f'  Measuring the RMS on residual images (e.g. {os.path.basename(rms_image)})')
+        get_imstat_values.logged = True
     rms = imstat(rms_image, region = rms_region)['rms'][0]
 
     return [flux, xpix, ypix, rms]
@@ -805,7 +839,7 @@ def make_estimate(fname, image, xpix, ypix, fix_var, manual_rms_region = False):
 
 def check_fit_offset_and_refix(imfit_result, image, ref_ra_pix, ref_dec_pix, bmaj,
                                src_name, stokes_label, manual_rms_region=False,
-                               is_homogenized=False):
+                               is_homogenized=False, tag=''):
     '''
     After an imfit call, check whether the fitted position has drifted more than
     a fraction of BMAJ (rough Euclidean pixel distance) from the reference position.
@@ -822,6 +856,9 @@ def check_fit_offset_and_refix(imfit_result, image, ref_ra_pix, ref_dec_pix, bma
     stokes_label    : str   - label for informative messages (e.g. "Q", "Ptot", "Plin")
     manual_rms_region : str/bool - passed through to make_estimate if a re-fit is needed
     is_homogenized  : bool  - if True, use tighter BMAJ/5 threshold (homogenized beams are uniform)
+    tag             : str   - appended to the re-fit estimate filename (the channel
+                              number for channel fits), so channels fitted at the
+                              same time in different workers never share the file
 
     Returns
     -------
@@ -855,7 +892,7 @@ def check_fit_offset_and_refix(imfit_result, image, ref_ra_pix, ref_dec_pix, bma
         msg(f'  WARNING: Stokes {stokes_label} fitted position offset = {offset_arcsec:.2f}" '
             f'({pixel_dist:.1f} pix) exceeds {threshold_label} BMAJ ({threshold_fraction * bmaj:.2f}"). '
             f'Re-fitting with position fixed to reference.')
-        fixed_est = f'estimate_fixed_{stokes_label}_{src_name}.txt'
+        fixed_est = f'estimate_fixed_{stokes_label}_{src_name}{tag}.txt'
         make_estimate(fixed_est, image, ref_ra_pix, ref_dec_pix, 'xyabp',
                       manual_rms_region=manual_rms_region)
         imfit_result = get_imfit_values(fixed_est, image, ref_ra_pix, ref_dec_pix)
@@ -982,7 +1019,7 @@ def fit_channel(job):
             ch_P_imfit, _ = check_fit_offset_and_refix(
                 ch_P_imfit, im_P, RA_pix_ch, DEC_pix_ch,
                 bmaj, src_name, pol_image_type, manual_rms_region=manual_rms_region,
-                is_homogenized=chan_is_homogenized)
+                is_homogenized=chan_is_homogenized, tag=f'_{ch_num}')
             flux_P = ch_P_imfit['results'][component]['peak']['value'] * 1e3
             err_P = ch_P_imfit['results'][component]['peak']['error'] * 1e3
             rms_P = get_imstat_values(im_P, RA_pix_ch, DEC_pix_ch, manual_rms_region)[3] * 1e3
@@ -1017,7 +1054,7 @@ def fit_channel(job):
             ch_Q_imfit, _ = check_fit_offset_and_refix(
                 ch_Q_imfit, im_Q, ref_ra_pix_ch, ref_dec_pix_ch,
                 bmaj, src_name, 'Q', manual_rms_region=manual_rms_region,
-                is_homogenized=chan_is_homogenized)
+                is_homogenized=chan_is_homogenized, tag=f'_{ch_num}')
             flux_Q = ch_Q_imfit['results'][component]['peak']['value'] * 1e3
             err_Q = ch_Q_imfit['results'][component]['peak']['error'] * 1e3
             rms_Q = get_imstat_values(im_Q, RA_pix_ch, DEC_pix_ch, manual_rms_region)[3] * 1e3
@@ -1031,7 +1068,7 @@ def fit_channel(job):
             ch_U_imfit, _ = check_fit_offset_and_refix(
                 ch_U_imfit, im_U, ref_ra_pix_ch, ref_dec_pix_ch,
                 bmaj, src_name, 'U', manual_rms_region=manual_rms_region,
-                is_homogenized=chan_is_homogenized)
+                is_homogenized=chan_is_homogenized, tag=f'_{ch_num}')
             flux_U = ch_U_imfit['results'][component]['peak']['value'] * 1e3
             err_U = ch_U_imfit['results'][component]['peak']['error'] * 1e3
             rms_U = get_imstat_values(im_U, RA_pix_ch, DEC_pix_ch, manual_rms_region)[3] * 1e3
@@ -1046,7 +1083,7 @@ def fit_channel(job):
             ch_V_imfit, _ = check_fit_offset_and_refix(
                 ch_V_imfit, im_V, RA_pix_ch, DEC_pix_ch,
                 bmaj, src_name, 'V', manual_rms_region=manual_rms_region,
-                is_homogenized=chan_is_homogenized)
+                is_homogenized=chan_is_homogenized, tag=f'_{ch_num}')
             flux_V = ch_V_imfit['results'][component]['peak']['value'] * 1e3
             err_V = ch_V_imfit['results'][component]['peak']['error'] * 1e3
             rms_V = get_imstat_values(im_V, RA_pix_ch, DEC_pix_ch, manual_rms_region)[3] * 1e3
@@ -1169,7 +1206,6 @@ def extract_polarization_properties(src_name,
             msg('WARNING: Neither Ptot nor Plin images found on disk for this source')
 
     pol_image_type    = 'Plin' if use_plin else 'Ptot'
-    pol_image_exclude = '-Ptot-' if use_plin else '-Plin-'  # Filter out the non-selected type
     if plin_fallback:
         msg(f'Polarization image type: Plin (linear only) -- fallback, no Ptot images on disk')
     elif use_plin:
@@ -1260,22 +1296,27 @@ def extract_polarization_properties(src_name,
     else:
         prefix = example_img.rsplit('-', 3)[0]
     
-    # Extract the MFS image parameters if they exist
+    # The MFS Stokes I fit is the reference position for every channel fit,
+    # so the extraction cannot go on without the MFS images
+    if not mfs_im_suffix:
+        raise FileNotFoundError(f'No MFS images found with pattern: {src_im_identifier}MFS* -- '
+                                f'the MFS fit sets the reference position for the channel fits')
+
     if mfs_im_suffix:
         msg(f'Fitting MFS image(s) for prefix: {prefix}')
-        
-        # Collect MFS images; order after sort will be I, P(lin/tot), Q, U, V.
-        # Exclude whichever polarized intensity type is NOT being used (controlled by use_plin).
-        MFS_images = glob.glob(f'{prefix}-MFS-*-{mfs_im_suffix}')
-        if stokes_I_only:
-            MFS_images = sorted([im for im in MFS_images if '-I-' in im])
-            if not MFS_images:
-                # I-only MFS: no Stokes label (prefix-MFS-image.fits)
-                MFS_images = sorted(glob.glob(f'{prefix}-MFS-{mfs_im_suffix}'))
-            msg(f'MFS images (Stokes I only): {[os.path.basename(im) for im in MFS_images]}')
-        else:
-            MFS_images = sorted([im for im in MFS_images if pol_image_exclude not in im])
-            msg(f'MFS images selected (using {pol_image_type}, excluding {pol_image_exclude.strip("-")}): {[os.path.basename(im) for im in MFS_images]}')
+
+        # MFS images by Stokes label, in the order I, P(lin/tot), Q, U, V
+        # (Stokes-I-only imaging may have no label: prefix-MFS-image.fits)
+        stokes_labels = ['I'] if stokes_I_only else ['I', pol_image_type, 'Q', 'U', 'V']
+        MFS_images = []
+        for stokes in stokes_labels:
+            image = f'{prefix}-MFS-{stokes}-{mfs_im_suffix}'
+            if stokes_I_only and not os.path.exists(image):
+                image = f'{prefix}-MFS-{mfs_im_suffix}'
+            if not os.path.exists(image):
+                raise FileNotFoundError(f'MFS Stokes {stokes} image not found: {image}')
+            MFS_images.append(image)
+        msg(f'MFS images selected: {[os.path.basename(im) for im in MFS_images]}')
 
         # Output image name
         for MFS_image in MFS_images:
@@ -1501,8 +1542,6 @@ def extract_polarization_properties(src_name,
             output_dictionary['MFS']['Q_rms_mJy'] = rms_Q
             output_dictionary['MFS']['U_rms_mJy'] = rms_U
             output_dictionary['MFS']['V_rms_mJy'] = rms_V
-    else:
-        msg('Skipping MFS image processing (no MFS images found)')
 
     # Now process channelized data (simplified for single component, 1D arrays)
     msg('')
@@ -1754,28 +1793,30 @@ def extract_polarization_properties(src_name,
     return output_dictionary, timestamp_prefix
 
 
-def create_polang_raw_file(project_info, src_name, output_dict, timestamp_prefix):
+def create_polang_raw_file(project_info, src_name, output_dict, timestamp_prefix, is_target):
     """
-    Create raw data file for polang analysis if target matches polang_name.
+    With a polarization angle calibrator (polang_name set), write the RM
+    synthesis input file for every target and for the calibrator itself.
+    Without one, targets get the U/V-merged file instead (create_uvfix_file).
     Format: Freq(Hz) I Q U dI dQ dU (all fluxes in Jy, no header)
     """
     # Check if polang_name exists and is not empty
     if 'polang_name' not in project_info or not project_info['polang_name']:
         return
-    
-    # Polang requires Q/U
+
+    # RM synthesis needs Q/U
     if 'Q_flux_mJy' not in output_dict.get('CHAN', {}):
-        msg('Skipping polang raw data file (Stokes-I-only mode)')
+        msg('Skipping RM synthesis input file (Stokes-I-only mode)')
         return
-    
+
     polang_name = project_info['polang_name']
-    
-    # Check if target includes polang_name
-    if polang_name.lower() not in src_name.lower():
-        msg(f'Source {src_name} does not include polang_name {polang_name}, skipping raw data file')
+    is_polang = polang_name.lower() in src_name.lower()
+    if not (is_target or is_polang):
+        msg(f'Source {src_name} is neither a target nor the polarization angle calibrator '
+            f'({polang_name}), skipping RM synthesis input file')
         return
-    
-    msg(f'Creating raw data file for polang analysis (polang_name={polang_name})')
+
+    msg(f'Creating RM synthesis input file ({"polarization angle calibrator" if is_polang else "target"})')
     
     # Create raw data file with timestamp prefix
     raw_file = cfg.RESULTS + f'/{timestamp_prefix}{src_name}_{IDENTIFIER}_rmsynth.txt'
@@ -1794,7 +1835,7 @@ def create_polang_raw_file(project_info, src_name, output_dict, timestamp_prefix
             f.write(f"{freq_hz:.6e} {I_jy:.6e} {Q_jy:.6e} {U_jy:.6e} "
                    f"{dI_jy:.6e} {dQ_jy:.6e} {dU_jy:.6e}\n")
     
-    msg(f'Saved polang raw data file to: {raw_file}')
+    msg(f'Saved RM synthesis input file to: {raw_file}')
 
 
 def fit_linear_xy_phase(freq_hz, U, V, rms_U, rms_V, max_delay_ns, oversample=8):
@@ -2728,6 +2769,19 @@ def main():
             if re.search(r'(t\d+)', o.basename(im))
         ))
         msg(f'Time-interval mode: found {len(time_interval_images)} images across {len(time_suffixes)} intervals: {time_suffixes}')
+
+        # Each interval's own time range, from the DATE-OBS of its MFS Stokes I image
+        starts = {}
+        for tsuf in time_suffixes:
+            mfs_I = sorted(glob.glob(f'{src_im_identifier}{tsuf}-MFS-I-image*.fits'))
+            if mfs_I:
+                date_obs = imhead(mfs_I[0], mode='get', hdkey='DATE-OBS').replace('/', '-', 2).replace('/', 'T')
+                starts[tsuf] = Time(date_obs, format='isot', scale='utc').mjd
+        interval_times = interval_time_info(time_info, starts)
+        missing = [tsuf for tsuf in time_suffixes if tsuf not in interval_times]
+        if missing:
+            msg(f'WARNING: no start time for interval(s) {missing} -- using the whole field\'s time range for them')
+
         for tsuf in time_suffixes:
             timed_identifier = f'{src_im_identifier}{tsuf}-'
             timed_name = f'{source_name}_{tsuf}'
@@ -2742,11 +2796,11 @@ def main():
                 manual_rms_region,
                 image_dir,
                 '',
-                time_info = time_info,
+                time_info = interval_times.get(tsuf, time_info),
                 force_fix_to_I = force_fix_to_I,
                 force_fix_V_to_I = force_fix_V_to_I,
                 use_plin = use_plin)
-            create_polang_raw_file(project_info, timed_name, output_dict, timestamp_prefix)
+            create_polang_raw_file(project_info, timed_name, output_dict, timestamp_prefix, is_target)
             create_uvfix_file(project_info, timed_name, output_dict, timestamp_prefix, is_target)
             plot_stokes_spectrum(output_dict, timed_name, timestamp_prefix)
             plot_total_pol_fraction(output_dict, timed_name, timestamp_prefix)
@@ -2773,7 +2827,7 @@ def main():
             force_fix_to_I = force_fix_to_I,
             force_fix_V_to_I = force_fix_V_to_I,
             use_plin = use_plin)
-        create_polang_raw_file(project_info, source_name, output_dict, timestamp_prefix)
+        create_polang_raw_file(project_info, source_name, output_dict, timestamp_prefix, is_target)
         create_uvfix_file(project_info, source_name, output_dict, timestamp_prefix, is_target)
         plot_stokes_spectrum(output_dict, source_name, timestamp_prefix)
         plot_total_pol_fraction(output_dict, source_name, timestamp_prefix)

@@ -382,6 +382,11 @@ def time_average_iquv(field_name, scan_num):
     I_chan, Q_chan, U_chan, V_chan : ndarray or None
         Per-channel real flux densities (Jy), length = nchan_native.
         None for all four if selection fails.
+    I_imag, Q_imag, U_imag, V_imag : ndarray or None
+        Imaginary parts of the same time-averaged visibilities (Jy). A point
+        source at the phase centre has real Stokes visibilities, so these
+        measure contamination (off-axis sources, phase errors).
+        None for all four if selection fails.
     weight_uv : ndarray or None
         Per-channel effective weight sum for the cross-hand (U/V)
         correlations after flagging.  Shape (nchan_native,).  Used as
@@ -399,7 +404,7 @@ def time_average_iquv(field_name, scan_num):
     if not ok:
         ms.close()
         msg(f'    WARNING: ms.msselect failed for field={field_name} scan={scan_num}')
-        return None, None, None, None, None, None
+        return (None,) * 11
 
     stokes_mode = False
     try:
@@ -414,7 +419,7 @@ def time_average_iquv(field_name, scan_num):
 
     if 'corrected_data' not in d or 'flag' not in d:
         msg(f'    WARNING: getdata returned no corrected_data for field={field_name} scan={scan_num}')
-        return None, None, None, None, None, None
+        return (None,) * 11
 
     data_arr  = d['corrected_data']
     raw_flag  = np.asarray(d['flag'])        # bool, shape varies
@@ -477,37 +482,36 @@ def time_average_iquv(field_name, scan_num):
 
     del d, data_arr, raw_flag, time_arr, W, W_eff, den, num
 
-    # ---- Convert to Stokes IQUV ----
+    # ---- Convert to complex Stokes IQUV ----
+    nan_chan = np.full(nchan_read, np.nan + 0j)
     if stokes_mode:
         # CASA already returned IQUV order
-        I_chan = np.real(vis_avg[0])
-        Q_chan = np.real(vis_avg[1])
-        U_chan = np.real(vis_avg[2])
-        V_chan = np.real(vis_avg[3])
+        I_c, Q_c, U_c, V_c = vis_avg[0], vis_avg[1], vis_avg[2], vis_avg[3]
     else:
         # Convert from linear feed correlations (XX,XY,YX,YY)
         if ncorr_read >= 4:
             XX = vis_avg[0]; XY = vis_avg[1]
             YX = vis_avg[2]; YY = vis_avg[3]
-            I_chan = np.real((XX + YY) / 2.0)
-            Q_chan = np.real((XX - YY) / 2.0)
-            U_chan = np.real((XY + YX) / 2.0)
-            # V from imaginary part of (XY - YX): sign follows IAU convention
-            V_chan = np.imag((YX - XY) / 2.0)
+            I_c = (XX + YY) / 2.0
+            Q_c = (XX - YY) / 2.0
+            U_c = (XY + YX) / 2.0
+            # Re(V_c) = Im(YX - XY) / 2: sign follows IAU convention
+            V_c = (YX - XY) / 2.0j
         elif ncorr_read == 2:
             # Parallel hands only
-            I_chan = np.real((vis_avg[0] + vis_avg[1]) / 2.0)
-            Q_chan = np.real((vis_avg[0] - vis_avg[1]) / 2.0)
-            U_chan = np.full(nchan_read, np.nan)
-            V_chan = np.full(nchan_read, np.nan)
+            I_c = (vis_avg[0] + vis_avg[1]) / 2.0
+            Q_c = (vis_avg[0] - vis_avg[1]) / 2.0
+            U_c, V_c = nan_chan, nan_chan
         else:
-            I_chan = np.real(vis_avg[0])
-            Q_chan = np.full(nchan_read, np.nan)
-            U_chan = np.full(nchan_read, np.nan)
-            V_chan = np.full(nchan_read, np.nan)
+            I_c = vis_avg[0]
+            Q_c, U_c, V_c = nan_chan, nan_chan, nan_chan
+
+    I_chan, Q_chan, U_chan, V_chan = (np.real(s) for s in (I_c, Q_c, U_c, V_c))
+    I_imag, Q_imag, U_imag, V_imag = (np.imag(s) for s in (I_c, Q_c, U_c, V_c))
 
     del vis_avg
-    return I_chan, Q_chan, U_chan, V_chan, weight_uv, t_start, t_end
+    return (I_chan, Q_chan, U_chan, V_chan, I_imag, Q_imag, U_imag, V_imag,
+            weight_uv, t_start, t_end)
 
 
 def bin_channels_weighted(arr_native, weights_native, n_out):
@@ -589,12 +593,13 @@ def flux_textfile_path(field_name, scan_num, outdir):
 
 
 def flux_textfile_is_current(fpath):
-    """Return True if the flux textfile at fpath is in the current 7-column
-    IQUV format (freq, I, Q, U, V, crosshand_flux, crosshand_frac).
+    """Return True if the flux textfile at fpath is in the current 12-column
+    format (freq, I, Q, U, V, crosshand_flux, crosshand_frac, I_imag, Q_imag,
+    U_imag, V_imag, crosshand_imag_frac).
 
-    Older 4/5-column files put crosshand_flux in a different column, so they
-    must be regenerated rather than read — the cache check treats a
-    non-current file the same as a missing one.
+    Files with fewer columns lack the imaginary parts (or put crosshand_flux
+    in a different column), so they must be regenerated rather than read —
+    the cache check treats a non-current file the same as a missing one.
     """
     if not os.path.exists(fpath):
         return False
@@ -604,7 +609,7 @@ def flux_textfile_is_current(fpath):
                 line = line.strip()
                 if not line or line.startswith('#'):
                     continue
-                return len(line.split()) >= 7
+                return len(line.split()) >= 12
     except OSError:
         return False
     return False
@@ -613,9 +618,8 @@ def flux_textfile_is_current(fpath):
 def load_flux_textfile(fpath, nchan_xf):
     """Load cross-hand flux and fraction from an existing flux spectrum text file.
 
-    Reads the seven-column text file written by save_flux_textfile
-    (freq_GHz, I_Jy, Q_Jy, U_Jy, V_Jy, crosshand_flux_Jy, crosshand_frac)
-    and returns the cross-hand flux and fraction binned to the Xf table
+    Reads columns 6-7 (crosshand_flux_Jy, crosshand_frac) of the text file
+    written by save_flux_textfile and returns the cross-hand flux and fraction binned to the Xf table
     channel resolution.  Uses equal weights since original per-channel
     weights are not stored; NaN entries are excluded.
 
@@ -667,6 +671,7 @@ def load_flux_textfile(fpath, nchan_xf):
 def save_flux_textfile(field_name, ra_rad, dec_rad, scan_num,
                        t_start_mjd, t_end_mjd,
                        freq_ghz, I_chan, Q_chan, U_chan, V_chan,
+                       I_imag, Q_imag, U_imag, V_imag,
                        cross_flux_chan, outdir):
     """Save per-channel Stokes IQUV and cross-hand flux spectrum to a text file.
 
@@ -674,10 +679,14 @@ def save_flux_textfile(field_name, ra_rad, dec_rad, scan_num,
     header records the field name, J2000 direction, and scan time range
     in both MJD seconds and ISO 8601 (ISOT) format.
 
-    Columns: freq_GHz, I_Jy, Q_Jy, U_Jy, V_Jy, crosshand_flux_Jy,
-    crosshand_frac.  Stokes parameters are in the feed frame (extraction
-    uses parang=False), so crosshand_flux = sqrt(U²+V²) is the actual
-    per-channel signal available to the Xf solve.
+    Columns: freq_GHz, I_Jy, Q_Jy, U_Jy, V_Jy (real parts), crosshand_flux_Jy,
+    crosshand_frac, I_imag_Jy, Q_imag_Jy, U_imag_Jy, V_imag_Jy (imaginary
+    parts), crosshand_imag_frac = sqrt(Im U² + Im V²) / sqrt(Re U² + Re V²).
+    Stokes parameters are in the feed frame (extraction uses parang=False),
+    so crosshand_flux = sqrt(U²+V²) is the actual per-channel signal
+    available to the Xf solve, and crosshand_imag_frac measures how much of
+    the cross-hands is contamination rather than that signal (noisy per
+    native channel; recompute from the Im/Re columns after binning).
 
     Parameters
     ----------
@@ -691,6 +700,8 @@ def save_flux_textfile(field_name, ra_rad, dec_rad, scan_num,
         Channel frequencies in GHz.
     I_chan, Q_chan, U_chan, V_chan : ndarray
         Time-averaged Stokes spectra per channel (Jy, feed frame).
+    I_imag, Q_imag, U_imag, V_imag : ndarray
+        Imaginary parts of the same visibilities (Jy).
     cross_flux_chan : ndarray
         Time-averaged sqrt(U^2 + V^2) per channel (Jy).
     outdir : str
@@ -710,6 +721,7 @@ def save_flux_textfile(field_name, ra_rad, dec_rad, scan_num,
             np.isfinite(I_chan) & (I_chan > 0.0),
             cross_flux_chan / I_chan,
             np.nan)
+        cross_imag_frac_chan = np.hypot(U_imag, V_imag) / np.hypot(U_chan, V_chan)
 
     def _v(arr, ch):
         return arr[ch] if np.isfinite(arr[ch]) else float('nan')
@@ -728,16 +740,21 @@ def save_flux_textfile(field_name, ra_rad, dec_rad, scan_num,
             XF_MIN_CROSS_FRAC, XF_MIN_CROSS_FRAC * 100.0))
         fh.write('# Stokes frame:       feed (parang=False)\n')
         fh.write('#\n')
-        fh.write('# {:>14s}  {:>14s}  {:>14s}  {:>14s}  {:>14s}  {:>20s}  {:>20s}\n'.format(
+        fh.write('# {:>14s}  {:>14s}  {:>14s}  {:>14s}  {:>14s}  {:>20s}  {:>20s}  '
+                 '{:>14s}  {:>14s}  {:>14s}  {:>14s}  {:>20s}\n'.format(
             'freq_GHz', 'I_Jy', 'Q_Jy', 'U_Jy', 'V_Jy',
-            'crosshand_flux_Jy', 'crosshand_frac'))
+            'crosshand_flux_Jy', 'crosshand_frac',
+            'I_imag_Jy', 'Q_imag_Jy', 'U_imag_Jy', 'V_imag_Jy', 'crosshand_imag_frac'))
 
         for ch in range(len(freq_ghz)):
             fh.write('  {:>16.8f}  {:>14.6f}  {:>14.6f}  {:>14.6f}  {:>14.6f}  '
-                     '{:>20.6f}  {:>20.8f}\n'.format(
+                     '{:>20.6f}  {:>20.8f}  {:>14.6f}  {:>14.6f}  {:>14.6f}  {:>14.6f}  '
+                     '{:>20.6f}\n'.format(
                 freq_ghz[ch],
                 _v(I_chan, ch), _v(Q_chan, ch), _v(U_chan, ch), _v(V_chan, ch),
-                _v(cross_flux_chan, ch), _v(cross_frac_chan, ch)))
+                _v(cross_flux_chan, ch), _v(cross_frac_chan, ch),
+                _v(I_imag, ch), _v(Q_imag, ch), _v(U_imag, ch), _v(V_imag, ch),
+                _v(cross_imag_frac_chan, ch)))
 
     msg(f'    Saved flux spectrum: {fpath}')
 
@@ -2113,7 +2130,7 @@ for fn, sn in all_field_scans:
     if not os.path.exists(fpath):
         missing_files.append((fn, sn, fpath))
     elif not flux_textfile_is_current(fpath):
-        msg(f'  Stale format (pre-IQUV columns), will regenerate: {fpath}')
+        msg(f'  Stale format (no imaginary-part columns), will regenerate: {fpath}')
         missing_files.append((fn, sn, fpath))
 
 scan_xflux_map    = {}
@@ -2182,8 +2199,8 @@ else:
 
             msg(f'    Scan {scan_num}: time-averaging visibilities...')
 
-            I_chan, Q_chan, U_chan, V_chan, weight_uv, t_start, t_end = \
-                time_average_iquv(field_name, scan_num)
+            (I_chan, Q_chan, U_chan, V_chan, I_imag, Q_imag, U_imag, V_imag,
+             weight_uv, t_start, t_end) = time_average_iquv(field_name, scan_num)
 
             if I_chan is None:
                 msg(f'    SKIP: no data returned for field={field_name} scan={scan_num}')
@@ -2219,6 +2236,7 @@ else:
                 field_name, ra_rad, dec_rad, scan_num,
                 t_start, t_end,
                 freq_ghz_native, I_chan, Q_chan, U_chan, V_chan,
+                I_imag, Q_imag, U_imag, V_imag,
                 cross_flux_native, RESULTS)
 
             cross_flux_xf, _ = bin_channels_weighted(cross_flux_native, weight_uv, nchan_xf)
