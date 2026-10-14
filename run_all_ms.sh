@@ -53,13 +53,18 @@
 #      ms_dir and starts the next MS still to run; each MS, independently:
 #        a. Empties working_dir/<obsid>, copies a fresh copy of the pipeline
 #           into it, and symlinks that MS in.
-#        b. Runs each pipeline stage in turn (0_GET_INFO, 1GC, 2GC, RMSYNTH):
+#        b. Runs each pipeline stag#        b2. After 0_GET_INFO, if project_info.json lists no science targets,
+#           marks the MS complete in the tracking file ("none (no targets)"),
+#           copies its msinfo log into <archive dir>/no_targets_msinfo/,
+#           deletes working_dir/<obsid> and runs none of the remaining stages.
+e in turn (0_GET_INFO, 1GC, 2GC, RMSYNTH):
 #           generates that stage's job scripts, submits them (or runs them
 #           directly, in "node" mode), and waits for every job to finish
 #           before starting the next stage.
 #        b2. After 0_GET_INFO, if project_info.json lists no science targets,
-#           marks the MS complete in the tracking file ("none (no targets)")
-#           and runs none of the remaining stages.
+#           marks the MS complete in the tracking file ("none (no targets)"),
+#           copies its msinfo log into <archive dir>/no_targets_msinfo/,
+#           deletes working_dir/<obsid> and runs none of the remaining stages.
 #        c. Stops at the first stage that fails for that MS, records which
 #           stage that was in the failures file, and moves on to the next
 #           MS -- one bad MS never blocks the others.
@@ -191,6 +196,10 @@ if [[ -z $CFG_ARCHIVE_DIR ]]; then
   echo "them when the next MS starts." >&2
   exit 1
 fi
+
+# Collects the msinfo log of every MS skipped after 0_GET_INFO for having no
+# science targets (created once the run is confirmed)
+NO_TARGETS_DIR="$CFG_ARCHIVE_DIR/no_targets_msinfo"
 
 if [[ -z $CFG_TRACKING_FILE ]]; then
   echo "You need to specify RMSYNTH_TRACKING_FILE in $CONFIG -- without it, RMSYNTH" >&2
@@ -489,6 +498,7 @@ else
 fi
 echo "  Failures file  : $FAILED_FILE (which stage a failed MS got stuck on)"
 echo "  Archive dir    : $CFG_ARCHIVE_DIR (from config.py -- each MS's products move here)"
+echo "  No-target logs : $NO_TARGETS_DIR (msinfo log of each MS skipped for having no targets)"
 stage_names=()
 for entry in "${STAGES[@]}"; do
   name=${entry%%|*}; name=${name#setups/}; name=${name%.py}
@@ -554,6 +564,7 @@ while :; do
 done
 
 [[ $WIPE_PENDING == true ]] && wipe_now
+mkdir -p -- "$NO_TARGETS_DIR" || { echo "Could not create $NO_TARGETS_DIR" >&2; exit 1; }
 
 # ------------------------------------------------------------------ #
 # Stage runners
@@ -720,6 +731,23 @@ run_ms() {
           return 1
         }
         touch "$state/no_targets"
+        # Only the msinfo log is kept (in NO_TARGETS_DIR), so the working
+        # directory goes now rather than waiting for the next clear_work. If
+        # the log cannot be copied, the working directory is left in place
+        # so the log is not lost.
+        local msinfo
+        msinfo=(msinfo_*.log)
+        if [[ ! -e ${msinfo[0]} ]]; then
+          log "  WARNING: no msinfo_*.log in $WORK/$id -- nothing copied to $NO_TARGETS_DIR"
+        elif ! cp -- "${msinfo[@]}" "$NO_TARGETS_DIR/"; then
+          log "  WARNING: could not copy ${msinfo[*]} to $NO_TARGETS_DIR -- keeping $WORK/$id"
+          return 0
+        else
+          log "  copied ${msinfo[*]} to $NO_TARGETS_DIR"
+        fi
+        cd "$WORK" || return 1
+        rm -rf -- "${WORK:?}/$id"
+        log "  removed $WORK/$id"
         return 0
       fi
       log "  $nt science target(s)"
