@@ -66,7 +66,7 @@ def read_name_matching_file(matching_file):
 
     The list is two tab- or whitespace-separated columns: an MS field name as
     it appears in the data, and the catalogue name the position and RMS-region
-    lists are keyed on (e.g. 'J1709-3624' -> 'IGR J17091-3624'). It carries
+    lists are keyed on (e.g. 'J1709-3624' -> 'IGRJ17091-3624'). It carries
     the pairs that no amount of punctuation-stripping would connect.
 
     Returns {variant_lowercased: canonical_name}, or {} when the file is

@@ -408,7 +408,7 @@ def read_position_file(position_file, source_name, matching_file=None):
     1. The name-matching list (data/positions/XRB_name_matching.txt) maps an
        MS field name to the catalogue name this file is keyed on. It carries
        the pairs no normalisation would connect, e.g. 'J1709-3624' ->
-       'IGR J17091-3624'. A name found there is then looked up exactly
+       'IGRJ17091-3624'. A name found there is then looked up exactly
        (case-insensitively).
     2. Anything the list does not cover falls through to normalized
        similarity -- see gen.match_field_name() / gen._normalize_field_name()
