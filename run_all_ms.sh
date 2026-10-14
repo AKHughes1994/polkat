@@ -53,11 +53,7 @@
 #      ms_dir and starts the next MS still to run; each MS, independently:
 #        a. Empties working_dir/<obsid>, copies a fresh copy of the pipeline
 #           into it, and symlinks that MS in.
-#        b. Runs each pipeline stag#        b2. After 0_GET_INFO, if project_info.json lists no science targets,
-#           marks the MS complete in the tracking file ("none (no targets)"),
-#           copies its msinfo log into <archive dir>/no_targets_msinfo/,
-#           deletes working_dir/<obsid> and runs none of the remaining stages.
-e in turn (0_GET_INFO, 1GC, 2GC, RMSYNTH):
+#        b. Runs each pipeline stage in turn (0_GET_INFO, 1GC, 2GC, RMSYNTH):
 #           generates that stage's job scripts, submits them (or runs them
 #           directly, in "node" mode), and waits for every job to finish
 #           before starting the next stage.
