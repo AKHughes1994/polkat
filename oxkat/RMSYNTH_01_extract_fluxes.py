@@ -1,18 +1,34 @@
 # andrew.hughes@physics.ox.ac.uk
 # fraser.cowie@physics.ox.ac.uk
 
-# Modular-CASA version: imfit/imstat/imhead/table are plain imports, not
-# casashell-injected globals, so this runs under a normal python3 interpreter
-# (not `casa -c`) as long as casatasks/casatools are installed.
+"""
+RMSYNTH step 1: fit Stokes I, P, Q, U, V of every source in rmsynth_info.json
+on its MFS and per-channel images, and write the inputs for RM synthesis.
+
+For each prefix (one per time interval, or one for the whole observation):
+  - MFS: fit Stokes I (the reference position), then P, Q and U (anchored to
+    P) and V (anchored to I). A fit that drifts more than 1/3 beam from its
+    reference is redone with positions fixed.
+  - Channels: the same sequence for every channel, in a pool of workers.
+
+Outputs (RESULTS/):
+  <prefix>_polarization.json           every MFS and channel fit
+  <prefix>_<component>_rmsynth.txt     freq, I, Q, U, dI, dQ, dU (Hz, Jy)
+  <prefix>_<component>_IQUV.txt        freq, I, Q, U, V, dI, dQ, dU, dV
+  <prefix>_<component>_rmsynth_UVfix.txt  U/V-merged spectrum, only without
+                                       a polarization angle calibrator
+  fitting_plots/                       IQUV spectra; MFS light curves for
+                                       time-resolved runs
+
+Runs under python-pycasa (casatasks/casatools are imported directly).
+"""
 
 import glob
 import os
 import re
 import datetime
-import subprocess
 import sys
 import json
-import shutil
 import numpy as np
 import os.path as o
 import time
@@ -36,59 +52,68 @@ tb = table()
 
 
 # =============================================================================
-# Global fitting, plotting, and spectral-index options
-# (defaults pulled from config.py; override here if needed)
+# SETTINGS (defaults from oxkat/config.py)
 # =============================================================================
 
-FORCE_FIX_STOKES_V    = cfg.RMSYN_FORCE_FIX_STOKES_V
-OVERWRITE             = cfg.RMSYN_OVERWRITE
-SPEC_PLOT_SNR_THRESH  = cfg.RMSYN_SPEC_PLOT_SNR_THRESH
-SPEC_INDEX_SNR_THRESH = cfg.RMSYN_SPEC_INDEX_SNR_THRESH
-SPEC_INDEX_MAD_CLIP   = cfg.RMSYN_SPEC_INDEX_MAD_CLIP
-MAX_I_DRIFT_PIX       = cfg.RMSYN_MAX_I_DRIFT_PIX
-USE_RESIDUAL_RMS      = cfg.RMSYN_USE_RESIDUAL_RMS
+FORCE_FIX_STOKES_V    = cfg.RMSYN_FORCE_FIX_STOKES_V     # always fix Stokes V positions to Stokes I
+OVERWRITE             = cfg.RMSYN_OVERWRITE              # False: reuse an existing JSON, only re-plot
+SPEC_PLOT_SNR_THRESH  = cfg.RMSYN_SPEC_PLOT_SNR_THRESH   # MFS S/N needed for a spectrum plot (time-resolved)
+SPEC_INDEX_SNR_THRESH = cfg.RMSYN_SPEC_INDEX_SNR_THRESH  # MFS S/N needed for a spectral index fit
+SPEC_INDEX_MAD_CLIP   = cfg.RMSYN_SPEC_INDEX_MAD_CLIP    # Stokes I outlier clip (robust sigma)
+MAX_I_DRIFT_PIX       = cfg.RMSYN_MAX_I_DRIFT_PIX        # max MFS Stokes I drift from the input position (False = off)
+USE_RESIDUAL_RMS      = cfg.RMSYN_USE_RESIDUAL_RMS       # measure noise on the matching residual image
 
-# No polarization angle calibrator: the U/V-merged companion RM synthesis file
-# is built from a linear cross-hand phase fit (see fit_linear_xy_phase).
-UVFIX_MAX_DELAY_NS    = 10.0  # Half-width of the cross-hand delay search, +/- ns
-UVFIX_MIN_SNR         = 6.0   # Coherent S/N below which the fit is flagged unreliable (file still written)
+# Plot y ranges cover points within this many robust sigmas of the median
+# (+/- error bars), padded by this fraction of the range
+PLOT_YLIM_MAD_SIGMA   = 10.0
+PLOT_YLIM_PAD         = 0.25
+
+# No polarization angle calibrator: a linear cross-hand phase fit merges U and
+# V into one spectrum (see write_uvfix_rmsynth)
+UVFIX_MAX_DELAY_NS    = 10.0  # half-width of the cross-hand delay search (ns)
+UVFIX_MIN_SNR         = 6.0   # coherent S/N below which the fit is flagged unreliable
 UVFIX_OBSERVATORY     = EarthLocation.from_geodetic(lon="21:26:35.736", lat="-30:42:44.838",
-                                                    height=1059.662443 * u.m)  # MeerKAT site for the parallactic angle
+                                                    height=1059.662443 * u.m)  # MeerKAT
+
+# Channel-fit workers leak a few MB per prefix (casacore caches), so the pool is
+# restarted every N prefixes: N = spare memory per worker / growth rate, within [MIN, MAX]
+ASSUMED_WORKER_GROWTH_MB_PER_PREFIX = 5.0
+MIN_POOL_RECYCLE_INTERVAL = 10
+MAX_POOL_RECYCLE_INTERVAL = 200
+
 
 # =============================================================================
+# UTILITIES
+# =============================================================================
+
+def msg(txt):
+    """Print a timestamped log line."""
+    print(time.strftime(' %Y-%m-%d %H:%M:%S | ') + txt, flush=True)
+
+
+_MJD_EPOCH = datetime.datetime(1858, 11, 17)
 
 
 def _iso_to_mjd(date_str):
-    """Convert an ISO-format datetime string (YYYY-MM-DDTHH:MM:SS[.f]) to MJD."""
-    _epoch = datetime.datetime(1858, 11, 17, 0, 0, 0)
+    """ISO date string (YYYY-MM-DDTHH:MM:SS[.f]) to MJD."""
     for fmt in ('%Y-%m-%dT%H:%M:%S.%f', '%Y-%m-%dT%H:%M:%S'):
         try:
-            return (datetime.datetime.strptime(date_str, fmt) - _epoch).total_seconds() / 86400.0
+            return (datetime.datetime.strptime(date_str, fmt) - _MJD_EPOCH).total_seconds() / 86400.0
         except ValueError:
             continue
     raise ValueError(f'Cannot parse date string for MJD conversion: {date_str!r}')
 
 
 def _mjd_to_isot(mjd):
-    """Convert MJD (float) to an ISOT-format datetime string (inverse of _iso_to_mjd)."""
-    _epoch = datetime.datetime(1858, 11, 17, 0, 0, 0)
-    return (_epoch + datetime.timedelta(days=mjd)).isoformat()
+    """MJD to an ISO date string."""
+    return (_MJD_EPOCH + datetime.timedelta(days=mjd)).isoformat()
 
 
 def _apply_label(path, src_name, label):
     """
-    Substitute `label` for `src_name` in the filename component of `path`
-    only -- never in directory segments.
-
-    A plain path.replace(src_name, label) across the *whole* path is unsafe:
-    if src_name also happens to appear in a directory segment (image_directory,
-    CWD, etc.) that occurrence gets silently corrupted too. In particular, if
-    this runs before an image_directory -> 'RESULTS' relocation, the corrupted
-    directory segment no longer matches image_directory verbatim, that
-    relocation silently no-ops, and the file is written under the original
-    image directory instead of RESULTS -- with no error, just a "missing"
-    output file. Always relocate to RESULTS (or otherwise fix up directories)
-    using the untouched path *before* calling this.
+    Replace src_name with label in the file name of path only, never in its
+    directories. Move a path into RESULTS/ before calling this, since that
+    move matches on the original directory name.
     """
     if label == src_name:
         return path
@@ -96,18 +121,71 @@ def _apply_label(path, src_name, label):
     return os.path.join(dirname, basename.replace(src_name, label))
 
 
-def msg(txt):
-    stamp = time.strftime(' %Y-%m-%d %H:%M:%S | ')
-    print(stamp+txt, flush=True)
+def case_insensitive(text):
+    """Glob pattern matching text in any letter case."""
+    return ''.join(f'[{c.lower()}{c.upper()}]' if c.isalpha() else glob.escape(c) for c in text)
+
+
+# A declination is the sexagesimal value after the comma of an 'RA,Dec' pair,
+# with or without a sign
+_DEC_COLON_RE = re.compile(r'(?<=,)(\s*[+-]?\d{1,3}):(\d{1,2}):(\d{1,2}(?:\.\d+)?)')
+
+
+def fix_dec_colons(pos_str, context_label=''):
+    """
+    Convert colon-separated declinations ('-63:42:45.6', '12:30:00') to the
+    period form CASA needs ('-63.42.45.6'), in a position ('RA,Dec') or every
+    coordinate pair of a region string. RA is left alone. Non-strings (e.g.
+    an unset rms_region) are returned unchanged.
+    """
+    if not isinstance(pos_str, str) or not pos_str:
+        return pos_str
+    fixed = _DEC_COLON_RE.sub(lambda m: f'{m.group(1)}.{m.group(2)}.{m.group(3)}', pos_str)
+    if fixed != pos_str:
+        msg(f'NOTE: {context_label} declination uses colons -- converting to CASA period format: '
+            f'"{pos_str}" -> "{fixed}"')
+    return fixed
+
+
+def parse_casa_position(position_str):
+    """
+    Position string to (ra_deg, dec_deg), or (None, None) if it cannot be
+    parsed. Accepts 'HH:MM:SS.SS,+DD.MM.SS.SS' or decimal degrees
+    ('260.43,-16.20', optionally with 'deg').
+    """
+    try:
+        if ':' not in position_str:
+            ra, dec = position_str.replace('deg', '').split(',')
+            return float(ra), float(dec)
+
+        ra_str, dec_str = position_str.split(',')
+        ra_parts = ra_str.strip().split(':')
+        if len(ra_parts) != 3:
+            msg(f'WARNING: Expected 3 parts in RA "{ra_str}", got {len(ra_parts)}')
+            return None, None
+        ra_deg = 15.0 * (float(ra_parts[0]) + float(ra_parts[1]) / 60.0 + float(ra_parts[2]) / 3600.0)
+
+        dec_str  = dec_str.strip()
+        dec_sign = -1.0 if dec_str.startswith('-') else 1.0
+        dec_parts = dec_str.lstrip('+-').split('.')
+        if len(dec_parts) < 3:
+            msg(f'WARNING: Expected at least 3 parts in Dec "{dec_str}", got {len(dec_parts)}')
+            return None, None
+        dec_arcsec = float(dec_parts[2] + ('.' + dec_parts[3] if len(dec_parts) > 3 else ''))
+        dec_deg = dec_sign * (float(dec_parts[0]) + float(dec_parts[1]) / 60.0 + dec_arcsec / 3600.0)
+        return ra_deg, dec_deg
+
+    except Exception as e:
+        msg(f'ERROR parsing CASA position "{position_str}": {e}')
+        return None, None
 
 
 # =============================================================================
-# Channel-fit parallelization: worker count + job chunking.
+# WORKER POOL (channel fits): memory, worker count, chunking
 # =============================================================================
 
 def _proc_rss_mb(pid):
-    """Read a process's resident memory (MB) straight from /proc -- no
-    psutil dependency needed."""
+    """Resident memory (MB) of a process, read from /proc."""
     try:
         with open(f'/proc/{pid}/status') as f:
             for line in f:
@@ -119,10 +197,8 @@ def _proc_rss_mb(pid):
 
 
 def log_memory_usage(label=''):
-    """Log main-process + CHAN-fitting pool worker memory (RSS): per-worker
-    avg/min/max, and the delta since the last call so steady growth (e.g. a
-    casacore table/image cache leak) shows up without diffing log lines.
-    Prefers psutil; falls back to /proc if it isn't installed."""
+    """Log the memory of this process and the pool workers, and the change
+    since the last call (steady growth points to a casacore cache leak)."""
     try:
         import psutil
         proc = psutil.Process()
@@ -152,6 +228,7 @@ def log_memory_usage(label=''):
 
 
 def get_available_memory_bytes():
+    """Memory available to this job: the SLURM allocation, else the node's free memory."""
     slurm_mem_node = os.environ.get('SLURM_MEM_PER_NODE')
     if slurm_mem_node:
         try:
@@ -199,9 +276,8 @@ def get_available_memory_bytes():
 
 
 def estimate_memory_per_worker_bytes(image, casa_worker_floor_mb=350):
-    """Conservative peak estimate for one channel-fit worker: pixel data size
-    (x4 for headroom) or a ~280 MB floor for a fresh casatasks/casatools
-    import per spawned worker, whichever is larger."""
+    """Peak memory of one worker: 4x the image size, or the cost of a fresh
+    casatasks import, whichever is larger."""
     with fits.open(image) as hdul:
         shape       = hdul[0].data.shape
         dtype       = hdul[0].data.dtype
@@ -216,23 +292,12 @@ def estimate_memory_per_worker_bytes(image, casa_worker_floor_mb=350):
     return chosen_bytes
 
 
-# Assumed per-worker memory growth rate (MB/prefix), used by compute_max_workers
-# to size the pool recycle interval. Clamped to [MIN,MAX] so it's never too
-# small (constant recycling overhead) or too large (no protection against leaks).
-ASSUMED_WORKER_GROWTH_MB_PER_PREFIX = 5.0
-MIN_POOL_RECYCLE_INTERVAL = 10
-MAX_POOL_RECYCLE_INTERVAL = 200
-
-
 def compute_max_workers(sample_images, n_jobs):
-    """sample_images is only used to estimate per-worker memory (a few
-    representative images is enough). n_jobs (e.g. channel groups) caps the
-    worker count, not len(sample_images).
-
-    Returns (workers, recycle_interval): recycle_interval scales with the
-    memory headroom left per worker once its baseline footprint is
-    subtracted, divided by the assumed growth rate -- more workers or less
-    memory both mean less headroom, so a smaller interval."""
+    """
+    Returns (workers, recycle_interval). workers is the smallest of the
+    memory cap (from sample_images), the allocated CPUs and n_jobs;
+    recycle_interval is how many prefixes the pool runs before a restart.
+    """
     available  = get_available_memory_bytes()
     per_worker = max(estimate_memory_per_worker_bytes(im) for im in sample_images)
     mem_cap    = max(1, int(available // per_worker))
@@ -269,30 +334,18 @@ def compute_max_workers(sample_images, n_jobs):
         f'= {projected_used / 1024**3:.2f} GB of {available / 1024**3:.2f} GB available '
         f'({100.0 * projected_used / available:.0f}%)')
 
-    # Logged step by step (not just the final number) so it's clear whether a
-    # small interval is from tight memory or from many workers splitting it.
-    mem_per_worker_budget = available / workers
-    headroom_bytes        = max(0.0, mem_per_worker_budget - per_worker)
-    growth_bytes_per_pfx  = ASSUMED_WORKER_GROWTH_MB_PER_PREFIX * 1024 ** 2
-    raw_interval          = int(headroom_bytes / growth_bytes_per_pfx)
-    recycle_interval      = max(MIN_POOL_RECYCLE_INTERVAL, min(MAX_POOL_RECYCLE_INTERVAL, raw_interval))
-    msg(f'Recycle interval calc: budget/worker = available / workers '
-        f'= {available / 1024**2:.0f}MB / {workers} = {mem_per_worker_budget / 1024**2:.0f}MB')
-    msg(f'Recycle interval calc: headroom = budget/worker - est. memory/worker '
-        f'= {mem_per_worker_budget / 1024**2:.0f}MB - {per_worker / 1024**2:.0f}MB '
-        f'= {headroom_bytes / 1024**2:.0f}MB')
-    msg(f'Recycle interval calc: raw = headroom / assumed growth '
-        f'= {headroom_bytes / 1024**2:.0f}MB / {ASSUMED_WORKER_GROWTH_MB_PER_PREFIX:.0f}MB/prefix '
-        f'= {raw_interval} prefixes')
+    headroom = max(0.0, available / workers - per_worker)
+    raw_interval = int(headroom / (ASSUMED_WORKER_GROWTH_MB_PER_PREFIX * 1024 ** 2))
+    recycle_interval = max(MIN_POOL_RECYCLE_INTERVAL, min(MAX_POOL_RECYCLE_INTERVAL, raw_interval))
     msg(f'Pool recycle interval : {recycle_interval} prefixes  '
-        f'[clamped to [{MIN_POOL_RECYCLE_INTERVAL}, {MAX_POOL_RECYCLE_INTERVAL}]]')
+        f'[{headroom / 1024**2:.0f} MB spare/worker / {ASSUMED_WORKER_GROWTH_MB_PER_PREFIX:.0f} MB/prefix '
+        f'= {raw_interval}, clamped to [{MIN_POOL_RECYCLE_INTERVAL}, {MAX_POOL_RECYCLE_INTERVAL}]]')
 
     return workers, recycle_interval
 
 
 def chunk_jobs(jobs, n_chunks):
-    """Round-robin split so any systematic per-channel cost trend (e.g. RFI
-    flagging clustered in frequency) gets spread evenly across workers."""
+    """Split jobs round-robin, so channels clustered in cost (e.g. by RFI) spread across workers."""
     n_chunks = max(1, min(n_chunks, len(jobs)))
     chunks = [[] for _ in range(n_chunks)]
     for i, job in enumerate(jobs):
@@ -300,178 +353,265 @@ def chunk_jobs(jobs, n_chunks):
     return [c for c in chunks if c]
 
 
-_DEC_COLON_RE = re.compile(r'[+-]\d{1,3}:\d{1,2}:\d{1,2}(?:\.\d+)?')
+# =============================================================================
+# CASA FITTING
+# =============================================================================
+
+def return_max(im, region):
+    """Peak or trough in region, whichever is larger in magnitude (Q, U, V can be negative)."""
+    ims = imstat(im, region=region)
+    fmax, fmin = ims['max'][0], ims['min'][0]
+    return fmax if fmax > abs(fmin) else fmin
 
 
-def fix_dec_colons(pos_str, context_label=''):
+def get_imstat_values(image, xpix, ypix, manual_rms_region=False):
     """
-    Convert a colon-separated declination (HMS,DMS style, e.g. '-63:42:45.6')
-    to CASA's period-separated style ('-63.42.45.6'), leaving RA untouched.
-
-    Declination is identified as a signed sexagesimal token (only Dec carries
-    a +/- sign in these position/region strings). If no such token is found,
-    the string is returned unchanged.
-
-    Parameters
-    ----------
-    pos_str       : str  -- position or region string to check
-    context_label : str  -- what this string is, for the NOTE message (e.g.
-                             'source position', 'rms_region')
-
-    Returns
-    -------
-    str : the string with any colon-separated declination converted to periods,
-          or pos_str itself unchanged if it isn't a (non-empty) string -- e.g.
-          rms_region defaults to False/'' when no manual region is set.
+    [peak, peak x, peak y, rms, rms region] near (xpix, ypix). The rms is
+    measured in an annulus of ~500 beam areas around the source (or
+    manual_rms_region), on the matching residual image when USE_RESIDUAL_RMS
+    is set and one exists.
     """
-    if not isinstance(pos_str, str) or not pos_str:
-        return pos_str
-    fixed = _DEC_COLON_RE.sub(lambda m: m.group(0).replace(':', '.'), pos_str)
-    if fixed != pos_str:
-        msg(f'NOTE: {context_label} declination uses colons -- converting to CASA period format: '
-            f'"{pos_str}" -> "{fixed}"')
-    return fixed
+    bmaj = imhead(image, mode='get', hdkey='BMAJ')['value']
+    bmin = imhead(image, mode='get', hdkey='BMIN')['value']
+
+    r_in  = 5.0 * bmaj
+    r_out = np.sqrt(500 * 0.25 * bmaj * bmin + r_in ** 2)
+    src_region = f'circle[[{xpix}pix,{ypix}pix],3.0pix]'
+    rms_region = manual_rms_region or f'annulus[[{xpix}pix,{ypix}pix],[{r_in}arcsec,{r_out}arcsec]]'
+
+    ims  = imstat(image, region=src_region)
+    flux = return_max(image, src_region)
+
+    rms_image = image
+    if USE_RESIDUAL_RMS:
+        residual = re.sub(r'-image(\.homogenized)?\.fits$', r'-residual\1.fits', image)
+        if os.path.exists(residual):
+            rms_image = residual
+        elif not getattr(get_imstat_values, 'warned', False):
+            msg(f'  WARNING: no residual image for the RMS (e.g. {os.path.basename(residual)}); using the image itself')
+            get_imstat_values.warned = True
+    rms = imstat(rms_image, region=rms_region)['rms'][0]
+
+    return [flux, ims['maxpos'][0], ims['maxpos'][1], rms, rms_region]
 
 
-def parse_casa_position(position_str):
+def make_estimate(fname, image, xpix, ypix, fix_var):
     """
-    Parse a CASA-format position string to decimal degrees.
-
-    Accepts two formats:
-      - CASA HMS/DMS : 'HH:MM:SS.SS,±DD.MM.SS.SS'   (colon RA, period Dec)
-      - Decimal degrees: '260.430458,-16.204894'  or with 'deg' suffix
-
-    Parameters
-    ----------
-    position_str : str
-        Position string from rmsynth_info.json source_pos field.
-
-    Returns
-    -------
-    ra_deg, dec_deg : float, float
-        Position in decimal degrees, or (None, None) on parse failure.
+    Write an imfit estimate file: one beam-shaped Gaussian per component,
+    seeded with the local peak. fix_var holds one CASA fix string per
+    component ('abp': position free, 'xyabp': position fixed).
     """
-    try:
-        # Decimal-degree format (no colons in the RA part)
-        if ':' not in position_str:
-            parts = position_str.replace('deg', '').split(',')
-            return float(parts[0].strip()), float(parts[1].strip())
-
-        # CASA HMS/DMS format: 'HH:MM:SS.SS,±DD.MM.SS.SS'
-        ra_str, dec_str = position_str.split(',')
-
-        # --- Parse RA (colon-separated: HH:MM:SS.SS) ---
-        ra_parts = ra_str.strip().split(':')
-        if len(ra_parts) != 3:
-            msg(f'WARNING: Expected 3 parts in RA "{ra_str}", got {len(ra_parts)}')
-            return None, None
-        ra_deg = (float(ra_parts[0]) + float(ra_parts[1]) / 60.0
-                  + float(ra_parts[2]) / 3600.0) * 15.0  # hours -> degrees
-
-        # --- Parse Dec (period-separated: ±DD.MM.SS.SS) ---
-        dec_str = dec_str.strip()
-        dec_sign = -1.0 if dec_str.startswith('-') else 1.0
-        dec_str  = dec_str.lstrip('+-')
-
-        dec_parts = dec_str.split('.')
-        if len(dec_parts) < 3:
-            msg(f'WARNING: Expected at least 3 parts in Dec "{dec_str}", got {len(dec_parts)}')
-            return None, None
-
-        # Reassemble fractional arcseconds from any extra period-separated parts
-        dec_arcsec = float(dec_parts[2] + ('.' + dec_parts[3] if len(dec_parts) > 3 else ''))
-        dec_deg = dec_sign * (abs(float(dec_parts[0]))
-                              + float(dec_parts[1]) / 60.0
-                              + dec_arcsec / 3600.0)
-
-        return ra_deg, dec_deg
-
-    except Exception as e:
-        msg(f'ERROR parsing CASA position "{position_str}": {e}')
-        return None, None
+    bmaj = imhead(image, mode='get', hdkey='BMAJ')['value']
+    bmin = imhead(image, mode='get', hdkey='BMIN')['value']
+    bpa  = imhead(image, mode='get', hdkey='BPA')['value']
+    with open(fname, 'w') as f:
+        for x, y, fix in zip(xpix, ypix, fix_var):
+            f.write(f'{get_imstat_values(image, x, y)[0]},{x},{y},{bmaj}arcsec,{bmin}arcsec,{bpa}deg, {fix}\n')
 
 
 def get_imfit_values(fname, image, xpix, ypix):
-
-    '''
-    Run imfit on a specific image
-    Inputs: 
-        fname = string containing estimate file name
-        image = string containing path to image to be fit
-        xpix  = pixel coordinate (RA)
-        ypix  = pixel coordinate (Dec)
-    Returns:
-        imfit dictionary
-    '''
-
-    # Get the beam parameters
-    bmaj        = imhead(image, mode='get', hdkey = 'BMAJ')['value']
-    bmin        = imhead(image, mode='get', hdkey = 'BMIN')['value']
-    bpa         = imhead(image, mode='get', hdkey = 'BPA')['value']
-    pixel_asec  = imhead(image, mode='get', hdkey='cdelt2')['value'] * 3600 * 180.0 / np.pi # pixel size in asecs
+    """
+    imfit result for image with estimates fname, in a circle centred on the
+    first component: 5 beams across, or twice the largest component
+    separation if that is bigger.
+    """
+    bmaj = imhead(image, mode='get', hdkey='BMAJ')['value']
+    r = 5 * bmaj
+    if len(xpix) > 1:
+        pixel_asec = np.degrees(imhead(image, mode='get', hdkey='cdelt2')['value']) * 3600
+        points = np.array([xpix, ypix]).T
+        r = max(r, 2.0 * np.amax(cdist(points, points)) * pixel_asec)
+    return imfit(image, estimates=fname, region=f'circle[[{xpix[0]}pix,{ypix[0]}pix],{r}arcsec]')
 
 
-    # Get the number of components
-    n_comp = len(xpix)
-  
-    # For single components
-    if n_comp == 1: 
-        x = xpix[0]
-        y = ypix[0]
-        r = 5 * bmaj
-        src_region = f'circle[[{x}pix,{y}pix],{r}arcsec]'
+def check_position(fname, image, xpix, ypix, snr_thresh=5.0, P_image=False,
+                   fix_additional_comps=False, manual_rms_region=False, force_fix_all=False):
+    """
+    Write the estimate file for image, choosing per component whether its
+    position is fitted ('abp') or fixed ('xyabp'):
+      force_fix_all                          fixed
+      fix_additional_comps and component > 0 fixed (faint secondary components)
+      S/N >= snr_thresh                      free
+      otherwise                              fixed
+    For P images (Rice noise) the S/N uses the larger of the Q and U rms.
+    """
+    bmaj = imhead(image, mode='get', hdkey='bmaj')['value']
+    bmin = imhead(image, mode='get', hdkey='bmin')['value']
+    bpa  = imhead(image, mode='get', hdkey='bpa')['value']
+    name = os.path.basename(image)
 
-    # For multi-component fits (times out if components are very far apart)
-    else:
-        point_array = np.array([xpix, ypix]).T
-        max_dist = np.amax(cdist(point_array, point_array)) * pixel_asec
+    fix_var = []
+    for k, (x, y) in enumerate(zip(xpix, ypix)):
+        # Flux at the trial position: a zero-amplitude, fixed-position fit
+        check_file = f'check_pos_{os.path.basename(fname)}_{k}.txt'
+        with open(check_file, 'w') as f:
+            f.write(f'0.0,{x},{y},{bmaj}arcsec,{bmin}arcsec,{bpa}deg, xyabp')
+        test_flux = abs(imfit(image, region=f'circle[[{x}pix,{y}pix],{2 * bmaj}arcsec]',
+                              estimates=check_file)['results']['component0']['peak']['value'])
 
-        # Bounding region radius: twice the max separation, or 5*bmaj, whichever is bigger
-        x = xpix[0]
-        y = ypix[0]
-        r = np.amax((5 * bmaj, 2.0 * max_dist))
-        src_region = f'circle[[{x}pix,{y}pix],{r}arcsec]'
-   
-    return imfit(image, estimates = fname, region = src_region)
-    
-    
-
-def calculate_P0(flux_P, rms_Q, rms_U, rms_V, pol_flag, Aq = 0.8):
-    '''
-    Calculate the de-biased linearly polarized flux
-    '''    
-
-    # If polarization angle calibrator included
-    if pol_flag:
-
-        # Get the noise ratio coeffs, and calculate noise, from Hales 2012. https://arxiv.org/abs/1205.5310
-        if rms_Q >= rms_U:
-            A = Aq
-            B = 1. - Aq 
-        else: 
-            B = Aq
-            A = 1. - Aq 
-
-        rms_P = (A * rms_Q ** 2 + B * rms_U ** 2) ** 0.5 
-
-        # De-bias if SNR >= 3, following Vaillancourt 2006. https://arxiv.org/abs/astro-ph/0603110
-        if flux_P / rms_P >= 3:
-            flux_P0 = (flux_P ** 2 - rms_P ** 2) ** (0.5)
-
+        if P_image:
+            rms = max(get_imstat_values(image.replace('-Plin-', f'-{s}-').replace('-Ptot-', f'-{s}-'),
+                                        x, y, manual_rms_region)[3] for s in 'QU')
         else:
-            flux_P0 = flux_P
+            rms = get_imstat_values(image, x, y, manual_rms_region)[3]
+        snr = test_flux / rms
 
-    # No polarization angle calibrator: no reference for this case, so go
-    # conservative -- adopt the max of Q/U/V as the noise, and always de-bias
-    # (Monte Carlo experiments put the bias correction factor at 2 for
-    # P^2 = Q^2 + U^2 + V^2).
+        if force_fix_all:
+            fix, why = 'xyabp', 'FIXED (force_fix_all)'
+        elif fix_additional_comps and k > 0:
+            fix, why = 'xyabp', 'FIXED (secondary component)'
+        elif snr > snr_thresh:
+            fix, why = 'abp', f'FREE (S/N >= {snr_thresh})'
+        else:
+            fix, why = 'xyabp', f'FIXED (S/N < {snr_thresh})'
+        fix_var.append(fix)
+        msg(f'  Component {k}: {why} | S/N = {snr:.1f} | {name}')
+
+    make_estimate(fname, image, xpix, ypix, fix_var)
+
+
+def check_fit_offset_and_refix(imfit_result, image, ref_xpix, ref_ypix, bmaj,
+                               src_name, stokes_label, tag=''):
+    """
+    If any fitted component lies more than 1/3 beam from its reference
+    position (normally Stokes I), refit the whole image with every position
+    fixed to the reference. Returns (imfit_result, refitted).
+    """
+    cell_arcsec = np.degrees(abs(imhead(image, mode='get', hdkey='CDELT2')['value'])) * 3600.0
+    threshold_arcsec = bmaj / 3.0
+
+    exceeded = False
+    for z, component in enumerate(comp_keys(imfit_result)):
+        x, y = imfit_result['results'][component]['pixelcoords'][:2]
+        offset_pix = np.hypot(x - ref_xpix[z], y - ref_ypix[z])
+        offset_arcsec = offset_pix * cell_arcsec
+        if offset_arcsec > threshold_arcsec:
+            exceeded = True
+            msg(f'  WARNING: Stokes {stokes_label} component {z} offset {offset_arcsec:.2f}" '
+                f'({offset_pix:.1f} pix) > 1/3 BMAJ ({threshold_arcsec:.2f}") -- refitting with fixed positions')
+        else:
+            msg(f'  Position check OK: Stokes {stokes_label} component {z} offset {offset_arcsec:.2f}" '
+                f'({offset_pix:.1f} pix)')
+
+    if exceeded:
+        fixed_est = f'estimate_fixed_{stokes_label}_{src_name}{tag}.txt'
+        make_estimate(fixed_est, image, ref_xpix, ref_ypix, ['xyabp'] * len(ref_xpix))
+        imfit_result = get_imfit_values(fixed_est, image, ref_xpix, ref_ypix)
+    return imfit_result, exceeded
+
+
+def fit_stokes(est_fname, image, seed_xpix, seed_ypix, ref_xpix, ref_ypix, bmaj,
+               src_name, stokes_label, tag='', **check_kwargs):
+    """
+    Fit one Stokes image: choose free or fixed positions at the seed
+    (check_position), fit around the reference position, and refit with
+    positions fixed to the reference if any component drifts > 1/3 beam.
+    """
+    check_position(est_fname, image, seed_xpix, seed_ypix, **check_kwargs)
+    imfit_result = get_imfit_values(est_fname, image, ref_xpix, ref_ypix)
+    return check_fit_offset_and_refix(imfit_result, image, ref_xpix, ref_ypix, bmaj,
+                                      src_name, stokes_label, tag=tag)[0]
+
+
+def comp_keys(imfit_result):
+    """Component keys ('component0', ...) of an imfit result."""
+    return [key for key in imfit_result['results'] if 'component' in key]
+
+
+def fitted_pix(imfit_result, components):
+    """Fitted pixel positions of the components, as (x list, y list)."""
+    return ([imfit_result['results'][c]['pixelcoords'][0] for c in components],
+            [imfit_result['results'][c]['pixelcoords'][1] for c in components])
+
+
+def peak(imfit_result, component):
+    """Fitted peak and its error, in mJy."""
+    p = imfit_result['results'][component]['peak']
+    return p['value'] * 1e3, p['error'] * 1e3
+
+
+def sky_deg(imfit_result, component):
+    """Fitted RA and Dec, in degrees."""
+    d = imfit_result['results'][component]['shape']['direction']
+    return np.degrees(d['m0']['value']), np.degrees(d['m1']['value'])
+
+
+def cleanup_estimate_files(src_name):
+    """Remove the estimate and check-position scratch files written for src_name."""
+    removed = 0
+    for pattern in (f'estimate_*{src_name}*.txt', f'check_pos_*{src_name}*.txt'):
+        for fpath in glob.glob(pattern):
+            try:
+                os.remove(fpath)
+                removed += 1
+            except OSError:
+                pass
+    if removed:
+        msg(f'Cleaned up {removed} temporary estimate/check-position file(s) for {src_name}.')
+
+
+# =============================================================================
+# POLARIZATION QUANTITIES
+# =============================================================================
+
+def calculate_he(flux_P, rms_Q, rms_U, rms_V, pol_flag, Aq=0.8):
+    """
+    De-biased linear polarization and its noise, (P0, rms_P).
+
+    With a polarization angle calibrator: noise from Hales et al. (2012),
+    de-biased when S/N >= 3 (Vaillancourt 2006). Without one, P includes V,
+    so the noise is the largest of rms_Q, rms_U, rms_V and P is always
+    de-biased with a factor of 2 (from Monte Carlo tests).
+    """
+    if pol_flag:
+        A, B = (Aq, 1.0 - Aq) if rms_Q >= rms_U else (1.0 - Aq, Aq)
+        rms_P = (A * rms_Q ** 2 + B * rms_U ** 2) ** 0.5
+        flux_P0 = (flux_P ** 2 - rms_P ** 2) ** 0.5 if flux_P / rms_P >= 3 else flux_P
     else:
         rms_P = np.amax([rms_Q, rms_U, rms_V])
         flux_P0 = (flux_P ** 2 - 2.0 * rms_P ** 2) ** 0.5
-
     return flux_P0, rms_P
 
 
+def component_results(imfits, images, component, manual_rms_region, pol_flag):
+    """
+    Results for one component from the imfit result and image of each Stokes
+    ({'I': ...} or {'I', 'P', 'Q', 'U', 'V'}): fluxes and fit errors (mJy),
+    rms (mJy, all measured at the component's Stokes I position), positions
+    (deg) and, with polarization, P0, LP fraction (%) and EVPA (deg; only
+    with a polarization angle calibrator).
+    """
+    x, y = imfits['I']['results'][component]['pixelcoords'][:2]
+    rms = {s: get_imstat_values(images[s], x, y, manual_rms_region)[3] * 1e3
+           for s in images if s != 'P'}
+
+    out = {}
+    for s in imfits:
+        out[f'{s}_flux_mJy'], out[f'{s}_err_mJy'] = peak(imfits[s], component)
+        if s != 'P':
+            out[f'{s}_rms_mJy'] = rms[s]
+    out['I_RA_deg'], out['I_DEC_deg'] = sky_deg(imfits['I'], component)
+    if 'P' not in imfits:
+        return out
+
+    out['P_RA_deg'], out['P_DEC_deg'] = sky_deg(imfits['P'], component)
+    flux_I, flux_Q, flux_U = out['I_flux_mJy'], out['Q_flux_mJy'], out['U_flux_mJy']
+    flux_P0, rms_P = calculate_P0(out['P_flux_mJy'], rms['Q'], rms['U'], rms['V'], pol_flag)
+    out['P0_flux_mJy'], out['P_rms_mJy'] = flux_P0, rms_P
+    out['LP_frac']     = flux_P0 / flux_I * 100.0
+    out['LP_frac_err'] = abs(out['LP_frac']) * np.sqrt((rms['I'] / flux_I) ** 2 + (rms_P / flux_P0) ** 2)
+    if pol_flag:
+        out['LP_EVPA']     = 0.5 * np.degrees(np.arctan2(flux_U, flux_Q))
+        out['LP_EVPA_err'] = 0.5 * np.degrees(np.sqrt(flux_U ** 2 * rms['Q'] ** 2 + flux_Q ** 2 * rms['U'] ** 2)
+                                              / (flux_U ** 2 + flux_Q ** 2))
+    else:
+        out['LP_EVPA'] = out['LP_EVPA_err'] = None
+    return out
+
+
+# =============================================================================
+# U/V FIX (no polarization angle calibrator): merge U and V into one spectrum
+# =============================================================================
 
 def fit_linear_xy_phase(freq_hz, U, V, rms_U, rms_V, max_delay_ns, oversample=8):
     '''
@@ -811,6 +951,9 @@ def write_uvfix_rmsynth(rmsynth_fname, rmsynth_arr, V, rms_V, ra_deg, dec_deg, m
         json.dump(summary, j, indent=4)
 
 
+# =============================================================================
+# IMAGE DISCOVERY
+# =============================================================================
 
 def scan_stokes_images(src_im_identifier, mfs_im_suffix, chan_im_suffix, pol_flag):
     '''
@@ -966,696 +1109,218 @@ def scan_stokes_images(src_im_identifier, mfs_im_suffix, chan_im_suffix, pol_fla
         'n_chan_incomplete': {p: (n_incomplete[p] if full_stokes else 0) for p in kept},
     }
 
-        
 
-def return_max(im, region):
-    '''
-    Return the value that has the higher absolute magnitude
-    Necessary for fluxes that are non-positive definite
-    '''
-
-    ims = imstat(im, region=region)
-    fmax = ims['max'][0]
-    fmin = ims['min'][0]
-
-    if fmax > abs(fmin):
-        return fmax
-    else:
-        return fmin
-
-
-def get_imstat_values(image, xpix, ypix, manual_rms_region = False):
-    '''
-    Take in an image and a position, 
-    return the max, max pixel location(s), and rms
-    '''
-
-    # Get the beam parameters
-    bmaj = imhead(image, mode='get', hdkey = 'BMAJ')['value']
-    bmin = imhead(image, mode='get', hdkey = 'BMIN')['value']
-    bpa  = imhead(image, mode='get', hdkey = 'BPA')['value']    
-
-    # Define the regions of interest (rms is ~500 beam area)
-    r_in  = 5.0 * bmaj
-    r_out = np.sqrt(500 * 0.25 * bmaj * bmin + r_in ** 2)
-    src_region = f'circle[[{xpix}pix,{ypix}pix],3.0pix]'
-    rms_region = f'annulus[[{xpix}pix,{ypix}pix],[{r_in}arcsec,{r_out}arcsec]]'
-    if manual_rms_region:
-        rms_region = manual_rms_region
-    #else:
-    #    msg('Using default annular RMS region')
-
-    # Values of interest -- Source
-    ims = imstat(image, region = src_region)
-    flux = return_max(image, src_region)
-    xpix = ims['maxpos'][0]
-    ypix = ims['maxpos'][1]
-
-    # Extract RMS: on the matching residual image when USE_RESIDUAL_RMS is set and
-    # one exists, otherwise on the image itself
-    rms_image = image
-    if USE_RESIDUAL_RMS:
-        residual = re.sub(r'-image(\.homogenized)?\.fits$', r'-residual\1.fits', image)
-        if os.path.exists(residual):
-            rms_image = residual
-        elif not getattr(get_imstat_values, 'warned', False):
-            msg(f'  WARNING: no residual image for the RMS (e.g. {os.path.basename(residual)}); using the image itself')
-            get_imstat_values.warned = True
-    rms = imstat(rms_image, region = rms_region)['rms'][0]
-
-    return [flux, xpix, ypix, rms, rms_region]
-    
-    
-def check_position(fname, image, xpix, ypix, snr_thresh=5.0, P_image=False,
-                   fix_additional_comps=False, manual_rms_region=False,
-                   src_name='src', force_fix_all=False):
-    '''
-    Decide per component whether to fit position freely or fix it, then write
-    the imfit estimate file.
-
-    Decision logic:
-      - force_fix_all=True                          --> all fixed ('xyabp'), no S/N check
-      - k>0 component and fix_additional_comps=True  --> always fixed ('xyabp')
-                                                          (faint ejecta/lobes: position is
-                                                          unreliable off Stokes I, so anchor it)
-      - k=0, S/N >= snr_thresh                       --> free ('abp')
-      - k=0, S/N <  snr_thresh                       --> fixed ('xyabp')
-
-    P images have non-Gaussian (Rice) noise, so the S/N check uses the larger
-    of rms_Q/rms_U instead of measuring P directly.
-
-    Parameters
-    ----------
-    fname               -- path for the output estimate file passed to imfit
-    image               -- CASA image to be fitted
-    xpix                -- list of RA pixel positions, one per component
-    ypix                -- list of Dec pixel positions, one per component
-    snr_thresh          -- minimum S/N to allow a free position fit (default 5)
-    P_image             -- set True for polarized-intensity images so the noise
-                           estimate is taken from Q/U rather than P directly
-    fix_additional_comps-- set True to force secondary components (k>0) to fixed
-                           positions regardless of S/N (recommended for faint ejecta)
-    manual_rms_region   -- optional CASA region string to override the default
-                           annular RMS region
-    src_name            -- source name string; used to build unique temp filenames
-    force_fix_all       -- set True to fix ALL components (including k=0) regardless
-                           of S/N; overrides both snr_thresh and fix_additional_comps
-    '''
-
-    fix_var = []
-
-    # Read beam shape once; it is the same for all components in this image
-    bmaj = imhead(image, mode='get', hdkey='bmaj')['value']
-    bmin = imhead(image, mode='get', hdkey='bmin')['value']
-    bpa  = imhead(image, mode='get', hdkey='bpa')['value']
-
-    # Also get the pixel scale so we can report offsets in arcsec
-    cell_rad    = abs(imhead(image, mode='get', hdkey='CDELT2')['value'])
-    cell_arcsec = np.degrees(cell_rad) * 3600.0
-
-    for k, (x, y) in enumerate(zip(xpix, ypix)):
-
-        # Unique per component/source name so concurrent Stokes passes don't clobber each other
-        check_file = f'check_pos_{os.path.basename(fname)}_{k}.txt'
-        with open(check_file, 'w') as f:
-            # Zero amplitude, fixed position -- just want the peak flux at this pixel
-            f.write(f'0.0,{x},{y},{bmaj}arcsec,{bmin}arcsec,{bpa}deg, xyabp')
-
-        # Fit region: circle of radius 2*BMAJ centred on the trial position
-        region    = f'circle[[{x}pix,{y}pix],{2 * bmaj}arcsec]'
-        test_flux = abs(imfit(image, region=region,
-                              estimates=check_file)['results']['component0']['peak']['value'])
-
-        # P images have Rice-distributed noise -- use the larger of rms_Q/rms_U instead
-        rms = get_imstat_values(image, x, y, manual_rms_region=manual_rms_region)[3]
-        if P_image:
-            image_Q = image.replace('-Plin-', '-Q-').replace('-Ptot-', '-Q-')
-            image_U = image.replace('-Plin-', '-U-').replace('-Ptot-', '-U-')
-            rms_Q   = get_imstat_values(image_Q, x, y, manual_rms_region=manual_rms_region)[3]
-            rms_U   = get_imstat_values(image_U, x, y, manual_rms_region=manual_rms_region)[3]
-            rms     = np.amax((rms_Q, rms_U))
-
-        snr = test_flux / rms
-
-        if force_fix_all:
-            fix_var.append('xyabp')
-            msg(f'  Component {k}: FIXED (force_fix_all=True) '
-                f'| S/N = {snr:.1f} | {os.path.basename(image)}')
-
-        elif fix_additional_comps and k > 0:
-            fix_var.append('xyabp')
-            msg(f'  Component {k}: FIXED (secondary component flag set) '
-                f'| S/N = {snr:.1f} | {os.path.basename(image)}')
-
-        elif test_flux > snr_thresh * rms:
-            fix_var.append('abp')
-            msg(f'  Component {k}: FREE position fit '
-                f'| S/N = {snr:.1f} (>= {snr_thresh}) '
-                f'| {os.path.basename(image)}')
-
-        else:
-            fix_var.append('xyabp')
-            msg(f'  Component {k}: FIXED position (low S/N) '
-                f'| S/N = {snr:.1f} (< {snr_thresh}) '
-                f'| {os.path.basename(image)}')
-
-    # Write the final estimate file that imfit will actually use
-    make_estimate(fname, image, xpix, ypix, fix_var)
-
-
-def make_estimate(fname, image, xpix, ypix, fix_var):
-    '''
-    Write a CASA imfit estimate file: one line per component, seeding imfit
-    with a starting position and beam-sized Gaussian. fix_var controls which
-    parameters are free ('abp' = amplitude/axes/PA only; 'xyabp' = also fixes x/y).
-
-    Inputs:
-        fname   -- output estimate file path
-        image   -- CASA image from which to read the beam and peak flux seed
-        xpix    -- list of RA pixel positions for each component
-        ypix    -- list of Dec pixel positions for each component
-        fix_var -- list of CASA fix strings, one per component (e.g. 'abp' or 'xyabp')
-    '''
-
-    # Read beam shape from the image header to initialise the Gaussian seed
-    bmaj = imhead(image, mode='get', hdkey = 'BMAJ')['value']
-    bmin = imhead(image, mode='get', hdkey = 'BMIN')['value']
-    bpa  = imhead(image, mode='get', hdkey = 'BPA')['value']
-    
-    # Write one line per component: amplitude, x, y, beam major, beam minor, PA, fix string
-    f = open(fname, 'w')
-    for x, y, fix in zip(xpix, ypix, fix_var):
-        ims = get_imstat_values(image, x, y)
-        f.write(f'{ims[0]},{x},{y},{bmaj}arcsec,{bmin}arcsec,{bpa}deg, {fix}\n')
-    f.close()            
-    
-    return 0    
-
-
-def check_fit_offset_and_refix(imfit_result, image, ref_xpix, ref_ypix, bmaj,
-                               src_name, stokes_label, manual_rms_region=False, tag=''):
-    '''
-    Check each fitted component hasn't drifted more than 1/3 beam BMAJ from
-    its reference position (normally the Stokes I result); genuine sub-beam
-    offsets between Stokes parameters should be much smaller than that, so
-    anything larger is almost certainly a noise-driven imfit excursion. If
-    any component exceeds it, the whole image is re-fit with all positions
-    fixed to the reference, so one wandering component can't contaminate the
-    others' fluxes.
-
-    Parameters
-    ----------
-    imfit_result    : dict  -- result dictionary returned by get_imfit_values()
-    image           : str   -- path to the CASA image (used to convert pixels to arcsec)
-    ref_xpix        : list  -- reference RA pixel positions, one per component
-                               (typically the Stokes I fitted positions)
-    ref_ypix        : list  -- reference Dec pixel positions, one per component
-    bmaj            : float -- beam major axis in arcsec; sets the offset threshold
-    src_name        : str   -- source name, used to build a unique estimate filename
-    stokes_label    : str   -- Stokes label for log messages (e.g. 'Q', 'Plin', 'V')
-    manual_rms_region : str or False -- passed through to make_estimate() if a
-                                        re-fit is needed
-    tag             : str   -- appended to the re-fit estimate filename to keep
-                               it unique across concurrently running channel-fit
-                               workers on the same src_name (default '' for the
-                               serial MFS-fitting call sites)
-
-    Returns
-    -------
-    imfit_result : dict  -- original result, or updated result if a re-fit was done
-    was_refitted : bool  -- True if at least one component exceeded the threshold
-    '''
-
-    # CDELT2 is in radians -- convert to arcsec, then BMAJ to pixels
-    cell_rad    = abs(imhead(image, mode='get', hdkey='CDELT2')['value'])
-    cell_arcsec = np.degrees(cell_rad) * 3600.0
-    bmaj_pixels = bmaj / cell_arcsec
-
-    # Threshold: flag fits that move more than 1/3 beam from the reference position
-    threshold_fraction = 1.0 / 3.0
-    threshold_pixels   = threshold_fraction * bmaj_pixels
-    threshold_arcsec   = threshold_fraction * bmaj
-
-    # imfit results also contain non-component metadata keys ('nelements' etc.) -- exclude them
-    components = [key for key in imfit_result['results'].keys() if 'component' in key]
-    any_exceeded = False
-
-    for z, component in enumerate(components):
-        fitted_xpix = imfit_result['results'][component]['pixelcoords'][0]
-        fitted_ypix = imfit_result['results'][component]['pixelcoords'][1]
-
-        # Euclidean pixel distance from the Stokes I reference for this component
-        pixel_dist    = np.sqrt((fitted_xpix - ref_xpix[z])**2 +
-                                (fitted_ypix - ref_ypix[z])**2)
-        offset_arcsec = pixel_dist * cell_arcsec
-
-        if pixel_dist > threshold_pixels:
-            msg(f'  WARNING: Stokes {stokes_label} component {z} offset = '
-                f'{offset_arcsec:.2f}" ({pixel_dist:.1f} pix) '
-                f'exceeds 1/3 BMAJ ({threshold_arcsec:.2f}"). '
-                f'Will re-fit entire image with all positions fixed to Stokes I reference.')
-            any_exceeded = True
-        else:
-            msg(f'  Position check OK: Stokes {stokes_label} component {z} offset = '
-                f'{offset_arcsec:.2f}" ({pixel_dist:.1f} pix) '
-                f'< 1/3 BMAJ ({threshold_arcsec:.2f}")')
-
-    if any_exceeded:
-        # Refit with all positions fixed to reference. Filename is unique per
-        # Stokes param so it doesn't clobber another still-in-use estimate file.
-        fixed_est = f'estimate_fixed_{stokes_label}_{src_name}{tag}.txt'
-        fix_var   = ['xyabp'] * len(ref_xpix)
-        make_estimate(fixed_est, image, ref_xpix, ref_ypix, fix_var)
-        imfit_result = get_imfit_values(fixed_est, image, ref_xpix, ref_ypix)
-        msg(f'  Re-fit complete: all Stokes {stokes_label} positions fixed to reference.')
-
-    return imfit_result, any_exceeded
-
-
-def cleanup_estimate_files(src_name):
-    '''
-    Remove the temporary estimate/check_position scratch files written for
-    src_name (estimate_I/P/Q/U/V_*, estimate_fixed_*, check_pos_*).
-
-    Called once per prefix/timestep. CHAN-fit worker files are uniquely
-    tagged per channel per timestep to avoid collisions between concurrent
-    workers, so without this they'd pile up -- one file per channel per
-    Stokes per timestep, across a run that can have hundreds of timesteps.
-    '''
-    patterns = [f'estimate_*{src_name}*.txt', f'check_pos_*{src_name}*.txt']
-    removed = 0
-    for pattern in patterns:
-        for fpath in glob.glob(pattern):
-            try:
-                os.remove(fpath)
-                removed += 1
-            except OSError:
-                pass
-    if removed:
-        msg(f'Cleaned up {removed} temporary estimate/check-position file(s) for {src_name}.')
-
+# =============================================================================
+# PER-CHANNEL FITS (run in pool workers)
+# =============================================================================
 
 def fit_channel_group(job):
-    '''
-    Fit Stokes I(/P/Q/U/V) for one channel-image group of one prefix/timestep.
-    Self-contained (no output_dictionary access) so it can run inside a
-    parallel worker: everything comes in via `job`, results go out as a plain
-    dict.
+    """
+    Fit one channel's images of one prefix (job['CHAN_images']: [I] or
+    [I, P, Q, U, V]) in the same order as the MFS fit: I seeded at the MFS I
+    position, P at the MFS P position, Q and U at the channel P position, and
+    V at the channel I position.
 
-    `job` keys: chan_idx, CHAN_images, components, MFS_I_ra_pix, MFS_I_dec_pix,
-    MFS_P_ra_pix, MFS_P_dec_pix, only_intensity, pol_flag, fix_additional_comps,
-    manual_rms_region, src_name, tag, mfs_freq_ghz, mfs_bmaj_asec.
-
-    Returns (chan_idx, result) where result is None if the channel was skipped
-    (elongated beam -- likely heavily flagged) or the fit raised, otherwise a
-    dict with the per-channel scalars (freq_GHz/bmaj_asec/bmin_asec/bpa_deg)
-    and a 'components' sub-dict keyed the same as `components`.
-    '''
-    chan_idx             = job['chan_idx']
-    CHAN_images          = job['CHAN_images']
-    components           = job['components']
-    MFS_I_ra_pix         = job['MFS_I_ra_pix']
-    MFS_I_dec_pix        = job['MFS_I_dec_pix']
-    MFS_P_ra_pix         = job['MFS_P_ra_pix']
-    MFS_P_dec_pix        = job['MFS_P_dec_pix']
-    only_intensity       = job['only_intensity']
-    pol_flag             = job['pol_flag']
-    fix_additional_comps = job['fix_additional_comps']
-    manual_rms_region    = job['manual_rms_region']
-    src_name             = job['src_name']
-    tag                  = job['tag']
-    mfs_freq_ghz         = job['mfs_freq_ghz']
-    mfs_bmaj_asec        = job['mfs_bmaj_asec']
+    Returns (chan_idx, result). result holds freq_GHz, the beam and
+    'components' (component_results per component); it is None when the
+    channel's beam is over 3x the scaled MFS beam (heavily flagged) or a fit
+    fails.
+    """
+    chan_idx, images, components = job['chan_idx'], job['CHAN_images'], job['components']
+    src_name, tag, rms_region = job['src_name'], job['tag'], job['manual_rms_region']
 
     try:
-        msg(f'Fitting image: {CHAN_images[0]}')
+        msg(f'Fitting image: {images[0]}')
+        bmaj     = imhead(images[0], mode='get', hdkey='bmaj')['value']
+        bmin     = imhead(images[0], mode='get', hdkey='bmin')['value']
+        bpa      = imhead(images[0], mode='get', hdkey='bpa')['value']
+        freq_GHz = imhead(images[0], mode='get', hdkey='CRVAL3')['value'] / 1.0e9
 
-        bmaj     = imhead(CHAN_images[0], mode='get', hdkey='bmaj')['value']
-        bmin     = imhead(CHAN_images[0], mode='get', hdkey='bmin')['value']
-        bpa      = imhead(CHAN_images[0], mode='get', hdkey='bpa')['value']
-        freq_GHz = imhead(CHAN_images[0], mode='get', hdkey='CRVAL3')['value'] / 1.0e9
-
-        # Check if the beam is significantly elongated relative to the MFS
-        # expectation (channel is probably very flagged and should be omitted)
-        beam_scaled = mfs_freq_ghz / freq_GHz * mfs_bmaj_asec
-        if bmaj > 3.0 * beam_scaled:
-            msg('Skipping Channel: BMAJ is very different from expectation based on MFS image (likely high flagged)')
+        if bmaj > 3.0 * job['mfs_freq_ghz'] / freq_GHz * job['mfs_bmaj_asec']:
+            msg(f'Skipping channel {chan_idx}: beam over 3x the scaled MFS beam (likely heavily flagged)')
             return chan_idx, None
 
-        est_I = f'estimate_I_{src_name}_{tag}.txt'
-        check_position(est_I, CHAN_images[0], MFS_I_ra_pix, MFS_I_dec_pix,
-                        manual_rms_region=manual_rms_region, src_name=src_name)
-        CHAN_I_imfit    = get_imfit_values(est_I, CHAN_images[0], MFS_I_ra_pix, MFS_I_dec_pix)
-        CHAN_I_imfit, _ = check_fit_offset_and_refix(
-            CHAN_I_imfit, CHAN_images[0], MFS_I_ra_pix, MFS_I_dec_pix,
-            bmaj, src_name, 'I_chan', manual_rms_region=manual_rms_region, tag=tag)
-        CHAN_I_ra_pix  = [CHAN_I_imfit['results'][key]['pixelcoords'][0] for key in components]
-        CHAN_I_dec_pix = [CHAN_I_imfit['results'][key]['pixelcoords'][1] for key in components]
+        common = dict(bmaj=bmaj, src_name=src_name, tag=tag, manual_rms_region=rms_region)
+        I_x, I_y = job['MFS_I_ra_pix'], job['MFS_I_dec_pix']
+        imfits = {'I': fit_stokes(f'estimate_I_{src_name}_{tag}.txt', images[0],
+                                  I_x, I_y, I_x, I_y, stokes_label='I_chan', **common)}
 
-        if not only_intensity:
-            est_P = f'estimate_P_{src_name}_{tag}.txt'
-            check_position(est_P, CHAN_images[1], MFS_P_ra_pix, MFS_P_dec_pix,
-                            P_image=True, fix_additional_comps=fix_additional_comps,
-                            manual_rms_region=manual_rms_region, src_name=src_name)
-            CHAN_P_imfit    = get_imfit_values(est_P, CHAN_images[1], CHAN_I_ra_pix, CHAN_I_dec_pix)
-            CHAN_P_imfit, _ = check_fit_offset_and_refix(
-                CHAN_P_imfit, CHAN_images[1], CHAN_I_ra_pix, CHAN_I_dec_pix,
-                bmaj, src_name, 'P', manual_rms_region=manual_rms_region, tag=tag)
-            CHAN_P_ra_pix  = [CHAN_P_imfit['results'][key]['pixelcoords'][0] for key in components]
-            CHAN_P_dec_pix = [CHAN_P_imfit['results'][key]['pixelcoords'][1] for key in components]
+        if not job['only_intensity']:
+            pol = dict(fix_additional_comps=job['fix_additional_comps'], **common)
+            cI_x, cI_y = fitted_pix(imfits['I'], components)
+            imfits['P'] = fit_stokes(f'estimate_P_{src_name}_{tag}.txt', images[1],
+                                     job['MFS_P_ra_pix'], job['MFS_P_dec_pix'], cI_x, cI_y,
+                                     stokes_label='P', P_image=True, **pol)
+            cP_x, cP_y = fitted_pix(imfits['P'], components)
+            for s, image in (('Q', images[2]), ('U', images[3])):
+                imfits[s] = fit_stokes(f'estimate_{s}_{src_name}_{tag}.txt', image,
+                                       cP_x, cP_y, cP_x, cP_y, stokes_label=s, **pol)
+            imfits['V'] = fit_stokes(f'estimate_V_{src_name}_{tag}.txt', images[4],
+                                     cI_x, cI_y, cI_x, cI_y, stokes_label='V',
+                                     force_fix_all=FORCE_FIX_STOKES_V, **pol)
 
-            est_Q = f'estimate_Q_{src_name}_{tag}.txt'
-            check_position(est_Q, CHAN_images[2], CHAN_P_ra_pix, CHAN_P_dec_pix,
-                            P_image=False, fix_additional_comps=fix_additional_comps,
-                            manual_rms_region=manual_rms_region, src_name=src_name)
-            CHAN_Q_imfit    = get_imfit_values(est_Q, CHAN_images[2], CHAN_P_ra_pix, CHAN_P_dec_pix)
-            CHAN_Q_imfit, _ = check_fit_offset_and_refix(
-                CHAN_Q_imfit, CHAN_images[2], CHAN_P_ra_pix, CHAN_P_dec_pix,
-                bmaj, src_name, 'Q', manual_rms_region=manual_rms_region, tag=tag)
-
-            est_U = f'estimate_U_{src_name}_{tag}.txt'
-            check_position(est_U, CHAN_images[3], CHAN_P_ra_pix, CHAN_P_dec_pix,
-                            P_image=False, fix_additional_comps=fix_additional_comps,
-                            manual_rms_region=manual_rms_region, src_name=src_name)
-            CHAN_U_imfit    = get_imfit_values(est_U, CHAN_images[3], CHAN_P_ra_pix, CHAN_P_dec_pix)
-            CHAN_U_imfit, _ = check_fit_offset_and_refix(
-                CHAN_U_imfit, CHAN_images[3], CHAN_P_ra_pix, CHAN_P_dec_pix,
-                bmaj, src_name, 'U', manual_rms_region=manual_rms_region, tag=tag)
-
-            # Fit Stokes V anchored to channel I. FORCE_FIX_STOKES_V=True (global
-            # default) passes force_fix_all=True, bypassing the S/N check for
-            # all components including k=0.
-            est_V = f'estimate_V_{src_name}_{tag}.txt'
-            check_position(est_V, CHAN_images[4], CHAN_I_ra_pix, CHAN_I_dec_pix,
-                            P_image=False, fix_additional_comps=fix_additional_comps,
-                            manual_rms_region=manual_rms_region, src_name=src_name,
-                            force_fix_all=FORCE_FIX_STOKES_V)
-            CHAN_V_imfit, _ = check_fit_offset_and_refix(
-                get_imfit_values(est_V, CHAN_images[4], CHAN_I_ra_pix, CHAN_I_dec_pix),
-                CHAN_images[4], CHAN_I_ra_pix, CHAN_I_dec_pix,
-                bmaj, src_name, 'V', manual_rms_region=manual_rms_region, tag=tag)
-
-        result = {'freq_GHz': freq_GHz, 'bmaj_asec': bmaj, 'bmin_asec': bmin,
-                  'bpa_deg': bpa, 'components': {}}
-
-        for component in components:
-            flux_I    = CHAN_I_imfit['results'][component]['peak']['value'] * 1e3
-            err_I     = CHAN_I_imfit['results'][component]['peak']['error'] * 1e3
-            RA_I      = CHAN_I_imfit['results'][component]['shape']['direction']['m0']['value'] * 180 / np.pi
-            DEC_I     = CHAN_I_imfit['results'][component]['shape']['direction']['m1']['value'] * 180 / np.pi
-            RA_pix_I  = CHAN_I_imfit['results'][component]['pixelcoords'][0]
-            DEC_pix_I = CHAN_I_imfit['results'][component]['pixelcoords'][1]
-            rms_I     = get_imstat_values(CHAN_images[0], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3
-
-            comp_result = {
-                'I_flux_mJy': flux_I, 'I_err_mJy': err_I, 'I_rms_mJy': rms_I,
-                'I_RA_deg': RA_I, 'I_DEC_deg': DEC_I,
-            }
-
-            if not only_intensity:
-                flux_P = CHAN_P_imfit['results'][component]['peak']['value'] * 1e3
-                flux_Q = CHAN_Q_imfit['results'][component]['peak']['value'] * 1e3
-                flux_U = CHAN_U_imfit['results'][component]['peak']['value'] * 1e3
-                flux_V = CHAN_V_imfit['results'][component]['peak']['value'] * 1e3
-
-                err_P = CHAN_P_imfit['results'][component]['peak']['error'] * 1e3
-                err_Q = CHAN_Q_imfit['results'][component]['peak']['error'] * 1e3
-                err_U = CHAN_U_imfit['results'][component]['peak']['error'] * 1e3
-                err_V = CHAN_V_imfit['results'][component]['peak']['error'] * 1e3
-
-                RA_P  = CHAN_P_imfit['results'][component]['shape']['direction']['m0']['value'] * 180 / np.pi
-                DEC_P = CHAN_P_imfit['results'][component]['shape']['direction']['m1']['value'] * 180 / np.pi
-
-                rms_Q = get_imstat_values(CHAN_images[2], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3
-                rms_U = get_imstat_values(CHAN_images[3], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3
-                rms_V = get_imstat_values(CHAN_images[4], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3
-
-                flux_P0, rms_P = calculate_P0(flux_P, rms_Q, rms_U, rms_V, pol_flag, Aq=0.8)
-
-                LP_frac     = flux_P0 / flux_I * 100.0
-                LP_frac_err = abs(LP_frac) * np.sqrt((rms_I / flux_I) ** 2 + (rms_P / flux_P0) ** 2)
-
-                if pol_flag:
-                    LP_EVPA     = np.arctan2(flux_U, flux_Q) * 180.0 / np.pi * 0.5
-                    LP_EVPA_err = np.sqrt(flux_U ** 2 * rms_Q ** 2 + flux_Q ** 2 * rms_U ** 2) / (flux_U ** 2 + flux_Q ** 2) * 180.0 / np.pi * 0.5
-                else:
-                    LP_EVPA     = None
-                    LP_EVPA_err = None
-
-                comp_result.update({
-                    'Q_flux_mJy': flux_Q, 'U_flux_mJy': flux_U, 'V_flux_mJy': flux_V,
-                    'P_flux_mJy': flux_P, 'P0_flux_mJy': flux_P0,
-                    'Q_err_mJy': err_Q, 'U_err_mJy': err_U, 'V_err_mJy': err_V, 'P_err_mJy': err_P,
-                    'Q_rms_mJy': rms_Q, 'U_rms_mJy': rms_U, 'V_rms_mJy': rms_V, 'P_rms_mJy': rms_P,
-                    'P_RA_deg': RA_P, 'P_DEC_deg': DEC_P,
-                    'LP_frac': LP_frac, 'LP_frac_err': LP_frac_err,
-                    'LP_EVPA': LP_EVPA, 'LP_EVPA_err': LP_EVPA_err,
-                })
-
-            result['components'][component] = comp_result
-
-        return chan_idx, result
+        stokes_images = dict(zip('IPQUV', images))
+        return chan_idx, {
+            'freq_GHz': freq_GHz, 'bmaj_asec': bmaj, 'bmin_asec': bmin, 'bpa_deg': bpa,
+            'components': {c: component_results(imfits, stokes_images, c, rms_region, job['pol_flag'])
+                           for c in components}}
 
     except Exception:
-        msg(f'Fitting Failed: Channel {chan_idx} is likely flagged')
+        msg(f'Fitting failed: channel {chan_idx} is likely flagged')
         return chan_idx, None
 
 
 def fit_channel_group_batch(jobs):
-    '''
-    Pool entry point: processes one whole chunk of channel-groups in a
-    spawned worker process. imfit/imstat/imhead/tb (top-level imports) resolve
-    normally there since spawn re-executes the module's top-level code.
-    '''
+    """Pool entry point: fit a worker's chunk of channels."""
     return [fit_channel_group(job) for job in jobs]
 
 
-def case_insensitive(text):
-    """Glob pattern for text in any letter case."""
-    return ''.join(f'[{c.lower()}{c.upper()}]' if c.isalpha() else glob.escape(c) for c in text)
+# =============================================================================
+# EXTRACTION
+# =============================================================================
 
-
-def _try_get_ms_timing(src_name, n_intervals):
+def ms_timing(src_name):
     """
-    Derive per-interval MJD timing from the measurement set for src_name.
-
-    Tries project_info['target_ms'] first (the per-target split MS).  Falls
-    back to project_info['working_ms'] (filtered by FIELD_ID when possible).
-    Returns None and lets the caller fall back to the DATE-OBS image header
-    if neither MS is found or readable.
-
-    Returns a list of n_intervals dicts:
-        'time_ctr_mjd' : float  -- interval centre in MJD
-        'time_dt'      : float  -- relevant time span in seconds
+    (centre MJD, span in s) of src_name's observation, from the TIME column of
+    its split MS (project_info target_ms) or, failing that, the working MS
+    filtered by its FIELD_ID. None when neither MS can be read.
     """
     if not os.path.isfile('project_info.json'):
         msg('  [timing] project_info.json not found -- will use image header fallback')
         return None
+    with open('project_info.json') as f:
+        pinfo = json.load(f)
 
-    with open('project_info.json') as _f:
-        _pinfo = json.load(_f)
+    names = [name.lower() for name in pinfo.get('target_names', [])]
+    idx = names.index(src_name.lower()) if src_name.lower() in names else None
+    target_ms = pinfo.get('target_ms', [])
+    target_ids = pinfo.get('target_ids', [])
 
-    # -----------------------------------------------------------------------
-    # Locate the MS: try the per-target split MS, then the full working MS
-    # -----------------------------------------------------------------------
-    _ms_to_use  = None
-    _field_id   = None
-
-    _target_names = _pinfo.get('target_names', [])
-    _target_ms    = _pinfo.get('target_ms',    [])
-    _target_lower = [name.lower() for name in _target_names]
-
-    if src_name.lower() in _target_lower:
-        _idx = _target_lower.index(src_name.lower())
-        _candidate = _target_ms[_idx] if _idx < len(_target_ms) else None
-        if _candidate and os.path.exists(_candidate):
-            _ms_to_use = _candidate
-            msg(f'  [timing] using split MS: {os.path.basename(_ms_to_use)}')
-
-    if _ms_to_use is None:
-        _working = _pinfo.get('working_ms', '')
-        if _working and os.path.exists(_working):
-            _ms_to_use = _working
-            _target_ids = _pinfo.get('target_ids', [])
-            if src_name.lower() in _target_lower:
-                _idx = _target_lower.index(src_name.lower())
-                if _idx < len(_target_ids):
-                    _field_id = int(_target_ids[_idx])
-            msg(f'  [timing] split MS absent; using working MS: {os.path.basename(_ms_to_use)}'
-                + (f' (FIELD_ID={_field_id})' if _field_id is not None else ''))
-
-    if _ms_to_use is None:
+    ms_path, field_id = None, None
+    if idx is not None and idx < len(target_ms) and target_ms[idx] and os.path.exists(target_ms[idx]):
+        ms_path = target_ms[idx]
+        msg(f'  [timing] using split MS: {os.path.basename(ms_path)}')
+    elif pinfo.get('working_ms') and os.path.exists(pinfo['working_ms']):
+        ms_path = pinfo['working_ms']
+        if idx is not None and idx < len(target_ids):
+            field_id = int(target_ids[idx])
+        msg(f'  [timing] split MS absent; using working MS: {os.path.basename(ms_path)}'
+            + (f' (FIELD_ID={field_id})' if field_id is not None else ''))
+    else:
         msg(f'  [timing] no MS found for "{src_name}" -- will use image header fallback')
         return None
 
-    # -----------------------------------------------------------------------
-    # Read the TIME column
-    # -----------------------------------------------------------------------
     try:
-        tb.open(_ms_to_use)
-        _all_times  = tb.getcol('TIME')
-        _all_fields = tb.getcol('FIELD_ID') if _field_id is not None else None
+        tb.open(ms_path)
+        times = tb.getcol('TIME')
+        if field_id is not None:
+            times = times[tb.getcol('FIELD_ID') == field_id]
         tb.close()
-        if _field_id is not None:
-            _times = np.unique(_all_times[_all_fields == _field_id])
-        else:
-            _times = np.unique(_all_times)
-    except Exception as _e:
-        msg(f'  [timing] failed to read MS ({_e}) -- will use image header fallback')
+    except Exception as e:
+        msg(f'  [timing] failed to read MS ({e}) -- will use image header fallback')
         return None
-
-    if len(_times) == 0:
+    if len(times) == 0:
         msg('  [timing] no timestamps found -- will use image header fallback')
         return None
 
-    _times   = np.sort(_times)
-    _t_start = float(_times[0])
-    _t_end   = float(_times[-1])
-    _t_span  = _t_end - _t_start
-    msg(f'  [timing] {len(_times)} unique timestamps, '
-        f'span = {_t_span:.1f} s ({_t_span / 3600.0:.3f} h)')
-
-    # -----------------------------------------------------------------------
-    # Compute timing per interval
-    # -----------------------------------------------------------------------
-    if n_intervals == 1:
-        _time_ctr_mjd = (_t_start + _t_end) / 2.0 / 86400.0
-        _time_dt      = _t_span
-        msg(f'  [timing] MFS: centre = {_time_ctr_mjd:.8f} MJD, delta = {_time_dt:.0f} s')
-        return [{'time_ctr_mjd': _time_ctr_mjd, 'time_dt': _time_dt}]
-
-    # Time-resolved: split into n_intervals evenly-sized chunks.
-    # Each interval centre = start of chunk + half the median inter-chunk step.
-    _n      = len(_times)
-    _chunk  = max(1, _n // n_intervals)
-    _starts = np.array([float(_times[min(i * _chunk, _n - 1)]) for i in range(n_intervals)])
-    _diffs  = np.diff(_starts)
-    _sep_s  = float(np.median(_diffs)) if len(_diffs) > 0 else _t_span
-    _total  = float(_starts[-1] - _starts[0])
-
-    msg(f'  [timing] {n_intervals} intervals, median step = {_sep_s:.1f} s, '
-        f'total span = {_total:.1f} s')
-
-    _result = []
-    for _i, _t0 in enumerate(_starts):
-        _cmjd = (_t0 + _sep_s / 2.0) / 86400.0
-        _result.append({'time_ctr_mjd': _cmjd, 'time_dt': _total})
-        msg(f'  [timing]   interval {_i:>3}: start = {_t0 / 86400.0:.8f} MJD, '
-            f'centre = {_cmjd:.8f} MJD')
-
-    return _result
+    t_start, t_end = float(times.min()), float(times.max())
+    ctr_mjd = (t_start + t_end) / 2.0 / 86400.0
+    msg(f'  [timing] MS: centre = {ctr_mjd:.8f} MJD, span = {t_end - t_start:.0f} s')
+    return ctr_mjd, t_end - t_start
 
 
-def extract_polarization_properties(src_name,
-    src_im_identifier,
-    src_im_suffix,
-    src_ra,
-    src_dec,
-    src_ulims,
-    pol_flag,
-    manual_rms_region,
-    image_directory,
-    image_identifier,
-    fix_additional_comps = False,
-    out_label = ''):
+def record(store, values, k=None, n_epochs=None):
+    """
+    Append each of values to store[key]: one entry per epoch (MFS), or, given
+    epoch k, into epoch k's list of channel values (store[key] holds n_epochs
+    lists).
+    """
+    for key, val in values.items():
+        if k is None:
+            store.setdefault(key, []).append(val)
+        else:
+            store.setdefault(key, [[] for _ in range(n_epochs)])[k].append(val)
 
-    '''
-    Core extraction routine: fit Stokes I, Q, U, V (and polarized intensity P)
-    for all source components across both the multi-frequency-synthesis (MFS)
-    and per-channel images produced by WSCLEAN.
 
-    For each prefix (one per time interval, or just one for a full-observation
-    image), the function:
-      1. Fits the MFS Stokes I image to establish the reference sky position.
-      2. Fits MFS P, Q, U, V using that position as a prior, with post-fit
-         offset checks that refix wandering components automatically.
-      3. Iterates over per-channel image sets, repeating the same fitting
-         sequence and accumulating results for RM synthesis output.
+def write_spectra(chan, k, base, pol_flag, time_ctr_mjd):
+    """
+    Write epoch k's channel spectra of one component: <base>_rmsynth.txt
+    (freq, I, Q, U, dI, dQ, dU), <base>_IQUV.txt (adds V and dV) and, without
+    a polarization angle calibrator, the U/V-merged companion. Hz and Jy, all
+    channels.
+    """
+    freq = np.array(chan['freq_GHz'][k]) * 1e9
+    jy = {f'{s}_{q}': np.array(chan[f'{s}_{q}_mJy'][k]) / 1e3 for s in 'IQUV' for q in ('flux', 'rms')}
 
-    Supports multi-component sources (e.g. partially resolved jet ejecta): set
-    fix_additional_comps=True to anchor secondary components to the Stokes I
-    position in non-intensity images, preventing noise-driven wandering.
+    rmsynth_fname = base + '_rmsynth.txt'
+    rmsynth_arr = np.array([freq] + [jy[f'{s}_{q}'] for q in ('flux', 'rms') for s in 'IQU'])
+    np.savetxt(rmsynth_fname, rmsynth_arr.T)
+    msg(f'  RM synthesis file written: {rmsynth_fname}')
 
-    Parameters
-    ----------
-    src_name            -- source name string; drives image discovery (glob pattern
-                           matching, MS lookup for timing) and is the default for
-                           output filenames/titles when out_label is not set
-    src_im_identifier   -- glob pattern identifying the image set, constructed
-                           from rmsynth_info.json fields
-    src_im_suffix       -- FITS suffix, e.g. 'image.fits' or
-                           'image.homogenized.fits'; auto-detected if MFS
-                           images are not found with the requested suffix
-    src_ra              -- array of RA guesses in decimal degrees, one per component
-    src_dec             -- array of Dec guesses in decimal degrees, one per component
-    src_ulims           -- list of booleans, True = treat component as upper limit
-                           (position held fixed, flux not de-biased)
-    pol_flag            -- True if a polarization angle calibrator was used;
-                           controls which P image type is fitted (Plin vs Ptot)
-                           and which de-biasing formula is applied in calculate_P0
-    manual_rms_region   -- CASA region string for the noise measurement box/annulus;
-                           if False, a default annulus of ~500 beam areas is used
-    image_directory     -- top-level image directory (e.g. 'IMAGES' or 'INTERVALS')
-    image_identifier    -- image identifier string (e.g. 'pcalmask', 'restored')
-    fix_additional_comps-- if True, secondary components (k>0) have their positions
-                           frozen in all non-Stokes-I images; recommended for faint
-                           partially unresolved jet ejecta
-    out_label           -- optional display/output name override (rmsynth_info.json
-                           'label' field). Empty string (default) means "use
-                           src_name" -- current behaviour, unchanged. When set, it
-                           replaces src_name in output_dictionary['name'], the
-                           output JSON filename, and every plot filename/title
-                           produced for this source. src_name itself keeps doing
-                           image discovery and MS timing lookups either way, so
-                           out_label never affects which input files are found.
+    np.savetxt(base + '_IQUV.txt', np.column_stack([freq] + [jy[f'{s}_{q}'] for q in ('flux', 'rms') for s in 'IQUV']),
+               header='freq_Hz I_Jy Q_Jy U_Jy V_Jy dI_Jy dQ_Jy dU_Jy dV_Jy')
+    msg(f'  IQUV spectrum file written: {base}_IQUV.txt')
 
-    Returns
-    -------
-    output_dictionary : dict
-        Nested dictionary with 'MFS' and 'CHAN' sub-dictionaries, each keyed by
-        component name, containing fluxes, errors, RMS values, positions, beam
-        parameters, LP fraction, EVPA, and observation metadata.
-    '''
+    if not pol_flag:
+        try:
+            write_uvfix_rmsynth(rmsynth_fname, rmsynth_arr, jy['V_flux'], jy['V_rms'],
+                                float(np.nanmedian(chan['I_RA_deg'][k])),
+                                float(np.nanmedian(chan['I_DEC_deg'][k])), time_ctr_mjd)
+        except Exception as e:
+            msg(f'  WARNING: U/V fix failed for {os.path.basename(base)} ({e}) -- continuing without it')
 
-    # ------------------------------------------------------------------
-    # Log key settings at the start so the output log is self-documenting
-    # ------------------------------------------------------------------
+
+def make_plots(output_dictionary, src_name, prefix_arr, label, pol_flag):
+    """IQUV spectrum plots (above SPEC_PLOT_SNR_THRESH when time-resolved) and, when time-resolved, the light curve."""
+    for component in sorted(output_dictionary['MFS']):
+        if len(prefix_arr) > 1:
+            _plot_detected_spectra(output_dictionary, src_name, prefix_arr, component, label, pol_flag=pol_flag)
+        else:
+            plot_stokes_spectrum(output_dictionary, src_name, prefix_arr[0], component, 0,
+                                 save_plot=True, label=label, pol_flag=pol_flag)
+    if len(prefix_arr) > 1:
+        plot_light_curve(output_dictionary, src_name, prefix_arr, label=label)
+
+
+def extract_polarization_properties(src_name, src_im_identifier, src_im_suffix, src_ra, src_dec,
+                                    src_ulims, pol_flag, manual_rms_region, image_directory,
+                                    image_identifier, fix_additional_comps=False, out_label=''):
+    """
+    Fit every component of one source on its MFS and channel images, for each
+    prefix (time interval), then write the JSON, the spectra files and plots.
+
+    src_name             name used to find the images and the MS (for timing)
+    src_im_identifier    glob prefix of the source's images
+    src_im_suffix        'image.fits' or 'image.homogenized.fits'; the other
+                         is used for any image type with none of these
+    src_ra, src_dec      input positions (deg), one per component
+    src_ulims            per component: True fixes its MFS Stokes I position
+    pol_flag             True with a polarization angle calibrator (Plin, EVPA);
+                         False fits Ptot
+    manual_rms_region    CASA region for the noise, or False for an annulus
+    image_directory      image directory (replaced by RESULTS in output paths)
+    image_identifier     image identifier, e.g. 'pcalmask'
+    fix_additional_comps fix secondary component positions in P, Q, U, V
+    out_label            name for output files and plot titles (default src_name)
+    """
     msg('')
     msg(f'{"="*70}')
     msg(f'  Starting polarization extraction for source: {src_name}')
     msg(f'  Image identifier : {src_im_identifier}')
-    if manual_rms_region:
-        msg(f'  RMS region       : MANUAL -- {manual_rms_region}')
-    else:
-        msg(f'  RMS region       : default annulus (~500 beam areas) centred on source')
+    msg(f'  RMS region       : {"MANUAL -- " + manual_rms_region if manual_rms_region else "default annulus (~500 beam areas) centred on source"}')
     msg(f'  RMS image        : {"matching residual where it exists" if USE_RESIDUAL_RMS else "the image itself"}')
     msg(f'  Polarization angle calibrator present: {pol_flag}')
     msg(f'  Fix secondary component positions    : {fix_additional_comps}')
     msg(f'{"="*70}')
     msg('')
 
-    # Display/output name: out_label overrides src_name for everything written
-    # out below (JSON filename+contents, plot filenames+titles). src_name keeps
-    # doing image discovery/MS-timing lookups untouched -- see out_label in the
-    # docstring above.
-    label = out_label if out_label else src_name
+    label = out_label or src_name
     if label != src_name:
         msg(f'  Output label     : "{label}" (overrides source name "{src_name}" in output filenames)')
+    output_dictionary = {'name': label, 'MFS': {}, 'CHAN': {}}
 
-    # Initialize the output dictionary.  'MFS' holds one entry per time
-    # interval; 'CHAN' holds per-frequency-channel data for RM synthesis.
-    output_dictionary = {'name': label}
-    output_dictionary['MFS']  = {}
-    output_dictionary['CHAN'] = {}
-
-    # ------------------------------------------------------------------
-    # Locate images and determine the correct suffix to use
-    # ------------------------------------------------------------------
-
-    # The requested suffix is used for the MFS images and for the channel images
-    # wherever images with it exist. Homogenized images stand in for a type with
-    # none, as when the channelisation had to be chunked and no plain image could
-    # be made.
+    # Use the requested suffix where images with it exist; homogenized images
+    # stand in for a type with none (e.g. chunked channelisation)
     other_suffix = 'image.homogenized.fits' if src_im_suffix == 'image.fits' else 'image.fits'
 
     def pick_suffix(mfs):
@@ -1682,1316 +1347,520 @@ def extract_polarization_properties(src_name,
     src_im_suffix = chan_im_suffix
     msg(f'MFS image suffix: {mfs_im_suffix}; channel image suffix: {src_im_suffix}')
 
-    # Match every MFS and CHAN image to its Stokes by name and decide between
-    # full Stokes (some prefix has a complete set of I, P, Q, U, V images) and
-    # Stokes I only.
-    # Each prefix corresponds to one time interval (or the full observation if
-    # image_timing=false in rmsynth_info.json). One directory scan serves every
-    # prefix -- with hundreds of timesteps this avoids hundreds of repeated
-    # full-directory scans.
+    # One directory scan matches every MFS and channel image to its Stokes and
+    # decides between full Stokes and Stokes I only. Each prefix is one time
+    # interval (or the whole observation).
     stokes_scan    = scan_stokes_images(src_im_identifier, mfs_im_suffix, src_im_suffix, pol_flag)
     prefix_arr     = stokes_scan['prefixes']
     only_intensity = not stokes_scan['full_stokes']
-    is_time_resolved = len(prefix_arr) > 1
+    n_epochs       = len(prefix_arr)
 
     if only_intensity:
         msg('Fitting Stokes I only:')
-        for _note in stokes_scan['notes']:
-            msg(f'  {_note}')
+        for note in stokes_scan['notes']:
+            msg(f'  {note}')
     else:
         msg(f'Full Stokes images found -- fitting I, {"Plin" if pol_flag else "Ptot"}, Q, U, V')
-    msg(f'Found {len(prefix_arr)} prefix(es) (time interval(s)) to process')
+    if not prefix_arr:
+        msg('WARNING: No prefixes found -- nothing to process. '
+            'Check image_directory, image_identifier, and image_suffix in rmsynth_info.json.')
+        return 0
+    n_chan = sum(len(v) for v in stokes_scan['chan_groups'].values())
+    msg(f'Found {n_epochs} prefix(es) (time interval(s)) with {n_chan} channel(s) in total')
+    n_chan_skipped = sum(stokes_scan['n_chan_incomplete'].values())
+    if n_chan_skipped:
+        msg(f'WARNING: {n_chan_skipped} channel(s) left out because a Stokes image is missing')
 
-    _n_chan_total = sum(len(v) for v in stokes_scan['chan_groups'].values())
-    msg(f'Cached CHAN images for {len(prefix_arr)} prefix(es) '
-        f'({_n_chan_total} channel(s) total, ~{_n_chan_total // max(1, len(prefix_arr))} '
-        f'channel(s)/prefix on average) from one directory scan.')
-    _n_chan_skipped = sum(stokes_scan['n_chan_incomplete'].values())
-    if _n_chan_skipped > 0:
-        msg(f'WARNING: {_n_chan_skipped} channel(s) left out because a Stokes image is missing')
-
-    # Pre-compute timing before the prefix loop.
-    #   Time-resolved: read DATE-OBS from each prefix's MFS image header; the
-    #     centre is the header time shifted forward by half the median inter-
-    #     prefix step, and the span covers first-to-last prefix.
-    #   MFS (single epoch): try the target MS for accurate start/end; fall
-    #     back to DATE-OBS + 15-min default inside the loop if the MS is gone.
-    if is_time_resolved:
-        _ms_timings = None
-        _hdr_mjds   = []
-        for _pfx in prefix_arr:
-            _pfx_dobs = imhead(stokes_scan['mfs'][_pfx]['I'], mode='get', hdkey='DATE-OBS').replace('/','-',2).replace('/','T')
-            _hdr_mjds.append(_iso_to_mjd(_pfx_dobs))
-        _hdr_mjds   = np.array(_hdr_mjds)
-        _hdr_diffs  = np.diff(_hdr_mjds) * 86400.0         # seconds between adjacent prefixes
-        _hdr_step_s = float(np.median(_hdr_diffs)) if len(_hdr_diffs) > 0 else 0.0
-        _hdr_span_s = float((_hdr_mjds[-1] - _hdr_mjds[0]) * 86400.0)
-        msg(f'  [timing] time-resolved ({len(prefix_arr)} prefixes): '
-            f'median step = {_hdr_step_s:.1f} s, total span = {_hdr_span_s:.1f} s')
+    # Exposure centre (MJD) and span (s) per prefix. Time-resolved: each
+    # header DATE-OBS plus half the median step, spanning first to last prefix.
+    # Single epoch: from the MS, else (in the loop) DATE-OBS with a 15 min span.
+    if n_epochs > 1:
+        hdr_mjd = np.array([_iso_to_mjd(imhead(stokes_scan['mfs'][p]['I'], mode='get', hdkey='DATE-OBS')
+                                        .replace('/', '-', 2).replace('/', 'T')) for p in prefix_arr])
+        step_s = float(np.median(np.diff(hdr_mjd))) * 86400.0
+        span_s = float(hdr_mjd[-1] - hdr_mjd[0]) * 86400.0
+        timing = [(mjd + step_s / 2.0 / 86400.0, span_s) for mjd in hdr_mjd]
+        msg(f'  [timing] time-resolved ({n_epochs} prefixes): '
+            f'median step = {step_s:.1f} s, total span = {span_s:.1f} s')
     else:
-        _ms_timings  = _try_get_ms_timing(src_name, 1)
-        _hdr_mjds = _hdr_step_s = _hdr_span_s = None
+        timing = [ms_timing(src_name)]
 
-    # Compute the output JSON filename from the prefix list so we can
-    # check for an existing file when OVERWRITE is False.
-    if len(prefix_arr) > 0:
-        _last_prefix = prefix_arr[-1]
-        _split_id    = image_identifier.rstrip('-')
-        if len(_last_prefix.split(f'{_split_id}-t')) > 1:
-            json_basename = _last_prefix.split(f'{_split_id}-t')[0] + _split_id
-        else:
-            json_basename = _last_prefix
-        # Relocate into RESULTS/ first, while json_basename is still the
-        # untouched on-disk path -- image_directory is only guaranteed to
-        # appear verbatim in *that*. Applying the label swap first would risk
-        # corrupting a directory segment that happens to contain src_name too
-        # (e.g. image_directory or CWD named after the source), which then
-        # silently breaks this relocation and writes the file under the
-        # original image directory instead of RESULTS. See _apply_label().
-        json_basename = json_basename.replace(image_directory, 'RESULTS')
-        # Now the label override, restricted to the filename component only.
-        json_basename = _apply_label(json_basename, src_name, label)
-        json_path = '{}_polarization.json'.format(json_basename)
-    else:
-        json_path = None
+    # JSON name: the last prefix without its time index, moved into RESULTS/
+    # before the label is applied (see _apply_label)
+    split_id  = image_identifier.rstrip('-')
+    json_base = prefix_arr[-1]
+    if f'{split_id}-t' in json_base:
+        json_base = json_base.split(f'{split_id}-t')[0] + split_id
+    json_path = _apply_label(json_base.replace(image_directory, 'RESULTS'), src_name, label) + '_polarization.json'
 
-    # --- If OVERWRITE is False and the JSON exists, skip fitting and just plot ---
-    if not OVERWRITE and json_path is not None and os.path.isfile(json_path):
+    if not OVERWRITE and os.path.isfile(json_path):
         msg(f'OVERWRITE is False and {json_path} exists -- skipping fitting, loading for plots')
-        with open(json_path, 'r') as j:
-            output_dictionary = json.load(j)
-
-        components = sorted([key for key in output_dictionary['MFS'].keys()])
-
-        if is_time_resolved:
-            for component in components:
-                _plot_detected_spectra(output_dictionary, src_name, prefix_arr, component, label,
-                                       pol_flag=pol_flag)
-            plot_light_curve(output_dictionary, src_name, prefix_arr, label=label)
-        else:
-            for component in components:
-                plot_stokes_spectrum(output_dictionary, src_name, prefix_arr[0],
-                                    component, 0, save_plot=True, label=label,
-                                    pol_flag=pol_flag)
+        with open(json_path) as j:
+            make_plots(json.load(j), src_name, prefix_arr, label, pol_flag)
         return 0
 
-    # Persistent pool for CHAN-image fitting, created lazily on first use (once
-    # we've actually seen a channel image to size workers against) and reused
-    # across every prefix/timestep -- MFS fitting stays serial in this process
-    # since it's cheap; per-channel fitting is the part worth parallelizing.
-    #
-    # Recycled every chan_pool_recycle_interval prefixes (computed by
-    # compute_max_workers, scaled to available headroom/worker -- see there):
-    # casacore's table/image caching does not fully release memory between
-    # imfit/imstat calls within a long-lived worker process, so per-worker
-    # memory climbs several MB/prefix. Shutting down and recreating the pool
-    # periodically bounds that growth instead of letting it accumulate for
-    # the whole run; recreation cost is small (~1-3s, paid in parallel across
-    # workers) relative to the risk of an OOM kill partway through a run with
-    # hundreds of timesteps.
-    chan_pool = None
-    chan_pool_max_workers = None
-    chan_pool_ctx = mp.get_context('spawn')
-    chan_pool_prefixes_since_recycle = 0
-    chan_pool_recycle_interval = 50   # placeholder until compute_max_workers sets it
+    # Channel fits run in a pool of spawned workers, started at the first
+    # prefix with channels and restarted every recycle_interval prefixes to
+    # bound the workers' memory growth (casacore caches)
+    chan_pool, n_workers, recycle_interval, since_recycle = None, None, None, 0
 
-    for k, prefix in enumerate(prefix_arr[:]):
-
+    for k, prefix in enumerate(prefix_arr):
         msg('')
-        msg(f'--- Prefix {k+1}/{len(prefix_arr)}: {os.path.basename(prefix)} ---')
+        msg(f'--- Prefix {k+1}/{n_epochs}: {os.path.basename(prefix)} ---')
 
-        # MFS images for this prefix in the order the rest of the code assumes:
-        # I, P (Plin with a polarization angle calibrator, Ptot without), Q, U, V
-        _mfs = stokes_scan['mfs'][prefix]
-        if only_intensity:
-            MFS_images = [_mfs['I']]
-        else:
-            MFS_images = [_mfs[_stokes] for _stokes in ('I', 'P', 'Q', 'U', 'V')]
+        # MFS images: I, then P (Plin with a polarization angle calibrator,
+        # else Ptot), Q, U, V
+        images = {s: stokes_scan['mfs'][prefix][s] for s in ('I' if only_intensity else 'IPQUV')}
+        msg(f'MFS images selected ({len(images)}):')
+        for image in images.values():
+            msg(f'  {os.path.basename(image)}')
 
-        msg(f'MFS images selected ({len(MFS_images)}):')
-        for MFS_image in MFS_images:
-            msg(f'  {os.path.basename(MFS_image)}')
-
-        # Read observation metadata from the Stokes I header
-        freq_GHz = imhead(MFS_images[0], mode='get', hdkey='CRVAL3')['value'] / 1.0e9
-        date_obs = imhead(MFS_images[0], mode='get', hdkey='DATE-OBS').replace('/','-',2).replace('/','T')
-        bmaj     = imhead(MFS_images[0], mode='get', hdkey='bmaj')['value']
-        bmin     = imhead(MFS_images[0], mode='get', hdkey='bmin')['value']
-        bpa      = imhead(MFS_images[0], mode='get', hdkey='bpa')['value']
+        image_I  = images['I']
+        freq_GHz = imhead(image_I, mode='get', hdkey='CRVAL3')['value'] / 1.0e9
+        date_obs = imhead(image_I, mode='get', hdkey='DATE-OBS').replace('/', '-', 2).replace('/', 'T')
+        bmaj     = imhead(image_I, mode='get', hdkey='bmaj')['value']
+        bmin     = imhead(image_I, mode='get', hdkey='bmin')['value']
+        bpa      = imhead(image_I, mode='get', hdkey='bpa')['value']
         msg(f'Observation: date={date_obs}  freq={freq_GHz:.4f} GHz  '
             f'beam={bmaj:.2f}"x{bmin:.2f}" PA={bpa:.1f} deg')
 
-        # Per-prefix MJD timing -- time_ctr_mjd/time_ctr_isot/time_dt always
-        # describe the centre of the relevant exposure, never its start.
-        if is_time_resolved:
-            # Centre = header DATE-OBS shifted by half the median inter-prefix step.
-            _time_ctr_mjd = float(_hdr_mjds[k]) + _hdr_step_s / 2.0 / 86400.0
-            _time_dt      = _hdr_span_s
-            msg(f'  Timing (image header): centre MJD = {_time_ctr_mjd:.8f}, delta = {_time_dt:.0f} s')
-        elif _ms_timings is not None:
-            _time_ctr_mjd = _ms_timings[0]['time_ctr_mjd']
-            _time_dt      = _ms_timings[0]['time_dt']
-            msg(f'  Timing (MS): centre MJD = {_time_ctr_mjd:.8f}, delta = {_time_dt:.0f} s')
+        if timing[k] is not None:
+            time_ctr_mjd, time_dt = timing[k]
+            msg(f'  Timing ({"image header" if n_epochs > 1 else "MS"}): centre MJD = {time_ctr_mjd:.8f}, delta = {time_dt:.0f} s')
         else:
-            # MFS fallback: DATE-OBS from image header + 15-min default width.
-            _time_ctr_mjd = _iso_to_mjd(date_obs)
-            _time_dt      = 15.0 * 60.0
-            msg(f'  Timing (header fallback): centre MJD = {_time_ctr_mjd:.8f}, delta = 900 s (15 min default)')
-        _time_ctr_isot = _mjd_to_isot(_time_ctr_mjd)
+            time_ctr_mjd, time_dt = _iso_to_mjd(date_obs), 15.0 * 60.0
+            msg(f'  Timing (header fallback): centre MJD = {time_ctr_mjd:.8f}, delta = 900 s (15 min default)')
 
-        # Convert the input RA/Dec guesses (decimal degrees) to pixel coordinates
-        # in this specific image.  imstat finds the nearest pixel to the input position.
-        src_ra_pix  = []
-        src_dec_pix = []
-        for z in range(src_ra.size):
-            region = 'circle[[{}deg,{}deg],1.0pix]'.format(src_ra[z], src_dec[z])
-            pixel_imstat = imstat(MFS_images[0], region=region)
-            src_ra_pix.append(pixel_imstat['maxpos'][0])
-            src_dec_pix.append(pixel_imstat['maxpos'][1])
+        # Input positions to pixels in this image
+        src_ra_pix, src_dec_pix = [], []
+        for ra, dec in zip(src_ra, src_dec):
+            maxpos = imstat(image_I, region=f'circle[[{ra}deg,{dec}deg],1.0pix]')['maxpos']
+            src_ra_pix.append(maxpos[0])
+            src_dec_pix.append(maxpos[1])
 
-        # -----------------------------------------------------------------
-        # Fit MFS Stokes I -- establishes the reference position for all
-        # subsequent polarization fits in this prefix epoch
-        # -----------------------------------------------------------------
-        # Upper-limit components have their position fixed (xyabp); detected
-        # components are fitted freely for flux, size and PA (abp).
-        fix = []
-        for z, boolean in enumerate(src_ulims):
-            if boolean:
-                fix.append('xyabp')
-                msg(f'  Component {z}: upper limit -- position will be fixed')
-            else:
-                fix.append('abp')
-                msg(f'  Component {z}: detected -- position will be fitted freely')
+        # ---- MFS Stokes I: the reference position for everything else ----
+        # Upper-limit components are fitted at a fixed position
+        fix = ['xyabp' if ulim else 'abp' for ulim in src_ulims]
+        for z, ulim in enumerate(src_ulims):
+            msg(f'  Component {z}: {"upper limit -- position will be fixed" if ulim else "detected -- position will be fitted freely"}')
+        est_I = f'estimate_I_{src_name}.txt'
+        make_estimate(est_I, image_I, src_ra_pix, src_dec_pix, fix)
+        imfits = {'I': get_imfit_values(est_I, image_I, src_ra_pix, src_dec_pix)}
+        components = comp_keys(imfits['I'])
+        I_x, I_y = fitted_pix(imfits['I'], components)
 
-        make_estimate(f'estimate_I_{src_name}.txt', MFS_images[0], src_ra_pix, src_dec_pix, fix)
-        MFS_I_imfit = get_imfit_values(f'estimate_I_{src_name}.txt', MFS_images[0], src_ra_pix, src_dec_pix)
-
-        # Extract the list of fitted component keys (e.g. ['component0', 'component1'])
-        components    = [key for key in MFS_I_imfit['results'].keys() if 'component' in key]
-        MFS_I_ra_pix  = [MFS_I_imfit['results'][key]['pixelcoords'][0] for key in components]
-        MFS_I_dec_pix = [MFS_I_imfit['results'][key]['pixelcoords'][1] for key in components]
-
-        # --- MFS Stokes I drift check vs input sky-coordinate seed -----------
-        # If MAX_I_DRIFT_PIX is set and any component has moved further than
-        # that threshold from the input reference, refix all positions and refit.
+        # Refit with every position fixed if any component drifted more than
+        # MAX_I_DRIFT_PIX from its input position
         if MAX_I_DRIFT_PIX is not False:
-            mfs_i_drift_exceeded = False
-            for z, component in enumerate(components):
-                drift = np.sqrt((MFS_I_ra_pix[z]  - src_ra_pix[z])  ** 2 +
-                                (MFS_I_dec_pix[z] - src_dec_pix[z]) ** 2)
-                if drift > MAX_I_DRIFT_PIX:
-                    msg(f'  WARNING: MFS Stokes I component {z} drifted {drift:.1f} pix '
-                        f'from input reference (threshold {MAX_I_DRIFT_PIX} pix). '
-                        f'Will re-fit with all positions fixed to input reference.')
-                    mfs_i_drift_exceeded = True
-                else:
-                    msg(f'  MFS Stokes I component {z} drift OK: {drift:.1f} pix '
-                        f'(threshold {MAX_I_DRIFT_PIX} pix)')
-            if mfs_i_drift_exceeded:
-                fix_all = ['xyabp'] * len(src_ra_pix)
-                make_estimate(f'estimate_I_{src_name}.txt', MFS_images[0],
-                              src_ra_pix, src_dec_pix, fix_all)
-                MFS_I_imfit   = get_imfit_values(f'estimate_I_{src_name}.txt',
-                                                  MFS_images[0], src_ra_pix, src_dec_pix)
-                MFS_I_ra_pix  = [MFS_I_imfit['results'][key]['pixelcoords'][0] for key in components]
-                MFS_I_dec_pix = [MFS_I_imfit['results'][key]['pixelcoords'][1] for key in components]
-                msg(f'  MFS Stokes I re-fit complete: all positions fixed to input reference.')
+            drift = np.hypot(np.subtract(I_x, src_ra_pix), np.subtract(I_y, src_dec_pix))
+            for z, d in enumerate(drift):
+                msg(f'  MFS Stokes I component {z} drift {d:.1f} pix (threshold {MAX_I_DRIFT_PIX} pix)'
+                    + (' -- WARNING: refitting with positions fixed to the input' if d > MAX_I_DRIFT_PIX else ''))
+            if np.any(drift > MAX_I_DRIFT_PIX):
+                make_estimate(est_I, image_I, src_ra_pix, src_dec_pix, ['xyabp'] * len(src_ra_pix))
+                imfits['I'] = get_imfit_values(est_I, image_I, src_ra_pix, src_dec_pix)
+                I_x, I_y = fitted_pix(imfits['I'], components)
 
-        # Log the Stokes I fitted results -- this position is the astrometric
-        # reference for all polarization fits below
-        msg('')
-        msg(f'  --- MFS Stokes I fit results (astrometric reference) ---')
-        for z, component in enumerate(components):
-            flux_I_log = MFS_I_imfit['results'][component]['peak']['value'] * 1e3
-            err_I_log  = MFS_I_imfit['results'][component]['peak']['error'] * 1e3
-            RA_I_log   = MFS_I_imfit['results'][component]['shape']['direction']['m0']['value'] * 180 / np.pi
-            DEC_I_log  = MFS_I_imfit['results'][component]['shape']['direction']['m1']['value'] * 180 / np.pi
-            _I_log_stats = get_imstat_values(MFS_images[0], MFS_I_ra_pix[z], MFS_I_dec_pix[z], manual_rms_region)
-            rms_I_log  = _I_log_stats[3] * 1e3
-            rms_region_I_log = _I_log_stats[4]
-            msg(f'  {component}: RA={RA_I_log:.6f} deg  Dec={DEC_I_log:.6f} deg  '
-                f'({MFS_I_ra_pix[z]:.1f}, {MFS_I_dec_pix[z]:.1f}) pix')
-            msg(f'    Flux = {flux_I_log:.3f} +/- {err_I_log:.3f} mJy  '
-                f'rms = {rms_I_log:.3f} mJy  S/N = {flux_I_log/rms_I_log:.1f}')
-            msg(f'    RMS region: {rms_region_I_log}')
-        msg('')
-
-        # Populate the output dictionary with MFS Stokes I results
-        for z, component in enumerate(components):
-
-            flux_I   = MFS_I_imfit['results'][component]['peak']['value'] * 1e3
-            err_I    = MFS_I_imfit['results'][component]['peak']['error'] * 1e3
-            RA_I     = MFS_I_imfit['results'][component]['shape']['direction']['m0']['value'] * 180 / np.pi
-            DEC_I    = MFS_I_imfit['results'][component]['shape']['direction']['m1']['value'] * 180 / np.pi
-            RA_pix_I = MFS_I_imfit['results'][component]['pixelcoords'][0]
-            DEC_pix_I = MFS_I_imfit['results'][component]['pixelcoords'][1]
-            rms_I    = get_imstat_values(MFS_images[0], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3
-
-            if component not in output_dictionary['MFS']:
-                # First epoch: initialise lists
-                output_dictionary['MFS'][component] = {}
-                output_dictionary['MFS'][component]['upperlimit']  = [src_ulims[z]]
-                output_dictionary['MFS'][component]['freq_GHz']    = [freq_GHz]
-                output_dictionary['MFS'][component]['bmaj_asec']   = [bmaj]
-                output_dictionary['MFS'][component]['bmin_asec']   = [bmin]
-                output_dictionary['MFS'][component]['bpa_deg']     = [bpa]
-                output_dictionary['MFS'][component]['I_flux_mJy']   = [flux_I]
-                output_dictionary['MFS'][component]['I_err_mJy']    = [err_I]
-                output_dictionary['MFS'][component]['I_rms_mJy']    = [rms_I]
-                output_dictionary['MFS'][component]['I_RA_deg']     = [RA_I]
-                output_dictionary['MFS'][component]['I_DEC_deg']    = [DEC_I]
-                output_dictionary['MFS'][component]['time_ctr_mjd']  = [_time_ctr_mjd]
-                output_dictionary['MFS'][component]['time_ctr_isot'] = [_time_ctr_isot]
-                output_dictionary['MFS'][component]['time_dt']       = [_time_dt]
-            else:
-                # Subsequent epochs: append to existing lists
-                output_dictionary['MFS'][component]['freq_GHz'].append(freq_GHz)
-                output_dictionary['MFS'][component]['bmaj_asec'].append(bmaj)
-                output_dictionary['MFS'][component]['bmin_asec'].append(bmin)
-                output_dictionary['MFS'][component]['bpa_deg'].append(bpa)
-                output_dictionary['MFS'][component]['I_flux_mJy'].append(flux_I)
-                output_dictionary['MFS'][component]['I_err_mJy'].append(err_I)
-                output_dictionary['MFS'][component]['I_rms_mJy'].append(rms_I)
-                output_dictionary['MFS'][component]['I_RA_deg'].append(RA_I)
-                output_dictionary['MFS'][component]['I_DEC_deg'].append(DEC_I)
-                output_dictionary['MFS'][component]['time_ctr_mjd'].append(_time_ctr_mjd)
-                output_dictionary['MFS'][component]['time_ctr_isot'].append(_time_ctr_isot)
-                output_dictionary['MFS'][component]['time_dt'].append(_time_dt)
-            
-        
-        # -----------------------------------------------------------------
-        # Fit MFS polarization images (P, Q, U, V)
-        # Each fit is followed by an offset check: if any component has
-        # drifted more than 1/3 BMAJ from the Stokes I reference, the
-        # fit is automatically re-run with all positions fixed.
-        # -----------------------------------------------------------------
+        # ---- MFS P, Q, U, V ----
         if not only_intensity:
-            
-            # --- First pass: fit P freely to see if it lands near Stokes I ---
-            # If it wanders too far (handled by check_fit_offset_and_refix later)
-            # the second pass below will re-fit with positions fixed.
+            # P is fitted first with every component free to move; if that
+            # fails or a component lands > 3 pix from Stokes I, it is refitted
+            # with secondary components fixed (fix_additional_comps)
+            est_P = f'estimate_P_{src_name}.txt'
             try:
-                check_position(f'estimate_P_{src_name}.txt', MFS_images[1],
-                                MFS_I_ra_pix, MFS_I_dec_pix,
-                                P_image=True, fix_additional_comps=False,
-                                manual_rms_region=manual_rms_region, src_name=src_name)
-                MFS_P_imfit   = get_imfit_values(f'estimate_P_{src_name}.txt',
-                                                  MFS_images[1], MFS_I_ra_pix, MFS_I_dec_pix)
-                MFS_P_ra_pix  = [MFS_P_imfit['results'][key]['pixelcoords'][0] for key in components]
-                MFS_P_dec_pix = [MFS_P_imfit['results'][key]['pixelcoords'][1] for key in components]
-
-                # Check whether any P component has drifted more than 1/3 BMAJ from Stokes I.
-                # If so, fall through to the guarded re-fit below.
-                dist_check = False
-                dist_max   = 0.0
-                for z in range(len(MFS_P_ra_pix)):
-                    dist = np.sqrt((MFS_I_ra_pix[z] - MFS_P_ra_pix[z])**2 +
-                                   (MFS_I_dec_pix[z] - MFS_P_dec_pix[z])**2)
-                    if dist > 3.0:   # >3 pixel offset is unphysical for unresolved sources
-                        dist_check = True
-                        dist_max   = max(dist_max, dist)
-
+                check_position(est_P, images['P'], I_x, I_y, P_image=True, manual_rms_region=manual_rms_region)
+                imfits['P'] = get_imfit_values(est_P, images['P'], I_x, I_y)
+                P_x, P_y = fitted_pix(imfits['P'], components)
+                offset = float(np.max(np.hypot(np.subtract(P_x, I_x), np.subtract(P_y, I_y))))
+                refit = offset > 3.0
             except Exception as e:
-                msg(f'  P free-fit failed (likely complex multi-component field); '
-                    f'will re-fit with secondary positions fixed to Stokes I: {e}')
-                dist_max   = -1.0
-                dist_check = True
-
-            if dist_check:
-                msg(f'  Stokes I--P offset = {dist_max:.1f} pix; re-fitting P with '
+                msg(f'  P free-fit failed (likely complex multi-component field): {e}')
+                offset, refit = -1.0, True
+            if refit:
+                msg(f'  Stokes I--P offset = {offset:.1f} pix; re-fitting P with '
                     f'secondary component positions fixed to Stokes I')
-                check_position(f'estimate_P_{src_name}.txt', MFS_images[1],
-                                MFS_I_ra_pix, MFS_I_dec_pix,
-                                P_image=True, fix_additional_comps=fix_additional_comps,
-                                manual_rms_region=manual_rms_region, src_name=src_name)
-                MFS_P_imfit   = get_imfit_values(f'estimate_P_{src_name}.txt',
-                                                  MFS_images[1], MFS_I_ra_pix, MFS_I_dec_pix)
-                MFS_P_ra_pix  = [MFS_P_imfit['results'][key]['pixelcoords'][0] for key in components]
-                MFS_P_dec_pix = [MFS_P_imfit['results'][key]['pixelcoords'][1] for key in components]
+                check_position(est_P, images['P'], I_x, I_y, P_image=True,
+                               fix_additional_comps=fix_additional_comps, manual_rms_region=manual_rms_region)
+                imfits['P'] = get_imfit_values(est_P, images['P'], I_x, I_y)
+            imfits['P'] = check_fit_offset_and_refix(imfits['P'], images['P'], I_x, I_y, bmaj, src_name, 'P')[0]
+            P_x, P_y = fitted_pix(imfits['P'], components)
 
-            # Post-fit offset check for P -- refixes automatically if needed
-            MFS_P_imfit, _ = check_fit_offset_and_refix(
-                MFS_P_imfit, MFS_images[1], MFS_I_ra_pix, MFS_I_dec_pix,
-                bmaj, src_name, 'P', manual_rms_region=manual_rms_region)
-            MFS_P_ra_pix  = [MFS_P_imfit['results'][key]['pixelcoords'][0] for key in components]
-            MFS_P_dec_pix = [MFS_P_imfit['results'][key]['pixelcoords'][1] for key in components]
+            # Q and U are anchored to the P position, V to Stokes I (V is weak
+            # and leakage-dominated; FORCE_FIX_STOKES_V fixes it outright)
+            pol = dict(bmaj=bmaj, src_name=src_name, manual_rms_region=manual_rms_region,
+                       fix_additional_comps=fix_additional_comps)
+            for s in 'QU':
+                imfits[s] = fit_stokes(f'estimate_{s}_{src_name}.txt', images[s],
+                                       P_x, P_y, P_x, P_y, stokes_label=s, **pol)
+            imfits['V'] = fit_stokes(f'estimate_V_{src_name}.txt', images['V'],
+                                     I_x, I_y, I_x, I_y, stokes_label='V',
+                                     force_fix_all=FORCE_FIX_STOKES_V, **pol)
 
-            # --- Fit Q and U, referenced to the P position ------------------
-            # Using the P position as the reference for Q/U is more accurate
-            # than using Stokes I when the source is significantly polarized.
-            check_position(f'estimate_Q_{src_name}.txt', MFS_images[2],
-                            MFS_P_ra_pix, MFS_P_dec_pix,
-                            P_image=False, fix_additional_comps=fix_additional_comps,
-                            manual_rms_region=manual_rms_region, src_name=src_name)
-            MFS_Q_imfit   = get_imfit_values(f'estimate_Q_{src_name}.txt',
-                                              MFS_images[2], MFS_P_ra_pix, MFS_P_dec_pix)
-            MFS_Q_imfit, _ = check_fit_offset_and_refix(
-                MFS_Q_imfit, MFS_images[2], MFS_P_ra_pix, MFS_P_dec_pix,
-                bmaj, src_name, 'Q', manual_rms_region=manual_rms_region)
-            MFS_Q_ra_pix  = [MFS_Q_imfit['results'][key]['pixelcoords'][0] for key in components]
-            MFS_Q_dec_pix = [MFS_Q_imfit['results'][key]['pixelcoords'][1] for key in components]
+        # ---- MFS results ----
+        msg('')
+        msg('  --- MFS fit results (Stokes I is the astrometric reference) ---')
+        for z, component in enumerate(components):
+            res = component_results(imfits, images, component, manual_rms_region, pol_flag)
+            store = output_dictionary['MFS'].setdefault(component, {'upperlimit': [src_ulims[z]]})
+            record(store, {'freq_GHz': freq_GHz, 'bmaj_asec': bmaj, 'bmin_asec': bmin, 'bpa_deg': bpa,
+                           **res, 'time_ctr_mjd': time_ctr_mjd,
+                           'time_ctr_isot': _mjd_to_isot(time_ctr_mjd), 'time_dt': time_dt})
+            msg(f'  {component}: RA={res["I_RA_deg"]:.6f} deg  Dec={res["I_DEC_deg"]:.6f} deg  '
+                f'({I_x[z]:.1f}, {I_y[z]:.1f}) pix')
+            msg(f'    I = {res["I_flux_mJy"]:.3f} +/- {res["I_err_mJy"]:.3f} mJy  '
+                f'rms = {res["I_rms_mJy"]:.3f} mJy  S/N = {res["I_flux_mJy"] / res["I_rms_mJy"]:.1f}')
+            if not only_intensity:
+                msg(f'    P0 = {res["P0_flux_mJy"]:.3f} mJy  LP = {res["LP_frac"]:.2f}%  '
+                    f'V = {res["V_flux_mJy"]:.3f} mJy')
+        msg('')
 
-            check_position(f'estimate_U_{src_name}.txt', MFS_images[3],
-                            MFS_P_ra_pix, MFS_P_dec_pix,
-                            P_image=False, fix_additional_comps=fix_additional_comps,
-                            manual_rms_region=manual_rms_region, src_name=src_name)
-            MFS_U_imfit   = get_imfit_values(f'estimate_U_{src_name}.txt',
-                                              MFS_images[3], MFS_P_ra_pix, MFS_P_dec_pix)
-            MFS_U_imfit, _ = check_fit_offset_and_refix(
-                MFS_U_imfit, MFS_images[3], MFS_P_ra_pix, MFS_P_dec_pix,
-                bmaj, src_name, 'U', manual_rms_region=manual_rms_region)
-            MFS_U_ra_pix  = [MFS_U_imfit['results'][key]['pixelcoords'][0] for key in components]
-            MFS_U_dec_pix = [MFS_U_imfit['results'][key]['pixelcoords'][1] for key in components]
-
-            # --- Fit Stokes V, referenced back to Stokes I ------------------
-            # Circular polarization is intrinsically weak for synchrotron
-            # sources and residual I->V leakage can dominate; anchoring to I
-            # avoids noise-driven position bias.  When FORCE_FIX_STOKES_V
-            # is True (the global default), ALL components are held fixed via
-            # force_fix_all, bypassing the S/N check entirely.
-            check_position(f'estimate_V_{src_name}.txt', MFS_images[4],
-                            MFS_I_ra_pix, MFS_I_dec_pix,
-                            P_image=False, fix_additional_comps=fix_additional_comps,
-                            manual_rms_region=manual_rms_region, src_name=src_name,
-                            force_fix_all=FORCE_FIX_STOKES_V)
-            MFS_V_imfit   = get_imfit_values(f'estimate_V_{src_name}.txt',
-                                              MFS_images[4], MFS_I_ra_pix, MFS_I_dec_pix)
-            MFS_V_imfit, _ = check_fit_offset_and_refix(
-                MFS_V_imfit, MFS_images[4], MFS_I_ra_pix, MFS_I_dec_pix,
-                bmaj, src_name, 'V', manual_rms_region=manual_rms_region)
-            MFS_V_ra_pix  = [MFS_V_imfit['results'][key]['pixelcoords'][0] for key in components]
-            MFS_V_dec_pix = [MFS_V_imfit['results'][key]['pixelcoords'][1] for key in components]   
-  
-            # Once again initialize arrays that don't exist
-            for component in components[:]:
-            
-                # For ease and readability separate out the parameters for calculations and rms extraction
-                flux_I = MFS_I_imfit['results'][component]['peak']['value'] * 1e3
-                flux_P = MFS_P_imfit['results'][component]['peak']['value'] * 1e3
-                flux_Q = MFS_Q_imfit['results'][component]['peak']['value'] * 1e3
-                flux_U = MFS_U_imfit['results'][component]['peak']['value'] * 1e3
-                flux_V = MFS_V_imfit['results'][component]['peak']['value'] * 1e3
-                
-                err_P = MFS_P_imfit['results'][component]['peak']['error'] * 1e3
-                err_Q = MFS_Q_imfit['results'][component]['peak']['error'] * 1e3
-                err_U = MFS_U_imfit['results'][component]['peak']['error'] * 1e3
-                err_V = MFS_V_imfit['results'][component]['peak']['error'] * 1e3
-
-                RA_P   = MFS_P_imfit['results'][component]['shape']['direction']['m0']['value'] * 180 / np.pi
-                DEC_P = MFS_P_imfit['results'][component]['shape']['direction']['m1']['value'] * 180 / np.pi
-                
-                rms_I = get_imstat_values(MFS_images[0], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3
-                rms_Q = get_imstat_values(MFS_images[2], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3                
-                rms_U = get_imstat_values(MFS_images[3], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3                
-                rms_V = get_imstat_values(MFS_images[4], RA_pix_I, DEC_pix_I, manual_rms_region)[3] * 1e3                
-
-                # Calculate additional linear polarisation parameters
-                flux_P0, rms_P = calculate_P0(flux_P, rms_Q, rms_U, rms_V, pol_flag, Aq = 0.8)
-                
-                # Calculate the other Polarisation parameters
-                LP_frac     = flux_P0 / flux_I * 100.0
-                LP_frac_err = abs(LP_frac) * np.sqrt( (rms_I / flux_I) ** 2 + (rms_P / flux_P0) ** 2 )
-
-                if pol_flag:
-                    LP_EVPA     = np.arctan2(flux_U, flux_Q) * 180.0 / np.pi * 0.5
-                    LP_EVPA_err = np.sqrt(flux_U ** 2 * rms_Q ** 2  + flux_Q ** 2 * rms_U ** 2) / (flux_U ** 2  + flux_Q ** 2) * 180.0 / np.pi * 0.5
-   
-                else:
-                    LP_EVPA = None
-                    LP_EVPA_err = None  
-
-                # Append values to dictionary -- Initialize if it doesn't exist
-                if 'P_flux_mJy' not in output_dictionary['MFS'][component]:
-
-                    output_dictionary['MFS'][component]['Q_flux_mJy'] = [flux_Q]            
-                    output_dictionary['MFS'][component]['U_flux_mJy'] = [flux_U]                
-                    output_dictionary['MFS'][component]['V_flux_mJy'] = [flux_V]                
-                    output_dictionary['MFS'][component]['P_flux_mJy'] = [flux_P]           
-                    output_dictionary['MFS'][component]['P0_flux_mJy'] = [flux_P0]    
-
-                    output_dictionary['MFS'][component]['Q_err_mJy'] = [err_Q]            
-                    output_dictionary['MFS'][component]['U_err_mJy'] = [err_U]                
-                    output_dictionary['MFS'][component]['V_err_mJy'] = [err_V]                
-                    output_dictionary['MFS'][component]['P_err_mJy'] = [err_P]           
-
-                    output_dictionary['MFS'][component]['Q_rms_mJy'] = [rms_Q]            
-                    output_dictionary['MFS'][component]['U_rms_mJy'] = [rms_U]                
-                    output_dictionary['MFS'][component]['V_rms_mJy'] = [rms_V]                
-                    output_dictionary['MFS'][component]['P_rms_mJy'] = [rms_P]        
-
-                    output_dictionary['MFS'][component]['P_RA_deg'] = [RA_P]
-                    output_dictionary['MFS'][component]['P_DEC_deg'] = [DEC_P]    
-
-                    output_dictionary['MFS'][component]['LP_frac'] = [LP_frac]
-                    output_dictionary['MFS'][component]['LP_frac_err'] = [LP_frac_err]
-                    output_dictionary['MFS'][component]['LP_EVPA'] = [LP_EVPA]
-                    output_dictionary['MFS'][component]['LP_EVPA_err'] = [LP_EVPA_err]        
-            
-                else:
-
-                    output_dictionary['MFS'][component]['Q_flux_mJy'].append(flux_Q)         
-                    output_dictionary['MFS'][component]['U_flux_mJy'].append(flux_U)               
-                    output_dictionary['MFS'][component]['V_flux_mJy'].append(flux_V)               
-                    output_dictionary['MFS'][component]['P_flux_mJy'].append(flux_P)           
-                    output_dictionary['MFS'][component]['P0_flux_mJy'].append(flux_P0)    
-
-                    output_dictionary['MFS'][component]['Q_err_mJy'].append(err_Q)            
-                    output_dictionary['MFS'][component]['U_err_mJy'].append(err_U)               
-                    output_dictionary['MFS'][component]['V_err_mJy'].append(err_V)                
-                    output_dictionary['MFS'][component]['P_err_mJy'].append(err_P)           
-
-                    output_dictionary['MFS'][component]['Q_rms_mJy'].append(rms_Q)            
-                    output_dictionary['MFS'][component]['U_rms_mJy'].append(rms_U)                
-                    output_dictionary['MFS'][component]['V_rms_mJy'].append(rms_V)                
-                    output_dictionary['MFS'][component]['P_rms_mJy'].append(rms_P)        
-
-                    output_dictionary['MFS'][component]['P_RA_deg'].append(RA_P)
-                    output_dictionary['MFS'][component]['P_DEC_deg'].append(DEC_P)    
-
-                    output_dictionary['MFS'][component]['LP_frac'].append(LP_frac)
-                    output_dictionary['MFS'][component]['LP_frac_err'].append(LP_frac_err)
-                    output_dictionary['MFS'][component]['LP_EVPA'].append(LP_EVPA)
-                    output_dictionary['MFS'][component]['LP_EVPA_err'].append(LP_EVPA_err)     
-                
-
-        ###########################
-        # Extract the CHAN image parameters  #
-        ###########################
-
+        # ---- Channels: one job per channel, fitted in the pool ----
         msg(f'Fitting CHAN image(s) for prefix {k} with {src_im_suffix}: {prefix}')
+        jobs = [{'chan_idx': i, 'CHAN_images': [str(im) for im in group], 'components': components,
+                 'MFS_I_ra_pix': I_x, 'MFS_I_dec_pix': I_y,
+                 'MFS_P_ra_pix': None if only_intensity else P_x,
+                 'MFS_P_dec_pix': None if only_intensity else P_y,
+                 'only_intensity': only_intensity, 'pol_flag': pol_flag,
+                 'fix_additional_comps': fix_additional_comps, 'manual_rms_region': manual_rms_region,
+                 'src_name': src_name, 'tag': f'{k}_{i}',
+                 'mfs_freq_ghz': freq_GHz, 'mfs_bmaj_asec': bmaj}
+                for i, group in enumerate(stokes_scan['chan_groups'][prefix])]
 
-        # This prefix's own channels from the one-time scan above (channel
-        # counts vary per timestep, as flagging differs per snapshot): one
-        # group per channel, [I] or [I, P, Q, U, V]
-        CHAN_images_arr = stokes_scan['chan_groups'][prefix]
-
-        # Build one job per frequency channel, fully self-contained so it can
-        # run in a parallel worker (see fit_channel_group). MFS_P_ra_pix/dec
-        # are only defined when polarization images exist.
-        mfs_freq_ghz  = output_dictionary['MFS']['component0']['freq_GHz'][k]
-        mfs_bmaj_asec = output_dictionary['MFS']['component0']['bmaj_asec'][k]
-        jobs = []
-        for chan_idx, CHAN_images in enumerate(CHAN_images_arr):
-            jobs.append({
-                'chan_idx': chan_idx,
-                'CHAN_images': [str(im) for im in CHAN_images],
-                'components': components,
-                'MFS_I_ra_pix': MFS_I_ra_pix, 'MFS_I_dec_pix': MFS_I_dec_pix,
-                'MFS_P_ra_pix': MFS_P_ra_pix if not only_intensity else None,
-                'MFS_P_dec_pix': MFS_P_dec_pix if not only_intensity else None,
-                'only_intensity': only_intensity,
-                'pol_flag': pol_flag,
-                'fix_additional_comps': fix_additional_comps,
-                'manual_rms_region': manual_rms_region,
-                'src_name': src_name,
-                'tag': f'{k}_{chan_idx}',
-                'mfs_freq_ghz': mfs_freq_ghz,
-                'mfs_bmaj_asec': mfs_bmaj_asec,
-            })
-
-        # Lazily size and start the persistent CHAN-fitting pool on first use
-        # (and again each time it's recycled -- see below).
-        if jobs and chan_pool is None:
-            chan_pool_max_workers, chan_pool_recycle_interval = compute_max_workers(
-                [jobs[0]['CHAN_images'][0]], len(jobs))
-            chan_pool = ProcessPoolExecutor(max_workers=chan_pool_max_workers,
-                                             mp_context=chan_pool_ctx)
-            chan_pool_prefixes_since_recycle = 0
-            msg(f'CHAN-fitting pool started with {chan_pool_max_workers} worker(s), '
-                f'recycle interval={chan_pool_recycle_interval} prefixes.')
-
-        # Dispatch in round-robin chunks (one task per worker) and collect
-        # results indexed by chan_idx, so completion order doesn't matter --
-        # we replay them below in the original channel order.
         chan_results = [None] * len(jobs)
         if jobs:
-            chunks = chunk_jobs(jobs, chan_pool_max_workers)
-            futures = [chan_pool.submit(fit_channel_group_batch, chunk) for chunk in chunks]
+            if chan_pool is None:
+                n_workers, recycle_interval = compute_max_workers([jobs[0]['CHAN_images'][0]], len(jobs))
+                chan_pool = ProcessPoolExecutor(max_workers=n_workers, mp_context=mp.get_context('spawn'))
+                since_recycle = 0
+                msg(f'CHAN-fitting pool started with {n_workers} worker(s), '
+                    f'recycle interval={recycle_interval} prefixes.')
+            futures = [chan_pool.submit(fit_channel_group_batch, chunk) for chunk in chunk_jobs(jobs, n_workers)]
             for future in as_completed(futures):
                 for chan_idx, result in future.result():
                     chan_results[chan_idx] = result
 
-        # Replay results in original channel order and append to the output
-        # dictionary exactly as the old serial loop did.
+        # Record results in channel order
         for chan_idx, result in enumerate(chan_results):
-
             if result is None:
-                msg(f'Fitting Failed or Channel Skipped: chan_idx={chan_idx} is likely flagged')
+                msg(f'Fitting failed or channel skipped: chan_idx={chan_idx} is likely flagged')
                 continue
-
-            freq_GHz = result['freq_GHz']
-            bmaj     = result['bmaj_asec']
-            bmin     = result['bmin_asec']
-            bpa      = result['bpa_deg']
-
+            beam = {key: result[key] for key in ('freq_GHz', 'bmaj_asec', 'bmin_asec', 'bpa_deg')}
             for component in components:
+                record(output_dictionary['CHAN'].setdefault(component, {}),
+                       {**beam, **result['components'][component]}, k=k, n_epochs=n_epochs)
 
-                comp = result['components'][component]
-                flux_I = comp['I_flux_mJy']
-                err_I  = comp['I_err_mJy']
-                rms_I  = comp['I_rms_mJy']
-                RA_I   = comp['I_RA_deg']
-                DEC_I  = comp['I_DEC_deg']
-
-                # Append Stokes I values to the output dictionary
-                if component not in output_dictionary['CHAN']:
-
-                    output_dictionary['CHAN'][component] = {}
-
-                    output_dictionary['CHAN'][component]['freq_GHz'] = [[freq_GHz]] + [[] for _ in range(len(prefix_arr) - 1)]
-                    output_dictionary['CHAN'][component]['bmaj_asec'] = [[bmaj]] + [[] for _ in range(len(prefix_arr) - 1)]
-                    output_dictionary['CHAN'][component]['bmin_asec'] = [[bmin]] + [[] for _ in range(len(prefix_arr) - 1)]
-                    output_dictionary['CHAN'][component]['bpa_deg'] = [[bpa]] + [[] for _ in range(len(prefix_arr) - 1)]
-                    output_dictionary['CHAN'][component]['I_flux_mJy'] = [[flux_I]] + [[] for _ in range(len(prefix_arr) - 1)]
-                    output_dictionary['CHAN'][component]['I_err_mJy'] = [[err_I]] + [[] for _ in range(len(prefix_arr) - 1)]
-                    output_dictionary['CHAN'][component]['I_rms_mJy'] = [[rms_I]] + [[] for _ in range(len(prefix_arr) - 1)]
-                    output_dictionary['CHAN'][component]['I_RA_deg'] = [[RA_I]] + [[] for _ in range(len(prefix_arr) - 1)]
-                    output_dictionary['CHAN'][component]['I_DEC_deg'] = [[DEC_I]] + [[] for _ in range(len(prefix_arr) - 1)]
-
-                else:
-                    output_dictionary['CHAN'][component]['freq_GHz'][k].append(freq_GHz)
-                    output_dictionary['CHAN'][component]['bmaj_asec'][k].append(bmaj)
-                    output_dictionary['CHAN'][component]['bmin_asec'][k].append(bmin)
-                    output_dictionary['CHAN'][component]['bpa_deg'][k].append(bpa)
-                    output_dictionary['CHAN'][component]['I_flux_mJy'][k].append(flux_I)
-                    output_dictionary['CHAN'][component]['I_err_mJy'][k].append(err_I)
-                    output_dictionary['CHAN'][component]['I_rms_mJy'][k].append(rms_I)
-                    output_dictionary['CHAN'][component]['I_RA_deg'][k].append(RA_I)
-                    output_dictionary['CHAN'][component]['I_DEC_deg'][k].append(DEC_I)
-
-                # Append polarization values if applicable
-                if not only_intensity:
-
-                    flux_Q = comp['Q_flux_mJy']; flux_U = comp['U_flux_mJy']; flux_V = comp['V_flux_mJy']
-                    flux_P = comp['P_flux_mJy']; flux_P0 = comp['P0_flux_mJy']
-                    err_Q  = comp['Q_err_mJy'];  err_U  = comp['U_err_mJy'];  err_V  = comp['V_err_mJy']
-                    err_P  = comp['P_err_mJy']
-                    rms_Q  = comp['Q_rms_mJy'];  rms_U  = comp['U_rms_mJy'];  rms_V  = comp['V_rms_mJy']
-                    rms_P  = comp['P_rms_mJy']
-                    RA_P   = comp['P_RA_deg'];   DEC_P  = comp['P_DEC_deg']
-                    LP_frac = comp['LP_frac'];   LP_frac_err = comp['LP_frac_err']
-                    LP_EVPA = comp['LP_EVPA'];   LP_EVPA_err = comp['LP_EVPA_err']
-
-                    # Append values to dictionary -- Initialize if it doesn't exist
-                    if 'P_flux_mJy' not in output_dictionary['CHAN'][component]:
-
-                        output_dictionary['CHAN'][component]['Q_flux_mJy'] = [[flux_Q]] + [[] for _ in range(len(prefix_arr) - 1)]
-                        output_dictionary['CHAN'][component]['U_flux_mJy'] = [[flux_U]] + [[] for _ in range(len(prefix_arr) - 1)]
-                        output_dictionary['CHAN'][component]['V_flux_mJy'] = [[flux_V]] + [[] for _ in range(len(prefix_arr) - 1)]
-                        output_dictionary['CHAN'][component]['P_flux_mJy'] = [[flux_P]] + [[] for _ in range(len(prefix_arr) - 1)]
-                        output_dictionary['CHAN'][component]['P0_flux_mJy'] = [[flux_P0]] + [[] for _ in range(len(prefix_arr) - 1)]
-
-                        output_dictionary['CHAN'][component]['Q_err_mJy'] = [[err_Q]] + [[] for _ in range(len(prefix_arr) - 1)]
-                        output_dictionary['CHAN'][component]['U_err_mJy'] = [[err_U]]  + [[] for _ in range(len(prefix_arr) - 1)]
-                        output_dictionary['CHAN'][component]['V_err_mJy'] = [[err_V]]  + [[] for _ in range(len(prefix_arr) - 1)]
-                        output_dictionary['CHAN'][component]['P_err_mJy'] = [[err_P]]  + [[] for _ in range(len(prefix_arr) - 1)]
-
-                        output_dictionary['CHAN'][component]['Q_rms_mJy'] = [[rms_Q]] + [[] for _ in range(len(prefix_arr) - 1)]
-                        output_dictionary['CHAN'][component]['U_rms_mJy'] = [[rms_U]]  + [[] for _ in range(len(prefix_arr) - 1)]
-                        output_dictionary['CHAN'][component]['V_rms_mJy'] = [[rms_V]]  + [[] for _ in range(len(prefix_arr) - 1)]
-                        output_dictionary['CHAN'][component]['P_rms_mJy'] = [[rms_P]]  + [[] for _ in range(len(prefix_arr) - 1)]
-
-                        output_dictionary['CHAN'][component]['P_RA_deg'] = [[RA_P]] + [[] for _ in range(len(prefix_arr) - 1)]
-                        output_dictionary['CHAN'][component]['P_DEC_deg'] = [[DEC_P]] + [[] for _ in range(len(prefix_arr) - 1)]
-
-                        output_dictionary['CHAN'][component]['LP_frac'] = [[LP_frac]] + [[] for _ in range(len(prefix_arr) - 1)]
-                        output_dictionary['CHAN'][component]['LP_frac_err'] = [[LP_frac_err]] + [[] for _ in range(len(prefix_arr) - 1)]
-                        output_dictionary['CHAN'][component]['LP_EVPA'] = [[LP_EVPA]] + [[] for _ in range(len(prefix_arr) - 1)]
-                        output_dictionary['CHAN'][component]['LP_EVPA_err'] = [[LP_EVPA_err]] + [[] for _ in range(len(prefix_arr) - 1)]
-
-                    else:
-
-                        output_dictionary['CHAN'][component]['Q_flux_mJy'][k].append(flux_Q)
-                        output_dictionary['CHAN'][component]['U_flux_mJy'][k].append(flux_U)
-                        output_dictionary['CHAN'][component]['V_flux_mJy'][k].append(flux_V)
-                        output_dictionary['CHAN'][component]['P_flux_mJy'][k].append(flux_P)
-                        output_dictionary['CHAN'][component]['P0_flux_mJy'][k].append(flux_P0)
-
-                        output_dictionary['CHAN'][component]['Q_err_mJy'][k].append(err_Q)
-                        output_dictionary['CHAN'][component]['U_err_mJy'][k].append(err_U)
-                        output_dictionary['CHAN'][component]['V_err_mJy'][k].append(err_V)
-                        output_dictionary['CHAN'][component]['P_err_mJy'][k].append(err_P)
-
-                        output_dictionary['CHAN'][component]['Q_rms_mJy'][k].append(rms_Q)
-                        output_dictionary['CHAN'][component]['U_rms_mJy'][k].append(rms_U)
-                        output_dictionary['CHAN'][component]['V_rms_mJy'][k].append(rms_V)
-                        output_dictionary['CHAN'][component]['P_rms_mJy'][k].append(rms_P)
-
-                        output_dictionary['CHAN'][component]['P_RA_deg'][k].append(RA_P)
-                        output_dictionary['CHAN'][component]['P_DEC_deg'][k].append(DEC_P)
-
-                        output_dictionary['CHAN'][component]['LP_frac'][k].append(LP_frac)
-                        output_dictionary['CHAN'][component]['LP_frac_err'][k].append(LP_frac_err)
-                        output_dictionary['CHAN'][component]['LP_EVPA'][k].append(LP_EVPA)
-                        output_dictionary['CHAN'][component]['LP_EVPA_err'][k].append(LP_EVPA_err)
-
-
-        # Write RM Synthesis files (freq, I, Q, U, dI, dQ, dU) in Jy, one file
-        # per component per epoch.  These are the direct inputs to RM-Tools.
-        if not only_intensity:
-            for component in components:
-                rmsynth_arr = np.array([
-                    np.array(output_dictionary['CHAN'][component]['freq_GHz'][k]) * 1e9,
-                    np.array(output_dictionary['CHAN'][component]['I_flux_mJy'][k])  / 1e3,
-                    np.array(output_dictionary['CHAN'][component]['Q_flux_mJy'][k])  / 1e3,
-                    np.array(output_dictionary['CHAN'][component]['U_flux_mJy'][k])  / 1e3,
-                    np.array(output_dictionary['CHAN'][component]['I_rms_mJy'][k])   / 1e3,
-                    np.array(output_dictionary['CHAN'][component]['Q_rms_mJy'][k])   / 1e3,
-                    np.array(output_dictionary['CHAN'][component]['U_rms_mJy'][k])   / 1e3])
-
-                rmsynth_fname = '{}_{}_rmsynth.txt'.format(prefix, component).replace(image_directory, 'RESULTS')
-                rmsynth_fname = _apply_label(rmsynth_fname, src_name, label)
-                np.savetxt(rmsynth_fname, rmsynth_arr.T)
-                msg(f'  RM synthesis file written: {rmsynth_fname}')
-
-                # No polarization angle calibrator: also write the U/V-merged companion
-                if not pol_flag:
-                    try:
-                        write_uvfix_rmsynth(rmsynth_fname, rmsynth_arr,
-                                            np.array(output_dictionary['CHAN'][component]['V_flux_mJy'][k]) / 1e3,
-                                            np.array(output_dictionary['CHAN'][component]['V_rms_mJy'][k]) / 1e3,
-                                            float(np.nanmedian(output_dictionary['CHAN'][component]['I_RA_deg'][k])),
-                                            float(np.nanmedian(output_dictionary['CHAN'][component]['I_DEC_deg'][k])),
-                                            _time_ctr_mjd)
-                    except Exception as e:
-                        msg(f'  WARNING: U/V fix failed for {component} ({e}) -- continuing without it')
-
-        # Compute the spectral index for every epoch unconditionally (stored in
-        # JSON) -- this compute-only pass (save_plot=False) is NOT gated by
-        # SPEC_PLOT_SNR_THRESH. That threshold only filters which epochs get an
-        # actual PNG rendered, in the plotting pass below/after the JSON save.
-        # Plotting is deferred until after the JSON is saved, so that data
-        # is preserved even if a plotting call crashes.
+        # ---- Outputs for this prefix ----
         for component in components:
+            if component not in output_dictionary['CHAN']:
+                msg(f'  WARNING: no channel fits for {component} yet -- no spectra written')
+                continue
+            if not only_intensity:
+                base = _apply_label(f'{prefix}_{component}'.replace(image_directory, 'RESULTS'), src_name, label)
+                write_spectra(output_dictionary['CHAN'][component], k, base, pol_flag, time_ctr_mjd)
+            # Spectral index of every epoch (stored in the JSON); plots come
+            # after the JSON is saved
             plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k,
-                                save_plot=False, label=label, pol_flag=pol_flag)
+                                 save_plot=False, label=label, pol_flag=pol_flag)
 
-        # Remove this timestep's estimate/check_position scratch files
         cleanup_estimate_files(src_name)
-        log_memory_usage(label=f'prefix {k+1}/{len(prefix_arr)} ({os.path.basename(prefix)}) done --')
+        log_memory_usage(label=f'prefix {k+1}/{n_epochs} ({os.path.basename(prefix)}) done --')
 
         if chan_pool is not None:
-            chan_pool_prefixes_since_recycle += 1
-            if chan_pool_prefixes_since_recycle >= chan_pool_recycle_interval:
-                msg(f'Recycling CHAN-fitting pool after {chan_pool_prefixes_since_recycle} prefixes '
-                    f'(interval={chan_pool_recycle_interval}) to bound per-worker memory growth.')
+            since_recycle += 1
+            if since_recycle >= recycle_interval:
+                msg(f'Recycling CHAN-fitting pool after {since_recycle} prefixes to bound worker memory.')
                 chan_pool.shutdown(wait=True)
                 chan_pool = None
-                chan_pool_prefixes_since_recycle = 0
 
     if chan_pool is not None:
         chan_pool.shutdown(wait=True)
         msg('CHAN-fitting pool shut down.')
 
-    # ------------------------------------------------------------------
-    # Save all data files before any plotting
-    # ------------------------------------------------------------------
-    if len(prefix_arr) == 0:
-        msg('WARNING: No prefixes found -- nothing to process. '
-            'Check image_directory, image_identifier, and image_suffix in rmsynth_info.json.')
-        return 0
-
-    # Save the full dictionary
+    # Save everything before plotting, so a plotting error loses nothing
     os.makedirs(os.path.dirname(json_path), exist_ok=True)
     with open(json_path, 'w') as j:
-        json.dump(output_dictionary, j, indent = 4)
+        json.dump(output_dictionary, j, indent=4)
     msg(f'  Output JSON saved: {json_path}')
 
-    # ------------------------------------------------------------------
-    # Plotting (after all files are safely on disk)
-    # ------------------------------------------------------------------
-    if is_time_resolved:
-        # Plot IQUV spectrum for all epochs meeting the MFS S/N threshold
-        for component in components:
-            _plot_detected_spectra(output_dictionary, src_name, prefix_arr, component, label,
-                                   pol_flag=pol_flag)
-
-        # Plot MFS light curve across all epochs
-        plot_light_curve(output_dictionary, src_name, prefix_arr, label=label)
-    else:
-        # Single-epoch: plot spectrum for each component
-        for component in components:
-            plot_stokes_spectrum(output_dictionary, src_name, prefix_arr[0],
-                                component, 0, save_plot=True, label=label,
-                                pol_flag=pol_flag)
-
+    make_plots(output_dictionary, src_name, prefix_arr, label, pol_flag)
     return 0
 
 
+# =============================================================================
+# SPECTRAL INDEX AND PLOTS
+# =============================================================================
+
+def mad_inliers(values, nsigma):
+    """Values within nsigma robust sigmas (1.4826 x MAD) of the median; all of them when the MAD is 0."""
+    values = np.asarray(values, dtype=float)
+    med = np.nanmedian(values)
+    sig = 1.4826 * np.nanmedian(np.abs(values - med))
+    return np.abs(values - med) <= nsigma * sig if sig > 0 else np.ones(len(values), dtype=bool)
+
+
+def iterative_mad_clip(values, nsigma):
+    """Clip values more than nsigma robust sigmas from the median, repeated until none remain; True = clipped."""
+    clipped = np.zeros(len(values), dtype=bool)
+    while np.sum(~clipped) >= 3:
+        med = np.nanmedian(values[~clipped])
+        sig = 1.4826 * np.nanmedian(np.abs(values[~clipped] - med))
+        if not sig > 0:
+            break
+        new = ~clipped & (np.abs(values - med) > nsigma * sig)
+        if not new.any():
+            break
+        clipped |= new
+    return clipped
+
+
+def fit_spectral_index(freq, flux, rms, ref_freq):
+    """
+    Power-law fit log S = alpha log(nu / ref_freq) + c, weighted by S/N.
+    Returns (alpha, alpha_err, chi2, ndof, fit_nu, fit_S).
+    """
+    w = flux / rms
+    log_nu, log_S = np.log(freq / ref_freq), np.log(flux)
+    coeffs, cov = np.polyfit(log_nu, log_S, 1, w=w, cov=True)
+    chi2 = float(np.sum(((log_S - np.polyval(coeffs, log_nu)) * w) ** 2))
+    fit_nu = np.linspace(freq.min(), freq.max(), 200)
+    return coeffs[0], np.sqrt(cov[0, 0]), chi2, len(freq) - 2, fit_nu, np.exp(coeffs[1]) * (fit_nu / ref_freq) ** coeffs[0]
+
+
+def set_robust_ylim(ax, flux, rms, refs):
+    """y range covering the PLOT_YLIM_MAD_SIGMA inliers +/- error bars and the reference values, padded by PLOT_YLIM_PAD."""
+    keep = mad_inliers(flux, PLOT_YLIM_MAD_SIGMA)
+    vals = np.concatenate([flux[keep] + rms[keep], flux[keep] - rms[keep], refs])
+    lo, hi = np.nanmin(vals), np.nanmax(vals)
+    if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
+        ax.set_ylim(lo - PLOT_YLIM_PAD * (hi - lo), hi + PLOT_YLIM_PAD * (hi - lo))
+
+
 def _plot_detected_spectra(output_dictionary, src_name, prefix_arr, component, label, pol_flag=False):
-    '''
-    Plot the IQUV spectrum for every time-resolved epoch of `component` whose
-    MFS Stokes I S/N clears SPEC_PLOT_SNR_THRESH, and log a line per epoch
-    either way, so it's visible from the log alone -- not just by checking
-    which files landed on disk -- whether each epoch's spectrum plot was
-    saved or skipped for being sub-threshold.
-    '''
-    mfs_I_arr   = np.array(output_dictionary['MFS'][component]['I_flux_mJy'])
-    mfs_rms_arr = np.array(output_dictionary['MFS'][component]['I_rms_mJy'])
-    mfs_snr_arr = np.where(mfs_rms_arr > 0, mfs_I_arr / mfs_rms_arr, 0.0)
-    det_mask    = mfs_snr_arr >= SPEC_PLOT_SNR_THRESH
-    n_det       = int(np.sum(det_mask))
-    msg(f'  {component}: {n_det}/{len(det_mask)} epochs with MFS S/N >= {SPEC_PLOT_SNR_THRESH} -- plotting spectra')
-    for k in range(len(det_mask)):
-        epoch_desc = f'epoch {k} ({os.path.basename(prefix_arr[k])})'
-        if det_mask[k]:
-            msg(f'    {epoch_desc}: MFS S/N = {mfs_snr_arr[k]:.1f} >= {SPEC_PLOT_SNR_THRESH} -- spectrum plot SAVED')
-            plot_stokes_spectrum(output_dictionary, src_name, prefix_arr[k],
-                                component, int(k), save_plot=True, label=label,
-                                pol_flag=pol_flag)
-        else:
-            msg(f'    {epoch_desc}: MFS S/N = {mfs_snr_arr[k]:.1f} <  {SPEC_PLOT_SNR_THRESH} -- spectrum plot SKIPPED')
+    """Spectrum plots for the time-resolved epochs whose MFS Stokes I S/N >= SPEC_PLOT_SNR_THRESH."""
+    mfs = output_dictionary['MFS'][component]
+    mfs_rms = np.array(mfs['I_rms_mJy'])
+    snr = np.where(mfs_rms > 0, np.array(mfs['I_flux_mJy']) / mfs_rms, 0.0)
+    msg(f'  {component}: {int(np.sum(snr >= SPEC_PLOT_SNR_THRESH))}/{len(snr)} epochs with '
+        f'MFS S/N >= {SPEC_PLOT_SNR_THRESH} -- plotting spectra')
+    for k, s in enumerate(snr):
+        saved = s >= SPEC_PLOT_SNR_THRESH
+        msg(f'    epoch {k} ({os.path.basename(prefix_arr[k])}): MFS S/N = {s:.1f} -- '
+            f'spectrum plot {"SAVED" if saved else "SKIPPED"}')
+        if saved:
+            plot_stokes_spectrum(output_dictionary, src_name, prefix_arr[k], component, k,
+                                 save_plot=True, label=label, pol_flag=pol_flag)
 
 
 def plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k,
                          save_plot=True, label=None, pol_flag=False):
-    '''
-    Diagnostic plot of per-channel Stokes I, Q, U, V spectra for one source
-    component in one time-interval epoch, stacked vertically with a shared
-    frequency axis.
+    """
+    Spectral index of one component in epoch k, stored in its MFS results
+    (alpha, alpha_err, chi2, ndof, chi2_red; None when not fitted), and with
+    save_plot its I, Q, U, V spectrum plot (RESULTS/fitting_plots/).
 
-    Layout
-    ------
-    Four panels stacked vertically, sharing the same x-axis:
-      - Panel 1 (top):  Stokes I  -- linear axes; MFS reference dashed line;
-                                      spectral index power-law fit overlaid when
-                                      MFS S/N > 30 and >= 3 valid channels.
-      - Panels 2-4:     Stokes Q, U, V -- linear y-axis (fluxes can be negative);
-                                          robust MAD-based y-axis range;
-                                          MFS value as a dashed horizontal reference.
-
-    All panels use RMS error bars (not the imfit formal errors, which are stored
-    in the JSON for completeness but not plotted).
-
-    Spectral index fitting (Stokes I panel only)
-    --------------------------------------------
-    Conditions: MFS S/N > 30, >= 3 channels with flux > 0 and per-channel S/N >= 3.
-    Method: weighted log-log linear regression (np.polyfit), weights = S/N per channel.
-    alpha and alpha_err are stored back into output_dictionary['MFS'][component]
-    and therefore appear in the final JSON without a second write.  None is stored
-    if the fit is skipped.
-
-    Parameters
-    ----------
-    output_dictionary : dict  -- full extraction dictionary (modified in place)
-    src_name          : str   -- true source name; prefix is a literal glob match
-                                 on this string, so it's what label (if set)
-                                 gets substituted for below
-    prefix            : str   -- epoch path prefix (used for output filename)
-    component         : str   -- component key, e.g. 'component0'
-    k                 : int   -- epoch index within the prefix list
-    save_plot         : bool  -- if False, compute and store spectral index but
-                                 skip figure generation (default True)
-    label             : str or None -- display/output name override (rmsynth_info.json
-                                 'label' field, via extract_polarization_properties).
-                                 None/unset means "use src_name" -- unchanged behaviour.
-    pol_flag          : bool  -- True when a polarization angle calibrator was used, so
-                                 P is Plin = sqrt(Q^2+U^2) rather than Ptot = sqrt(Q^2+U^2+V^2).
-                                 Only then is P overlaid on the Q and U panels -- Ptot mixes
-                                 in V and doesn't belong on Q/U axes.
-    '''
-
+    Channels are dropped where the rms of any Stokes is a 5-sigma MAD
+    outlier, then where Stokes I is a SPEC_INDEX_MAD_CLIP outlier (iterated;
+    marked red on the plot). The power law is fitted to the remaining
+    channels with I > 0 and S/N >= 3, when the MFS S/N exceeds
+    SPEC_INDEX_SNR_THRESH. With a polarization angle calibrator, Plin is
+    overlaid on the Q and U panels (Ptot includes V, so is not shown).
+    """
     label = label or src_name
+    mfs = output_dictionary['MFS'][component]
+    fit = dict(alpha=None, alpha_err=None, chi2=None, ndof=None, chi2_red=None)
 
-    # Ensure the output directory exists
-    plot_dir = os.path.join('RESULTS', 'fitting_plots')
-    os.makedirs(plot_dir, exist_ok=True)
+    def store_fit():
+        for key, val in fit.items():
+            values = mfs.setdefault(key, [])
+            values.extend([None] * (k + 1 - len(values)))
+            values[k] = val
 
-    # ------------------------------------------------------------------
-    # Retrieve per-channel data arrays for this epoch
-    # ------------------------------------------------------------------
-    chan  = output_dictionary['CHAN'][component]
-    freq_arr  = np.array(chan['freq_GHz'][k])
-
-    if len(freq_arr) == 0:
+    # This epoch's channel values: freq and every flux and rms
+    chan = output_dictionary['CHAN'].get(component, {})
+    spec = {key: np.array(vals[k], dtype=float) for key, vals in chan.items()
+            if key == 'freq_GHz' or key.endswith(('_flux_mJy', '_rms_mJy'))}
+    stokes = 'IQUV' if 'Q_flux_mJy' in spec else 'I'
+    if not len(spec.get('freq_GHz', [])):
         msg(f'  plot_stokes_spectrum: no channel data for {component} epoch {k}, skipping plot')
+        store_fit()
         return
 
-    I_flux = np.array(chan['I_flux_mJy'][k])
-    I_rms  = np.array(chan['I_rms_mJy'][k])
-    # err_arr (imfit formal errors) retrieved only to satisfy completeness;
-    # RMS is used for all error bars -- see docstring.
-    _ = np.array(chan['I_err_mJy'][k])
-
-    # Q, U, V are only available when not running in Stokes-I-only mode
-    only_intensity = 'Q_flux_mJy' not in chan
-    if not only_intensity:
-        Q_flux = np.array(chan['Q_flux_mJy'][k])
-        Q_rms  = np.array(chan['Q_rms_mJy'][k])
-        U_flux = np.array(chan['U_flux_mJy'][k])
-        U_rms  = np.array(chan['U_rms_mJy'][k])
-        V_flux = np.array(chan['V_flux_mJy'][k])
-        V_rms  = np.array(chan['V_rms_mJy'][k])
-
-    # P is only overlaid on the Q/U panels when it's Plin (pol_flag True) --
-    # Ptot includes V and isn't meaningful on Q/U axes.
-    show_P = pol_flag and not only_intensity and 'P_flux_mJy' in chan
-    if show_P:
-        P_flux = np.array(chan['P_flux_mJy'][k])
-        P_rms  = np.array(chan['P_rms_mJy'][k])
-
-    # ------------------------------------------------------------------
-    # MAD-based outlier rejection on error bars: if ANY of I, Q, U, V has a
-    # crazy RMS in a channel, mask that channel from I, Q, U, V, and P alike.
-    # This prevents single pathological channels from distorting the plot.
-    # ------------------------------------------------------------------
-    all_rms = [I_rms]
-    if not only_intensity:
-        all_rms += [Q_rms, U_rms, V_rms]
-
-    good = np.ones(len(freq_arr), dtype=bool)
-    for rms_arr in all_rms:
-        med  = np.nanmedian(rms_arr)
-        mad  = np.nanmedian(np.abs(rms_arr - med))
-        sig  = 1.4826 * mad
-        if sig > 0:
-            good &= np.abs(rms_arr - med) <= 5.0 * sig
-
-    n_masked = int(np.sum(~good))
-    if n_masked > 0:
-        msg(f'  Masking {n_masked}/{len(good)} channels with outlier RMS values')
-        freq_arr = freq_arr[good]
-        I_flux   = I_flux[good]
-        I_rms    = I_rms[good]
-        if not only_intensity:
-            Q_flux = Q_flux[good]
-            Q_rms  = Q_rms[good]
-            U_flux = U_flux[good]
-            U_rms  = U_rms[good]
-            V_flux = V_flux[good]
-            V_rms  = V_rms[good]
-        if show_P:
-            P_flux = P_flux[good]
-            P_rms  = P_rms[good]
-
-    if len(freq_arr) == 0:
+    # Drop channels with an outlier rms in any Stokes
+    good = np.logical_and.reduce([mad_inliers(spec[f'{s}_rms_mJy'], 5.0) for s in stokes])
+    if not good.all():
+        msg(f'  Masking {int(np.sum(~good))}/{len(good)} channels with outlier RMS values')
+    spec = {key: v[good] for key, v in spec.items()}
+    if not good.any():
         msg(f'  plot_stokes_spectrum: all channels masked for {component} epoch {k}, skipping plot')
+        store_fit()
         return
 
-    # MFS reference values for this epoch
-    mfs       = output_dictionary['MFS'][component]
-    mfs_I     = mfs['I_flux_mJy'][k]
-    mfs_I_rms = mfs['I_rms_mJy'][k]
-    mfs_freq  = mfs['freq_GHz'][k]
-    mfs_snr   = mfs_I / mfs_I_rms if mfs_I_rms > 0 else 0.0
-    if not only_intensity:
-        mfs_Q = mfs['Q_flux_mJy'][k]
-        mfs_U = mfs['U_flux_mJy'][k]
-        mfs_V = mfs['V_flux_mJy'][k]
-
-    # ------------------------------------------------------------------
-    # Spectral index fit on Stokes I (log-log space)
-    # ------------------------------------------------------------------
-    alpha        = None
-    alpha_err    = None
-    chi2         = None
-    ndof         = None
-    chi2_red     = None
-    fit_nu       = None
-    fit_S        = None
-    flagged_freqs = np.array([])
-
-    # Quality mask: positive flux and per-channel S/N >= 3
-    valid = (I_flux > 0) & (I_rms > 0) & (I_flux / I_rms >= 3.0)
-
-    if mfs_snr > SPEC_INDEX_SNR_THRESH and np.sum(valid) >= 3:
-        nu_v = freq_arr[valid]
-        S_v  = I_flux[valid]
-        w_v  = S_v / I_rms[valid]          # S/N weights (= 1/sigma_logS in log space)
-
-        # Iterative MAD-based outlier rejection on flux values
-        _iter = 0
-        while len(nu_v) >= 3:
-            _med  = np.median(S_v)
-            _mad  = np.median(np.abs(S_v - _med))
-            _sig  = 1.4826 * _mad
-            if _sig <= 0:
-                break
-            _keep     = np.abs(S_v - _med) <= SPEC_INDEX_MAD_CLIP * _sig
-            n_clipped = int(np.sum(~_keep))
-            msg(f'  MAD clip iter {_iter + 1} ({component}, epoch {k}): '
-                f'median = {_med:.3f} mJy  sigma = {_sig:.3f} mJy  '
-                f'threshold = {SPEC_INDEX_MAD_CLIP * _sig:.3f} mJy  '
-                f'clipped = {n_clipped}  remaining = {int(np.sum(_keep))}')
-            if n_clipped == 0:
-                break
-            flagged_freqs = np.concatenate([flagged_freqs, nu_v[~_keep]])
-            nu_v  = nu_v[_keep]
-            S_v   = S_v[_keep]
-            w_v   = w_v[_keep]
-            _iter += 1
-
-        if len(nu_v) < 3:
-            msg(f'  Spectral index fit skipped ({component}, epoch {k}): '
-                f'only {len(nu_v)} channels remain after MAD clipping (need >= 3)')
-        else:
-            # Fit in log space: log(S) = alpha*log(nu/nu_ref) + log(S_ref)
-            log_nu = np.log(nu_v / mfs_freq)
-            log_S  = np.log(S_v)
-            try:
-                coeffs, cov = np.polyfit(log_nu, log_S, 1, w=w_v, cov=True)
-                alpha     = coeffs[0]
-                alpha_err = np.sqrt(cov[0, 0])
-
-                # Chi-squared: residuals in log space weighted by S/N
-                # sigma_logS = 1/SNR, so chi2 = sum((residual * w_v)^2)
-                log_S_model = coeffs[0] * log_nu + coeffs[1]
-                residuals   = log_S - log_S_model
-                chi2        = float(np.sum((residuals * w_v) ** 2))
-                ndof        = len(nu_v) - 2
-                chi2_red    = chi2 / ndof if ndof > 0 else None
-
-                nu_plot = np.linspace(nu_v.min(), nu_v.max(), 200)
-                fit_S   = np.exp(coeffs[1]) * (nu_plot / mfs_freq) ** alpha
-                fit_nu  = nu_plot
-
-                msg(f'  Spectral index fit ({component}, epoch {k}): '
-                    f'alpha = {alpha:.3f} +/- {alpha_err:.3f}  '
-                    f'chi2 = {chi2:.2f}  chi2_red = {chi2_red:.2f}  ndof = {ndof}  '
-                    f'(MFS S/N = {mfs_snr:.1f} >= {SPEC_INDEX_SNR_THRESH}, '
-                    f'N_chan = {len(nu_v)} / {int(np.sum(valid))})')
-            except Exception as e:
-                msg(f'  WARNING: Spectral index fit failed for {component} epoch {k}: {e}')
+    # Spectral index, after clipping Stokes I outliers
+    freq, I, I_rms = spec['freq_GHz'], spec['I_flux_mJy'], spec['I_rms_mJy']
+    clipped = iterative_mad_clip(I, SPEC_INDEX_MAD_CLIP)
+    if clipped.any():
+        msg(f'  MAD clip ({component}, epoch {k}): {int(np.sum(clipped))} Stokes I outlier channel(s) '
+            f'beyond {SPEC_INDEX_MAD_CLIP} sigma')
+    mfs_I, mfs_freq = mfs['I_flux_mJy'][k], mfs['freq_GHz'][k]
+    mfs_snr = mfs_I / mfs['I_rms_mJy'][k] if mfs['I_rms_mJy'][k] > 0 else 0.0
+    valid = ~clipped & (I > 0) & (I_rms > 0) & (I / I_rms >= 3.0)
+    fit_curve = None
+    if mfs_snr <= SPEC_INDEX_SNR_THRESH:
+        msg(f'  Spectral index fit skipped ({component}, epoch {k}): '
+            f'MFS S/N = {mfs_snr:.1f} (< {SPEC_INDEX_SNR_THRESH})')
+    elif valid.sum() < 3:
+        msg(f'  Spectral index fit skipped ({component}, epoch {k}): '
+            f'only {int(valid.sum())} unclipped channels with S/N >= 3 (need >= 3)')
     else:
-        if mfs_snr <= SPEC_INDEX_SNR_THRESH:
-            msg(f'  Spectral index fit skipped ({component}, epoch {k}): '
-                f'MFS S/N = {mfs_snr:.1f} (< {SPEC_INDEX_SNR_THRESH})')
-        else:
-            msg(f'  Spectral index fit skipped ({component}, epoch {k}): '
-                f'only {int(np.sum(valid))} valid channels (need >= 3)')
-
-    # Store alpha and chi2 in the MFS dict so they appear in the JSON.
-    # Initialise as a list on the first epoch; append on subsequent epochs.
-    # Guard against duplicates when the function is re-called for plotting only.
-    if 'alpha' not in mfs:
-        mfs['alpha']     = [alpha]
-        mfs['alpha_err'] = [alpha_err]
-        mfs['chi2']      = [chi2]
-        mfs['ndof']      = [ndof]
-        mfs['chi2_red']  = [chi2_red]
-    elif len(mfs['alpha']) <= k:
-        mfs['alpha'].append(alpha)
-        mfs['alpha_err'].append(alpha_err)
-        mfs['chi2'].append(chi2)
-        mfs['ndof'].append(ndof)
-        mfs['chi2_red'].append(chi2_red)
-
-    # If save_plot is False, we only needed the spectral index computation above.
+        try:
+            alpha, alpha_err, chi2, ndof, fit_nu, fit_S = fit_spectral_index(freq[valid], I[valid], I_rms[valid], mfs_freq)
+            fit = dict(alpha=alpha, alpha_err=alpha_err, chi2=chi2, ndof=ndof,
+                       chi2_red=chi2 / ndof if ndof > 0 else None)
+            fit_curve = (fit_nu, fit_S)
+            msg(f'  Spectral index fit ({component}, epoch {k}): alpha = {alpha:.3f} +/- {alpha_err:.3f}  '
+                f'chi2 = {chi2:.2f}  ndof = {ndof}  (MFS S/N = {mfs_snr:.1f}, N_chan = {int(valid.sum())} / {len(freq)})')
+        except Exception as e:
+            msg(f'  WARNING: Spectral index fit failed for {component} epoch {k}: {e}')
+    store_fit()
     if not save_plot:
         return
 
-    # ------------------------------------------------------------------
-    # Build figure: 4 panels stacked vertically, shared x-axis
-    # (1 panel if Stokes-I-only mode)
-    # ------------------------------------------------------------------
-    n_panels = 1 if only_intensity else 4
-    fig, axes = plt.subplots(n_panels, 1, figsize=(10, 3 * n_panels),
-                             sharex=True)
-    if n_panels == 1:
-        axes = [axes]   # make iterable
+    # ---- Plot: one panel per Stokes; flux-clipped channels left out, marked red ----
+    flagged_freqs = freq[clipped]
+    spec = {key: v[~clipped] for key, v in spec.items()}
+    freq = spec['freq_GHz']
+    colours = {'I': 'royalblue', 'Q': 'darkorange', 'U': 'forestgreen', 'V': 'mediumpurple'}
+    fig, axes = plt.subplots(len(stokes), 1, figsize=(10, 3 * len(stokes)), sharex=True, squeeze=False)
+    axes = axes[:, 0]
+    for ax, s in zip(axes, stokes):
+        flux, rms, mfs_val = spec[f'{s}_flux_mJy'], spec[f'{s}_rms_mJy'], mfs[f'{s}_flux_mJy'][k]
+        ax.errorbar(freq, flux, yerr=rms, fmt='o', markersize=4, capsize=3, color=colours[s],
+                    label=f'Stokes {s}', zorder=3)
+        if s == 'I':
+            ax.axhline(mfs_val, color='k', linestyle='--', linewidth=1.5,
+                       label=f'MFS: {mfs_val:.2f} mJy  (S/N = {mfs_snr:.1f})', zorder=2)
+            if fit_curve is not None:
+                ax.plot(*fit_curve, color='tomato', linewidth=1.8, zorder=4,
+                        label=rf'$\alpha$ = {fit["alpha"]:.2f} $\pm$ {fit["alpha_err"]:.2f}')
+            set_robust_ylim(ax, flux, rms, [mfs_val])
+        else:
+            ax.axhline(mfs_val, color='k', linestyle='--', linewidth=1.5, label=f'MFS: {mfs_val:.2f} mJy', zorder=2)
+            ax.axhline(0, color='grey', linestyle=':', linewidth=0.8, zorder=1)
+            set_robust_ylim(ax, flux, rms, [mfs_val, 0.0])
+            if pol_flag and s in 'QU' and 'P_flux_mJy' in spec:
+                ax.errorbar(freq, spec['P_flux_mJy'], yerr=spec['P_rms_mJy'], fmt='o', markersize=3, capsize=2,
+                            color='black', alpha=0.5, label='Stokes P (lin)', zorder=2.5)
+        ax.set_ylabel(f'{s}  (mJy/beam)', fontsize=10)
+        ax.grid(True, which='both', alpha=0.3, linestyle=':')
+        ax.legend(fontsize=9, loc='best')
 
-    # --- Panel 0: Stokes I (linear axes) ---
-    ax = axes[0]
-    ax.errorbar(freq_arr, I_flux, yerr=I_rms,
-                fmt='o', markersize=4, capsize=3, color='royalblue',
-                label='Stokes I', zorder=3)
+    if len(flagged_freqs) and len(freq) >= 2:
+        width = float(np.min(np.diff(np.sort(freq))))
+        for f in flagged_freqs:
+            for ax in axes:
+                ax.axvspan(f - width / 2, f + width / 2, color='red', alpha=0.2, zorder=0, linewidth=0)
 
-    # Robust y-axis range: MAD-based 5-sigma outlier rejection
-    med_I   = np.nanmedian(I_flux)
-    mad_I   = np.nanmedian(np.abs(I_flux - med_I))
-    sigma_I = 1.4826 * mad_I
-    if sigma_I > 0:
-        inlier = np.abs(I_flux - med_I) <= 5.0 * sigma_I
-    else:
-        inlier = np.ones(len(I_flux), dtype=bool)
-
-    range_vals = np.concatenate([
-        I_flux[inlier] + I_rms[inlier],
-        I_flux[inlier] - I_rms[inlier],
-        [mfs_I]])
-    lo = np.nanmin(range_vals)
-    hi = np.nanmax(range_vals)
-    if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
-        span = hi - lo
-        pad  = 0.15 * span
-        ax.set_ylim(lo - pad, hi + pad)
-
-    ax.axhline(y=mfs_I, color='k', linestyle='--', linewidth=1.5,
-               label=f'MFS: {mfs_I:.2f} mJy  (S/N = {mfs_snr:.1f})', zorder=2)
-    if fit_nu is not None:
-        ax.plot(fit_nu, fit_S, color='tomato', linewidth=1.8,
-                label=rf'$\alpha$ = {alpha:.2f} $\pm$ {alpha_err:.2f}', zorder=4)
-    ax.set_ylabel('I  (mJy/beam)', fontsize=10)
-    ax.grid(True, which='both', alpha=0.3, linestyle=':')
-    ax.legend(fontsize=9, loc='best')
-
-    # --- Panels 1-3: Stokes Q, U, V (linear y, actual data range) ---
-    if not only_intensity:
-        for ax, flux, rms, stokes_label, mfs_val, colour in zip(
-                axes[1:],
-                [Q_flux,   U_flux,   V_flux],
-                [Q_rms,    U_rms,    V_rms],
-                ['Q',      'U',      'V'],
-                [mfs_Q,    mfs_U,    mfs_V],
-                ['darkorange', 'forestgreen', 'mediumpurple']):
-
-            ax.errorbar(freq_arr, flux, yerr=rms,
-                        fmt='o', markersize=4, capsize=3, color=colour,
-                        label=f'Stokes {stokes_label}', zorder=3)
-            ax.axhline(y=mfs_val, color='k', linestyle='--', linewidth=1.5,
-                       label=f'MFS: {mfs_val:.2f} mJy', zorder=2)
-            ax.axhline(y=0, color='grey', linestyle=':', linewidth=0.8, zorder=1)
-
-            # Robust y-axis range: MAD-based 5-sigma outlier rejection,
-            # then use the actual min/max of inlier data +/- error bars
-            # and the MFS reference value.
-            med   = np.nanmedian(flux)
-            mad   = np.nanmedian(np.abs(flux - med))
-            sigma = 1.4826 * mad
-            if sigma > 0:
-                inlier = np.abs(flux - med) <= 5.0 * sigma
-            else:
-                inlier = np.ones(len(flux), dtype=bool)
-
-            range_vals = np.concatenate([
-                flux[inlier] + rms[inlier],
-                flux[inlier] - rms[inlier],
-                [mfs_val, 0.0]])
-            lo = np.nanmin(range_vals)
-            hi = np.nanmax(range_vals)
-            if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
-                span = hi - lo
-                pad  = 0.15 * span
-                ax.set_ylim(lo - pad, hi + pad)
-
-            ax.set_ylabel(f'{stokes_label}  (mJy/beam)', fontsize=10)
-            ax.grid(True, which='both', alpha=0.3, linestyle=':')
-            ax.legend(fontsize=9, loc='best')
-
-        # Overlay Plin on the Q and U panels only (axes[1], axes[2] -- not V)
-        if show_P:
-            for ax in axes[1:3]:
-                ax.errorbar(freq_arr, P_flux, yerr=P_rms,
-                            fmt='o', markersize=3, capsize=2, color='black',
-                            alpha=0.5, label='Stokes P (lin)', zorder=2.5)
-                ax.legend(fontsize=9, loc='best')
-
-    # Overlay flagged channels on all panels as translucent red spans.
-    # Width of each span = minimum channel separation in the frequency array.
-    if len(flagged_freqs) > 0 and len(freq_arr) >= 2:
-        _chan_width = float(np.min(np.diff(np.sort(freq_arr))))
-        for _f in flagged_freqs:
-            for _ax in axes:
-                _ax.axvspan(_f - _chan_width / 2, _f + _chan_width / 2,
-                            color='red', alpha=0.2, zorder=0, linewidth=0)
-
-    # Shared x-axis label on the bottom panel only
     axes[-1].set_xlabel('Frequency (GHz)', fontsize=11)
-
     fig.suptitle(f'{label}  |  {component}  |  epoch {k}', fontsize=12, y=1.01)
     plt.tight_layout()
 
-    # prefix is a literal glob match on src_name (see docstring); _apply_label
-    # carries the label into the output filename only (never a directory).
-    out_basename = _apply_label(os.path.basename(prefix), src_name, label)
-
-    plot_fname = os.path.join(
-        plot_dir,
-        f'{out_basename}_{component}_IQUV_spectrum.png')
+    plot_dir = os.path.join('RESULTS', 'fitting_plots')
+    os.makedirs(plot_dir, exist_ok=True)
+    plot_fname = os.path.join(plot_dir, f'{_apply_label(os.path.basename(prefix), src_name, label)}'
+                                        f'_{component}_IQUV_spectrum.png')
     plt.savefig(plot_fname, dpi=150, bbox_inches='tight')
     plt.close()
     msg(f'  IQUV spectrum plot saved: {plot_fname}')
 
 
 def plot_light_curve(output_dictionary, src_name, prefix_arr, label=None):
-    '''
-    Plot MFS IQUV light curves for time-resolved data. Always produced
-    whenever the run is time-resolved, and always plots every epoch -- this
-    is a diagnostic plot, not a detection-filtered one (per-channel spectrum
-    plots from plot_stokes_spectrum() are the ones restricted to high-S/N
-    epochs, see SPEC_PLOT_SNR_THRESH).
-
-    One figure per source with one column per component and up to four rows:
-      Row 1: Stokes I flux density (mJy/beam) vs time
-      Row 2: Stokes Q flux density (mJy/beam) vs time
-      Row 3: Stokes U flux density (mJy/beam) vs time
-      Row 4: Stokes V flux density (mJy/beam) vs time
-
-    Rows 2-4 are only shown when polarization data is available.
-
-    Every epoch is always plotted. A MAD clip (the same threshold used for
-    the spectral-index fit, SPEC_INDEX_MAD_CLIP) is applied to the error
-    array of each row to identify epochs with anomalously large error bars;
-    those epochs are excluded only when setting the y-axis range, so a
-    single bad-error outlier can't blow out the scale for everything else.
-
-    Parameters
-    ----------
-    output_dictionary : dict  -- full extraction dictionary
-    src_name          : str   -- true source name; prefix_arr entries are literal
-                                 glob matches on this string, so it's what label
-                                 (if set) gets substituted for below
-    prefix_arr        : list  -- list of prefix strings (one per epoch),
-                                 used to build the output filename
-    label             : str or None -- display/output name override (rmsynth_info.json
-                                 'label' field, via extract_polarization_properties).
-                                 None/unset means "use src_name" -- unchanged behaviour.
-    '''
-
+    """
+    MFS light curve of a time-resolved run: Stokes I (and Q, U, V when
+    fitted) against time, one column per component. Every epoch is plotted;
+    epochs whose error bar is a SPEC_INDEX_MAD_CLIP MAD outlier are left out
+    of the y range only.
+    """
     label = label or src_name
-
-    plot_dir = os.path.join('RESULTS', 'fitting_plots')
-    os.makedirs(plot_dir, exist_ok=True)
-
     mfs = output_dictionary['MFS']
-    components = sorted(mfs.keys())
-
-    # Determine whether polarization data exists
-    has_pol = 'Q_flux_mJy' in mfs[components[0]]
-    n_rows  = 4 if has_pol else 1
-    n_cols  = len(components)
-
-    fig, axes = plt.subplots(n_rows, n_cols,
-                             figsize=(8 * n_cols, 3.5 * n_rows),
-                             squeeze=False, sharex=True)
-
-    # Component colours
+    components = sorted(mfs)
+    stokes = 'IQUV' if 'Q_flux_mJy' in mfs[components[0]] else 'I'
     colours = ['royalblue', 'tomato', 'forestgreen', 'mediumpurple',
                'darkorange', 'teal', 'crimson', 'goldenrod']
 
-    def mad_clip_ylim(flux, rms):
-        """MAD-clip the error array (a MAD clip, same threshold as the
-        spectral-index fit) to find epochs with well-behaved error bars, and
-        use only those to set the y-axis range. All epochs are still plotted
-        regardless of this mask."""
-        med  = np.nanmedian(rms)
-        mad  = np.nanmedian(np.abs(rms - med))
-        sig  = 1.4826 * mad
-        if sig > 0:
-            keep = np.abs(rms - med) <= SPEC_INDEX_MAD_CLIP * sig
-        else:
-            keep = np.ones(len(rms), dtype=bool)
-        if not np.any(keep):
-            keep = np.ones(len(rms), dtype=bool)
-        lo = np.nanmin(flux[keep] - rms[keep])
-        hi = np.nanmax(flux[keep] + rms[keep])
-        if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
-            span = hi - lo
-            pad  = 0.15 * span if span > 0 else 0.5
-            return lo - pad, hi + pad
-        return None
-
-    def plot_stokes_row(ax, dates, flux, rms, label, col, legend_label=None):
-        """Plot every epoch for one Stokes parameter, unconditionally."""
-        ax.axhline(y=0, color='grey', linestyle=':', linewidth=0.8)
-        ax.set_ylabel(f'Stokes {label} (mJy/beam)', fontsize=10)
-        ax.grid(True, alpha=0.3, linestyle=':')
-        ax.errorbar(dates, flux, yerr=rms, fmt='o', markersize=5, capsize=3,
-                    color=col, label=legend_label)
-        if legend_label is not None:
-            ax.legend(fontsize=8, loc='best')
-        ylim = mad_clip_ylim(flux, rms)
-        if ylim is not None:
-            ax.set_ylim(*ylim)
-
+    fig, axes = plt.subplots(len(stokes), len(components), squeeze=False, sharex=True,
+                             figsize=(8 * len(components), 3.5 * len(stokes)))
+    all_dates = []
     for j, component in enumerate(components):
         comp = mfs[component]
+        dates = [datetime.datetime.fromisoformat(d) for d in comp['time_ctr_isot']]
+        all_dates += dates
+        axes[0, j].set_title(component, fontsize=10)
+        for i, s in enumerate(stokes):
+            if f'{s}_flux_mJy' not in comp:
+                continue
+            ax = axes[i, j]
+            flux, rms = np.array(comp[f'{s}_flux_mJy']), np.array(comp[f'{s}_rms_mJy'])
+            ax.axhline(y=0, color='grey', linestyle=':', linewidth=0.8)
+            ax.errorbar(dates, flux, yerr=rms, fmt='o', markersize=5, capsize=3,
+                        color=colours[j % len(colours)], label=component if s == 'I' else None)
+            if s == 'I':
+                ax.legend(fontsize=8, loc='best')
+            ax.set_ylabel(f'Stokes {s} (mJy/beam)', fontsize=10)
+            ax.grid(True, alpha=0.3, linestyle=':')
 
-        # Parse observation dates (centre of each exposure)
-        dates = np.array([datetime.datetime.fromisoformat(d) for d in comp['time_ctr_isot']])
-        col   = colours[j % len(colours)]
+            keep = mad_inliers(rms, SPEC_INDEX_MAD_CLIP)
+            if not keep.any():
+                keep[:] = True
+            lo, hi = np.nanmin(flux[keep] - rms[keep]), np.nanmax(flux[keep] + rms[keep])
+            if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
+                ax.set_ylim(lo - PLOT_YLIM_PAD * (hi - lo), hi + PLOT_YLIM_PAD * (hi - lo))
 
-        I_flux = np.array(comp['I_flux_mJy'])
-        I_rms  = np.array(comp['I_rms_mJy'])
-
-        ax = axes[0, j]
-        ax.set_title(component, fontsize=10)
-        plot_stokes_row(ax, dates, I_flux, I_rms, 'I', col, legend_label=component)
-
-        if has_pol and 'Q_flux_mJy' in comp:
-            Q_flux = np.array(comp['Q_flux_mJy'])
-            Q_rms  = np.array(comp['Q_rms_mJy'])
-            plot_stokes_row(axes[1, j], dates, Q_flux, Q_rms, 'Q', col)
-
-            U_flux = np.array(comp['U_flux_mJy'])
-            U_rms  = np.array(comp['U_rms_mJy'])
-            plot_stokes_row(axes[2, j], dates, U_flux, U_rms, 'U', col)
-
-            V_flux = np.array(comp['V_flux_mJy'])
-            V_rms  = np.array(comp['V_rms_mJy'])
-            plot_stokes_row(axes[3, j], dates, V_flux, V_rms, 'V', col)
-
-    # Format the time axis on the bottom row
+    # Time axis: HH:MM, with the date when the run spans more than a day
+    multi_day = all_dates and (max(all_dates) - min(all_dates)).total_seconds() > 86400
     for ax in axes[-1, :]:
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d\n%H:%M' if multi_day else '%H:%M'))
         ax.set_xlabel('Time (UT)', fontsize=10)
         for tick in ax.get_xticklabels():
             tick.set_rotation(30)
             tick.set_ha('right')
 
-    # If the time span covers more than 1 day, use a date+time format instead
-    all_dates = []
-    for component in components:
-        all_dates += [datetime.datetime.fromisoformat(d)
-                      for d in mfs[component]['time_ctr_isot']]
-    if all_dates:
-        span = max(all_dates) - min(all_dates)
-        if span.total_seconds() > 86400:
-            for ax in axes[-1, :]:
-                ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d\n%H:%M'))
-
     fig.suptitle(f'{label}  |  MFS light curve', fontsize=12, y=1.02)
     plt.tight_layout()
 
-    # Strip the time index (e.g. -t0051) from the prefix for the filename.
-    # prefix_arr[0] is a literal glob match on src_name (see docstring); the
-    # _apply_label call carries the label into the filename only, same
-    # pattern as plot_stokes_spectrum().
+    # File name: the first prefix without its time index (e.g. -t0051)
+    plot_dir = os.path.join('RESULTS', 'fitting_plots')
+    os.makedirs(plot_dir, exist_ok=True)
     lc_basename = _apply_label(re.sub(r'-t\d+$', '', os.path.basename(prefix_arr[0])), src_name, label)
-    plot_fname = os.path.join(
-        plot_dir,
-        f'{lc_basename}_{label}_MFS_lightcurve.png')
+    plot_fname = os.path.join(plot_dir, f'{lc_basename}_{label}_MFS_lightcurve.png')
     plt.savefig(plot_fname, dpi=150, bbox_inches='tight')
     plt.close()
     msg(f'  MFS light curve plot saved: {plot_fname}')
 
 
+# =============================================================================
+# MAIN
+# =============================================================================
+
 def main():
-    
-    # Load in the rmsynthesis data
-    with open(cfg.RMSYN_INFO_FILE, 'r') as j:
+    """Extract every source listed in rmsynth_info.json (cfg.RMSYN_INFO_FILE)."""
+    with open(cfg.RMSYN_INFO_FILE) as j:
         rmsynth_info = json.load(j)
 
-    # Check to see if there is a Polarization angle calibrator -- pol_flag = True means that you do have
-    pol_flag=False
-    if cfg.POLANG_NAME != '':
-        pol_flag = True
+    pol_flag = cfg.POLANG_NAME != ''   # a polarization angle calibrator was used
+    labels = rmsynth_info.get('label', [])   # optional output names; '' = source name
 
-    # Optional per-entry output-name override. Missing key or empty string
-    # means "use source_name" (unchanged default behaviour) -- see out_label
-    # in extract_polarization_properties() docstring.
-    labels = rmsynth_info.get('label', [])
-
-    # Iterate through sources as specified in rmsynth_info.json
-    for k in range(len(rmsynth_info['image_directory']))[:]:
-   
+    for k in range(len(rmsynth_info['image_directory'])):
         if not os.path.exists(rmsynth_info['image_directory'][k]):
             msg('Skipping {} as the directory does not exist'.format(rmsynth_info['image_directory'][k]))
             continue
 
-        # Construct image identifier based on input options
-        if rmsynth_info["image_timing"][k]:
-            src_im_identifier = cfg.CWD +'/{}/*{}*.ms_{}-t'.format(rmsynth_info["image_directory"][k],
-                                                                                            case_insensitive(rmsynth_info["source_name"][k]),
-                                                                                            rmsynth_info["image_identifier"][k])
-        else:
-            src_im_identifier = cfg.CWD +'/{}/*{}*.ms_{}-'.format(rmsynth_info["image_directory"][k],
-                                                                                            case_insensitive(rmsynth_info["source_name"][k]),
-                                                                                           rmsynth_info["image_identifier"][k])                                                                                           
-        # Parse source positions from rmsynth_info.json using parse_casa_position().
-        # Accepts both CASA HMS/DMS format ('HH:MM:SS.SS,+-DD.MM.SS.SS') and
-        # plain decimal degrees ('260.43,-16.20' or with 'deg' suffix).
+        # Images: <image_directory>/*<source>*.ms_<identifier>- (then t<N>- when time-resolved)
+        src_im_identifier = (f'{cfg.CWD}/{rmsynth_info["image_directory"][k]}/'
+                             f'*{case_insensitive(rmsynth_info["source_name"][k])}*.ms_'
+                             f'{rmsynth_info["image_identifier"][k]}-' + ('t' if rmsynth_info["image_timing"][k] else ''))
+
+        # Source positions: 'HH:MM:SS.SS,+DD.MM.SS.SS' (colon declinations are
+        # converted) or decimal degrees
         src_ra  = []
         src_dec = []
         for pos in rmsynth_info['source_pos'][k]:
@@ -3006,25 +1875,14 @@ def main():
 
         src_ra, src_dec = np.array(src_ra), np.array(src_dec)
 
-        ###########################
-        # Add the position prediction from here #
-        ###########################
-        
         msg(f'Starting property extraction for identifier: {src_im_identifier}')
-        extract_polarization_properties(rmsynth_info["source_name"][k],
-            src_im_identifier,
-            rmsynth_info['image_suffix'][k], 
-            src_ra, 
-            src_dec, 
-            rmsynth_info['source_ulim'][k],
-            pol_flag,
+        extract_polarization_properties(
+            rmsynth_info['source_name'][k], src_im_identifier, rmsynth_info['image_suffix'][k],
+            src_ra, src_dec, rmsynth_info['source_ulim'][k], pol_flag,
             fix_dec_colons(rmsynth_info['rms_region'][k], 'rms_region'),
-            rmsynth_info['image_directory'][k],
-            rmsynth_info["image_identifier"][k],
-            fix_additional_comps = True,
-            out_label = labels[k] if k < len(labels) else '')
+            rmsynth_info['image_directory'][k], rmsynth_info['image_identifier'][k],
+            fix_additional_comps=True, out_label=labels[k] if k < len(labels) else '')
 
 
-
-if __name__  == "__main__":
+if __name__ == "__main__":
     main()

@@ -105,7 +105,7 @@ def main():
         step['dependency'] = step_i - 1
         step['id'] = 'POSYS'+code
         syscall = CONTAINER_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
-        syscall += gen.generate_syscall_casa_short(casascript=cfg.OXKAT+f'/RMSYNTH_01B_systematics.py')
+        syscall += 'python-pycasa '+cfg.OXKAT+'/RMSYNTH_01B_systematics.py'
         step['syscall'] = syscall
         steps.append(step)
         step_i += 1      

@@ -76,7 +76,7 @@ def main():
     if USE_CASA:
         if DO_DD_SELFCAL:
             sys.exit(gen.col('Self-calibration')+'DO_DD_SELFCAL requires QuartiCal, but CAL_2GC_USE_CASA is True')
-        print(gen.col('Self-calibration')+f'CASA (solve parang={CASA_SOLVE_PARANG}; stage 1: delay, apply parang={CASA_APPLY_PARANG_STAGE1}; stage 2: phase, apply parang={CASA_APPLY_PARANG_STAGE2})')
+        print(gen.col('Self-calibration')+f'CASA (solve parang={CASA_SOLVE_PARANG}; stage 1: phase P1, apply parang={CASA_APPLY_PARANG_STAGE1}; stage 2: phase P2, apply parang={CASA_APPLY_PARANG_STAGE2})')
     else:
         if not o.isfile(cfg.CAL_2GC_YAML):
             sys.exit(gen.col('QuartiCal YAML')+f'CAL_2GC_YAML is set to {cfg.CAL_2GC_YAML}, which does not exist')
@@ -409,9 +409,9 @@ def main():
             step['slurm_config'] = cfg.SLURM_WSCLEAN
             step['pbs_config'] = cfg.PBS_WSCLEAN
             if USE_CASA:
-                step['comment'] = 'Run CASA delay self-calibration (stage 1) on the target {}'.format(targetname)
+                step['comment'] = 'Run CASA phase self-calibration (stage 1, P1) on the target {}'.format(targetname)
                 syscall = CONTAINER_RUNNER + CASA_CONTAINER+' ' if USE_SINGULARITY else ''
-                syscall += gen.generate_syscall_casa(casascript=f'{OXKAT}/2GC_casa_selfcal.py ms={myms} mode=K solve_parang={CASA_SOLVE_PARANG} parang={CASA_APPLY_PARANG_STAGE1}')
+                syscall += gen.generate_syscall_casa(casascript=f'{OXKAT}/2GC_casa_selfcal.py ms={myms} mode=P1 solve_parang={CASA_SOLVE_PARANG} parang={CASA_APPLY_PARANG_STAGE1}')
             else:
                 step['comment'] = 'Run Quartical phase self-calibration (stage 1) on the target {}'.format(targetname)
                 syscall = CONTAINER_RUNNER + QUARTICAL_CONTAINER+' ' if USE_SINGULARITY else ''
@@ -613,9 +613,9 @@ def main():
                 step['slurm_config'] = cfg.SLURM_WSCLEAN
                 step['pbs_config'] = cfg.PBS_WSCLEAN
                 if USE_CASA:
-                    step['comment'] = 'Run CASA phase self-calibration (stage 2) on the target {}'.format(targetname)
+                    step['comment'] = 'Run CASA phase self-calibration (stage 2, P2) on the target {}'.format(targetname)
                     syscall = CONTAINER_RUNNER + CASA_CONTAINER+' ' if USE_SINGULARITY else ''
-                    syscall += gen.generate_syscall_casa(casascript=f'{OXKAT}/2GC_casa_selfcal.py ms={stage2_ms} mode=P solve_parang={CASA_SOLVE_PARANG} parang={CASA_APPLY_PARANG_STAGE2}')
+                    syscall += gen.generate_syscall_casa(casascript=f'{OXKAT}/2GC_casa_selfcal.py ms={stage2_ms} mode=P2 solve_parang={CASA_SOLVE_PARANG} parang={CASA_APPLY_PARANG_STAGE2}')
                 else:
                     step['comment'] = 'Run Quartical refined self-calibration (stage 2) on the target {}'.format(targetname)
                     syscall = CONTAINER_RUNNER + QUARTICAL_CONTAINER+' ' if USE_SINGULARITY else ''

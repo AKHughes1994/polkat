@@ -1,4 +1,4 @@
-import glob,os,datetime, subprocess, sys, json
+import glob,os,datetime, subprocess, sys, json, shutil
 import numpy as np
 import os.path as o
 import time
@@ -10,6 +10,51 @@ from oxkat import generate_jobs as gen
 
 # Reinitialize print to flush in real-time for SLURM logging
 print = partial(print, flush=True)
+
+def mad_clip_rmsynth_file(fname, nsigma=5.0):
+    '''
+    Drop badly corrupted channels from an RM synthesis input file
+    (freq, I, Q, U, dI, dQ, dU), with the same tests as the RMSYNTH_01
+    spectrum plots:
+      1. any of dI, dQ, dU more than nsigma robust sigmas (1.4826 x MAD) from
+         its median, or non-finite
+      2. Stokes I more than RMSYN_SPEC_INDEX_MAD_CLIP robust sigmas from the
+         median, repeated until nothing more is clipped (Stokes I only: Q and
+         U oscillate with Faraday rotation, so a clip on their values would
+         remove real signal)
+
+    The full spectrum is kept as <base>_unclipped.txt and the clip always
+    starts from it, so re-running never clips twice. The copy is refreshed
+    whenever fname is newer (i.e. RMSYNTH_01 has rewritten it).
+    '''
+    backup = fname[:-len('.txt')] + '_unclipped.txt'
+    if not os.path.isfile(backup) or os.path.getmtime(fname) > os.path.getmtime(backup):
+        shutil.copy(fname, backup)
+    data = np.loadtxt(backup, ndmin=2)
+
+    good = np.ones(len(data), dtype=bool)
+    for rms in data[:, 4:7].T:
+        med = np.nanmedian(rms)
+        sig = 1.4826 * np.nanmedian(np.abs(rms - med))
+        if sig > 0:
+            good &= np.abs(rms - med) <= nsigma * sig
+    n_rms = int(np.sum(~good))
+
+    while np.sum(good) >= 3:
+        I = data[good, 1]
+        med = np.nanmedian(I)
+        sig = 1.4826 * np.nanmedian(np.abs(I - med))
+        if not sig > 0:
+            break
+        clip = np.abs(I - med) > cfg.RMSYN_SPEC_INDEX_MAD_CLIP * sig
+        if not clip.any():
+            break
+        good[np.flatnonzero(good)[clip]] = False
+
+    np.savetxt(fname, data[good])
+    os.utime(backup)   # keep the copy newer than the clipped file
+    print(gen.col('MAD clip')+f'{os.path.basename(fname)}: dropped {n_rms} (rms) + '
+          f'{int(np.sum(~good)) - n_rms} (Stokes I) of {len(good)} channel(s)')
 
 def main():
 
@@ -42,6 +87,9 @@ def main():
     gen.print_spacer()
 
     for fname in fnames:
+        # UVfix files are already MAD-clipped (including V) by RMSYNTH_01
+        if not fname.endswith('_UVfix.txt'):
+            mad_clip_rmsynth_file(fname)
         subprocess.run([f'rmsynth1d {fname} {rmsyn_flags}'],  shell=True)
         subprocess.run([f'rmclean1d {fname} {rmclean_flags}'], shell=True)
 

@@ -16,7 +16,7 @@ def stamp():
     return now
 
 
-# Calibration mode: P = phase, K = delay, A = amp+phase
+# Calibration mode: P = phase, P1 = phase (K solint), P2 = phase (per integration), K = delay, A = amp+phase
 CAL_MODE = 'P'
 
 # Rotate the sky-frame model into the feed frame during the solve (solutions stay in the feed frame)
@@ -31,6 +31,8 @@ MINSNR = 5.0
 # Per-mode gaincal settings
 MODE_SETTINGS = {
     'P': {'gaintype': 'G', 'calmode': 'p',  'solint': 'int', 'suffix': 'GP_2GC'},
+    'P1': {'gaintype': 'G', 'calmode': 'p', 'solint': '64s', 'suffix': 'GP1_2GC'},
+    'P2': {'gaintype': 'G', 'calmode': 'p', 'solint': 'int', 'suffix': 'GP2_2GC'},
     'K': {'gaintype': 'K', 'calmode': 'p',  'solint': '64s', 'suffix': 'K_2GC'},
     'A': {'gaintype': 'G', 'calmode': 'ap', 'solint': 'inf', 'suffix': 'GA_2GC'},
 }
@@ -40,7 +42,7 @@ def str2bool(s):
     return s.strip().lower() in ('true', 't', 'yes', 'y', '1')
 
 
-# Read ms=<name>, mode=P|K|A, solve_parang=True|False and parang=True|False from the command line, overriding the defaults above
+# Read ms=<name>, mode=P|P1|P2|K|A, solve_parang=True|False and parang=True|False from the command line, overriding the defaults above
 for item in sys.argv:
     parts = item.split('=')
     if parts[0] == 'ms':
@@ -53,9 +55,9 @@ for item in sys.argv:
         APPLY_PARANG = str2bool(parts[1])
 
 
-# Stop early if the requested mode is not P, K or A
+# Stop early if the requested mode is not one of MODE_SETTINGS
 if CAL_MODE not in MODE_SETTINGS:
-    raise ValueError('mode must be one of P, K or A, got: '+CAL_MODE)
+    raise ValueError('mode must be one of '+', '.join(MODE_SETTINGS)+', got: '+CAL_MODE)
 
 # Pick the gaincal settings for the chosen mode
 settings = MODE_SETTINGS[CAL_MODE]

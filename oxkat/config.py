@@ -284,14 +284,20 @@ XF_SKIP_KCROSS = True # weather to skip the cross-hand delay and only solve for 
 # XF table solution interval
 XF_CHANINT = 16             # Channels per polcal solution interval; e.g. 1024 ch / 16 = 64 XF phase solutions across the band
 
-# Calibration and outlier thresholds
-XF_GLOBAL_SIGMA_CLIP = 10.0 # N-sigma threshold for global circular phase clip (gross outlier removal, wrap-safe)
-XF_POLY_ORDER        = 4    # Polynomial order for cos/sin(phase) baseline fit; set to 0 to disable
-XF_MAD_WINDOW        = None # Sliding circular MAD window size in channels; None = auto (ceil_odd(N_chan/5))
-XF_MAD_SIGMA_CLIP    = 5.0  # N-sigma threshold for sliding circular MAD clip (local, wrap-safe)
+# Sign choice and flagging in tools/manual_XF_solver_v2.py
+XF_SIGN_SYS_FLOOR    = 1.0   # deg: smallest EVPA difference between the two XF signs that counts as decisive (model, RM and leakage errors)
+XF_SIGN_NSIGMA       = 3.0   # ... or this many times the EVPA noise, whichever is larger; below it the sign follows continuity
+XF_SIGN_JUMP_COST    = 25.0  # Cost of a pi jump between neighbouring channels, in units of (margin/threshold)^2: a run of confident channels must outweigh it to create a jump
+XF_TREND_CLIP_NSIGMA = 5.0   # Local-trend clip: flag channels off a line through their neighbours by > N x max(MAD, 1/S/N); 0 = off
+XF_TREND_CLIP_WINDOW = None  # Neighbours used for the local-trend line; None = auto (max(5, N_chan/10))
+
+# Calibration thresholds
 XF_AVG_SCAN          = False # If True, flux-weighted circular average across scans after per-scan solve (increases SNR, loses scan-to-scan variation)
-XF_MAD_ITERATIVE = True  # Iterative poly-baseline + sliding circular MAD clip until convergence (refits baseline each pass); False = single pass only
-XF_MIN_SN = 5.0  # Minimum cross-hand S/N per channel; channels below this are flagged (0 = disabled)
+XF_MIN_SN            = 5.0   # Minimum cross-hand S/N per channel; channels below this are flagged (0 = disabled)
+XF_MAX_IMAG_FRAC     = 0.15   # Flag XF channels where |Im(U, V)| / |Re(U, V)| exceeds this: the cross-hand is contaminated (off-axis sources, phase errors) 
+                              # relative to the calibrator's signal (0 = disabled)
+                              # Catches channels the S/N cut misses: contamination is systematic, so the S/N can be very high while the phase is still wrong. 
+                              # NOTE: ad hoc value chosen by eye, not derived; tune per dataset, this should be alright for most use cases
 
 # Smoothing control
 XF_USE_SMOOTHING     = False # Apply Savitzky-Golay smoothing to XF solutions before writing the table
@@ -310,10 +316,17 @@ XF_OVERRIDE_TABLE  = ''  # If non-empty, replace the solved Xf table with this p
                           # Empty string = use the solved table.
 
 # -----------------------------------------------------------------------
-# DEPRECATED — parameters below are no longer used in the current
-# manual XF solver (tools/manual_XF_solver.py). Retained for
-# compatibility with older workflows or the CASA-based XF path.
+# DEPRECATED — parameters below are not used by tools/manual_XF_solver_v2.py.
 # -----------------------------------------------------------------------
+# Still read by the old solver (tools/manual_XF_solver.py, called from 1GC_05);
+# remove once 1GC_05 switches to v2.
+XF_GLOBAL_SIGMA_CLIP = 10.0  # N-sigma threshold for global circular phase clip (gross outlier removal, wrap-safe)
+XF_POLY_ORDER        = 0     # Polynomial order for cos/sin(phase) baseline fit; set to 0 to disable
+XF_MAD_WINDOW        = None  # Sliding circular MAD window size in channels; None = auto (ceil_odd(N_chan/5))
+XF_MAD_SIGMA_CLIP    = 5.0   # N-sigma threshold for sliding circular MAD clip (local, wrap-safe); set to 0 to disable
+XF_MAD_ITERATIVE     = True  # Iterative poly-baseline + sliding circular MAD clip until convergence; False = single pass
+
+# Not read by any current code
 XF_POLY_SIGMA_CLIP   = 3.0   # Was: sigma threshold for iterative polynomial outlier clipping
 XF_MAX_AVG_CHANNELS  = None  # Was: upper limit on channel averaging for XF solutions
 XF_MIN_CROSS_FLUX    = 0.07  # Was: minimum total cross-hand flux (Jy) threshold for reliable solutions
