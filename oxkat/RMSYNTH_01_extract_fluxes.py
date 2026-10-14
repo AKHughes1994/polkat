@@ -68,6 +68,11 @@ USE_RESIDUAL_RMS      = cfg.RMSYN_USE_RESIDUAL_RMS       # measure noise on the 
 PLOT_YLIM_MAD_SIGMA   = 10.0
 PLOT_YLIM_PAD         = 0.25
 
+# S/N at or above which a component's position is fitted freely rather than
+# fixed (check_position): Q, U and V images, and Plin/Ptot images
+FREE_FIT_SNR          = 5.0
+P_FREE_FIT_SNR        = 7.0
+
 # No polarization angle calibrator: a linear cross-hand phase fit merges U and
 # V into one spectrum (see write_uvfix_rmsynth)
 UVFIX_MAX_DELAY_NS    = 10.0  # half-width of the cross-hand delay search (ns)
@@ -424,7 +429,7 @@ def get_imfit_values(fname, image, xpix, ypix):
     return imfit(image, estimates=fname, region=f'circle[[{xpix[0]}pix,{ypix[0]}pix],{r}arcsec]')
 
 
-def check_position(fname, image, xpix, ypix, snr_thresh=5.0, P_image=False,
+def check_position(fname, image, xpix, ypix, snr_thresh=None, P_image=False,
                    fix_additional_comps=False, manual_rms_region=False, force_fix_all=False):
     """
     Write the estimate file for image, choosing per component whether its
@@ -433,12 +438,18 @@ def check_position(fname, image, xpix, ypix, snr_thresh=5.0, P_image=False,
       fix_additional_comps and component > 0 fixed (faint secondary components)
       S/N >= snr_thresh                      free
       otherwise                              fixed
-    For P images (Rice noise) the S/N uses the larger of the Q and U rms.
+    snr_thresh defaults to P_FREE_FIT_SNR for P images, FREE_FIT_SNR otherwise.
+    For P images (Rice noise) the S/N uses the largest rms of the Stokes
+    images P is built from, matching calculate_P0: Q and U for Plin, Q, U
+    and V for Ptot.
     """
     bmaj = imhead(image, mode='get', hdkey='bmaj')['value']
     bmin = imhead(image, mode='get', hdkey='bmin')['value']
     bpa  = imhead(image, mode='get', hdkey='bpa')['value']
     name = os.path.basename(image)
+    if snr_thresh is None:
+        snr_thresh = P_FREE_FIT_SNR if P_image else FREE_FIT_SNR
+    noise_stokes = 'QUV' if '-Ptot-' in name else 'QU'
 
     fix_var = []
     for k, (x, y) in enumerate(zip(xpix, ypix)):
@@ -451,7 +462,7 @@ def check_position(fname, image, xpix, ypix, snr_thresh=5.0, P_image=False,
 
         if P_image:
             rms = max(get_imstat_values(image.replace('-Plin-', f'-{s}-').replace('-Ptot-', f'-{s}-'),
-                                        x, y, manual_rms_region)[3] for s in 'QU')
+                                        x, y, manual_rms_region)[3] for s in noise_stokes)
         else:
             rms = get_imstat_values(image, x, y, manual_rms_region)[3]
         snr = test_flux / rms
@@ -460,7 +471,7 @@ def check_position(fname, image, xpix, ypix, snr_thresh=5.0, P_image=False,
             fix, why = 'xyabp', 'FIXED (force_fix_all)'
         elif fix_additional_comps and k > 0:
             fix, why = 'xyabp', 'FIXED (secondary component)'
-        elif snr > snr_thresh:
+        elif snr >= snr_thresh:
             fix, why = 'abp', f'FREE (S/N >= {snr_thresh})'
         else:
             fix, why = 'xyabp', f'FIXED (S/N < {snr_thresh})'
@@ -554,7 +565,7 @@ def cleanup_estimate_files(src_name):
 # POLARIZATION QUANTITIES
 # =============================================================================
 
-def calculate_he(flux_P, rms_Q, rms_U, rms_V, pol_flag, Aq=0.8):
+def calculate_P0(flux_P, rms_Q, rms_U, rms_V, pol_flag, Aq=0.8):
     """
     De-biased linear polarization and its noise, (P0, rms_P).
 
