@@ -1637,10 +1637,18 @@ def fit_spectral_index(freq, flux, rms, ref_freq):
     return coeffs[0], np.sqrt(cov[0, 0]), chi2, len(freq) - 2, fit_nu, np.exp(coeffs[1]) * (fit_nu / ref_freq) ** coeffs[0]
 
 
-def set_robust_ylim(ax, flux, rms, refs):
-    """y range covering the PLOT_YLIM_MAD_SIGMA inliers +/- error bars and the reference values, padded by PLOT_YLIM_PAD."""
-    keep = mad_inliers(flux, PLOT_YLIM_MAD_SIGMA)
-    vals = np.concatenate([flux[keep] + rms[keep], flux[keep] - rms[keep], refs])
+def set_robust_ylim(ax, series, refs):
+    """
+    y range covering, for each (flux, rms) in series, its PLOT_YLIM_MAD_SIGMA
+    inliers +/- error bars, and the reference values, padded by PLOT_YLIM_PAD.
+    Each series is clipped on its own, so panels given the same series share
+    one range.
+    """
+    vals = [np.asarray(refs, dtype=float)]
+    for flux, rms in series:
+        keep = mad_inliers(flux, PLOT_YLIM_MAD_SIGMA)
+        vals += [flux[keep] + rms[keep], flux[keep] - rms[keep]]
+    vals = np.concatenate(vals)
     lo, hi = np.nanmin(vals), np.nanmax(vals)
     if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
         ax.set_ylim(lo - PLOT_YLIM_PAD * (hi - lo), hi + PLOT_YLIM_PAD * (hi - lo))
@@ -1741,6 +1749,12 @@ def plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k,
     spec = {key: v[~clipped] for key, v in spec.items()}
     freq = spec['freq_GHz']
     colours = {'I': 'royalblue', 'Q': 'darkorange', 'U': 'forestgreen', 'V': 'mediumpurple'}
+    # Q and U share one y range, which also covers Plin where it is overlaid
+    show_P = pol_flag and 'P_flux_mJy' in spec
+    qu_series = [(spec[f'{s}_flux_mJy'], spec[f'{s}_rms_mJy']) for s in 'QU' if s in stokes]
+    if show_P:
+        qu_series.append((spec['P_flux_mJy'], spec['P_rms_mJy']))
+    qu_refs = [mfs[f'{s}_flux_mJy'][k] for s in 'QU' if s in stokes] + [0.0]
     fig, axes = plt.subplots(len(stokes), 1, figsize=(10, 3 * len(stokes)), sharex=True, squeeze=False)
     axes = axes[:, 0]
     for ax, s in zip(axes, stokes):
@@ -1753,12 +1767,15 @@ def plot_stokes_spectrum(output_dictionary, src_name, prefix, component, k,
             if fit_curve is not None:
                 ax.plot(*fit_curve, color='tomato', linewidth=1.8, zorder=4,
                         label=rf'$\alpha$ = {fit["alpha"]:.2f} $\pm$ {fit["alpha_err"]:.2f}')
-            set_robust_ylim(ax, flux, rms, [mfs_val])
+            set_robust_ylim(ax, [(flux, rms)], [mfs_val])
         else:
             ax.axhline(mfs_val, color='k', linestyle='--', linewidth=1.5, label=f'MFS: {mfs_val:.2f} mJy', zorder=2)
             ax.axhline(0, color='grey', linestyle=':', linewidth=0.8, zorder=1)
-            set_robust_ylim(ax, flux, rms, [mfs_val, 0.0])
-            if pol_flag and s in 'QU' and 'P_flux_mJy' in spec:
+            if s in 'QU':
+                set_robust_ylim(ax, qu_series, qu_refs)
+            else:
+                set_robust_ylim(ax, [(flux, rms)], [mfs_val, 0.0])
+            if show_P and s in 'QU':
                 ax.errorbar(freq, spec['P_flux_mJy'], yerr=spec['P_rms_mJy'], fmt='o', markersize=3, capsize=2,
                             color='black', alpha=0.5, label='Stokes P (lin)', zorder=2.5)
         ax.set_ylabel(f'{s}  (mJy/beam)', fontsize=10)
