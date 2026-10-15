@@ -1,7 +1,7 @@
 # andrew.hughes@physics.ox.ac.uk
 # fraser.cowie@physics.ox.ac.uk
 import numpy as np
-import glob, json
+import glob, json, sys
 
 # Flush immediately, so tailing this stage's log shows target selection as it happens
 import functools
@@ -75,6 +75,20 @@ if dropped_names:
         myfields = ','.join(list(dict.fromkeys(cal_ids+kept_ids)))
 
     print(f'\nmstransform field selection: {myfields}\n')
+
+# With no target to keep the run ends here: the averaged MS is never made, and
+# project_info's target lists are emptied, so run_all_ms.sh counts no targets
+# and skips the remaining stages
+if n_kept == 0:
+    print('\nNo target field to process -- skipping mstransform; project_info '
+          'target lists emptied\n')
+    with open('project_info.json','r') as j:
+        project_info = json.load(j)
+    for key in ('target_names','target_ids','target_dirs','target_cal_map','target_ms'):
+        project_info[key] = []
+    with open('project_info.json','w') as j:
+        json.dump(project_info, j, indent=4, sort_keys = True)
+    sys.exit(0)
 
 
 master_ms = glob.glob('*.ms')[0]

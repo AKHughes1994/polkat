@@ -190,7 +190,7 @@ if [[ -z $CFG_ARCHIVE_DIR ]]; then
   echo "You need to specify RMSYNTH_ARCHIVE_DIR in $CONFIG -- without it, each MS's" >&2
   echo "finished products are never moved out of working_dir, so clear_work() deletes" >&2
   echo "them when the next MS starts." >&2
-  exit 1
+  exit 1cd 
 fi
 
 # Collects the msinfo log of every MS skipped after 0_GET_INFO for having no
