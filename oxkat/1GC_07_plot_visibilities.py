@@ -14,6 +14,26 @@ from oxkat import generate_jobs as gen
 from oxkat import config as cfg
 
 
+def drop_phase_axes(plot):
+    """
+    Remove the phase y-axes from a shadems plot specification.
+
+    Each y-axis is paired with the x-axis in the same position, so a dropped
+    phase axis takes its x-axis with it. Returns None if the specification is
+    left with nothing to plot.
+    """
+    xpart, ypart = plot.split('--yaxis')
+    xaxes = xpart.replace('--xaxis', '').strip().split(',')
+    yaxes = ypart.strip().split(',')
+
+    kept = [(x, y) for x, y in zip(xaxes, yaxes) if ':phase:' not in y]
+    if not kept:
+        return None
+
+    return ('--xaxis '+','.join(x for x, y in kept)
+            +' --yaxis '+','.join(y for x, y in kept))
+
+
 def main():
 
 
@@ -27,21 +47,39 @@ def main():
 
     myms = project_info['working_ms']
     bpcal = project_info['primary_name']
-    pcals = project_info['secondary_ids']
-    #targets = project_info['target_ids'] 
+    pcals = project_info['secondary_names']
+    targets = project_info['target_names']
     pacal = project_info['polang_name']
 
-    if cfg.PRE_FIELDS != '':
-        from oxkat import user_field_handler as ufh
-        pcals   = ufh.user_pcals
-        targets = ufh.user_targets
-    fields = [bpcal]
+    # The working MS holds only the fields in working_names (PRE_FIELDS and
+    # the name-list filter in PRE_casa_average_to_1k_add_wtspec.py can both
+    # drop fields), so every field is cross-checked against it
+    if 'working_names' in project_info:
+        working_names = project_info['working_names']
+        if bpcal not in working_names:
+            print(f'WARNING: primary calibrator "{bpcal}" not in working_names -- skipping')
+            bpcal = None
+        if pacal != '' and pacal not in working_names:
+            print(f'WARNING: pol-angle calibrator "{pacal}" not in working_names -- skipping')
+            pacal = ''
+        dropped_pcals = [p for p in pcals if p not in working_names]
+        if dropped_pcals:
+            print(f'NOTE: secondary field(s) not in working_names -- skipping: {dropped_pcals}')
+        pcals = [p for p in pcals if p in working_names]
+        dropped_targets = [t for t in targets if t not in working_names]
+        if dropped_targets:
+            print(f'NOTE: target field(s) not in working_names -- skipping: {dropped_targets}')
+        targets = [t for t in targets if t in working_names]
+
+    fields = []
+    if bpcal:
+        fields.append(bpcal)
     if pacal != '':
-        fields = [bpcal, pacal]
+        fields.append(pacal)
     for pcal in pcals:
         fields.append(pcal)
-    #for target in targets:
-    #    fields.append(target)
+    for target in targets:
+        fields.append(target)
 
     plots = ['--xaxis CORRECTED_DATA:real:XX,CORRECTED_DATA:real:YY --yaxis CORRECTED_DATA:imag:XX,CORRECTED_DATA:imag:YY',
              '--xaxis CORRECTED_DATA:real:XY,CORRECTED_DATA:real:YX --yaxis CORRECTED_DATA:imag:XY,CORRECTED_DATA:imag:YX',
@@ -52,13 +90,18 @@ def main():
         '--xaxis BASELINE,BASELINE --yaxis CORRECTED_DATA:amp:YX,CORRECTED_DATA:amp:XY',
         '--xaxis uv,uv,uv,uv --yaxis CORRECTED_DATA:amp:XX,CORRECTED_DATA:amp:YY,CORRECTED_DATA:phase:XX,CORRECTED_DATA:phase:YY']
 
+    # Targets are plotted without phase, so their plot list drops every phase
+    # y-axis along with the x-axis it was paired with.
+    target_plots = [p for p in (drop_phase_axes(plot) for plot in plots) if p is not None]
+
     colour_by = ['--colour-by ANTENNA1 --cnum 64']
 
 #    shadems_base = 'shadems --profile --dir '+VISPLOTS+' '
     shadems_base = 'shadems --dir '+VISPLOTS+' '
-    
+
     for field in fields:
-        for plot in plots:
+        field_plots = target_plots if field in targets else plots
+        for plot in field_plots:
             for col in colour_by:
                 syscall = shadems_base+' '+plot+' '+col+' --field '+str(field)+' '+myms
                 subprocess.run([syscall],shell=True)

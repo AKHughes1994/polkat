@@ -489,16 +489,24 @@ CAL_2GC_UVRANGE = '>150m'            # UV range for baseline selection during ga
 CAL_2GC_PSOLINT = '32s'              # Phase-only solution interval (DEFUNCT in QuartiCal version)
 CAL_2GC_APSOLINT = 'inf'             # Amplitude+phase solution interval (DEFUNCT in QuartiCal version)
 
-# QuartiCal YAML configurations
-# See the individual .yaml files and the QuartiCal docs for full parameter details.
-# Phase-only: solves diagonal Jones terms (XX, YY) for phase only.
-CAL_2GC_YAML         = DATA+'/quartical/2GC_delay.yaml'
+# If True, target 2GC self-calibration is done with CASA (2GC_casa_selfcal.py) instead of
+# QuartiCal: phase-only P1 (64s, replacing the stage 1 delay solve), then P2 (per
+# integration, replacing the stage 2 phase solve).
+# Calibrators always use QuartiCal. The CASA parameters (solints, min S/N) can be
+# changed at the top of that file. Not compatible with DO_DD_SELFCAL in setups/2GC.py.
+CAL_2GC_USE_CASA = False
 
-# Complex: solves the full 2x2 Jones matrix (XX, YY, XY, YX) for amplitude and phase.
-# See the .yaml file for the exact solver configuration.
-CAL_2GC_YAML_COMPLEX = DATA+'/quartical/2GC_phase.yaml'
-# To use phase-only calibration for both stages (i.e. override the complex solve), uncomment:
-# CAL_2GC_YAML_COMPLEX = CAL_2GC_YAML
+# QuartiCal YAML configurations for the targets. Both stages are phase-only,
+# solving the diagonal (XX, YY) terms with no amplitudes.
+# See the individual .yaml files and the QuartiCal docs for full parameter details.
+# Stage 1: delay_and_offset term K -- a per-antenna delay plus phase offset across
+# the whole band, every 8 integrations.
+CAL_2GC_YAML_STAGE1 = DATA+'/quartical/2GC_delay.yaml'
+
+# Stage 2: phase term G -- per antenna, every integration, in 8-channel blocks.
+CAL_2GC_YAML_STAGE2 = DATA+'/quartical/2GC_phase.yaml'
+# To repeat the stage 1 delay solve in stage 2 instead, uncomment:
+# CAL_2GC_YAML_STAGE2 = CAL_2GC_YAML_STAGE1
 
 # Skip primary beam correction in post-processing
 SKIP_PB = False
@@ -781,7 +789,8 @@ CAL_COMBINESCAN = False
 # avoids cleaning noise into the model before self-calibration.
 WSC_CALS_BLINDMASK = WSC_AUTOMASK_BLIND * 3
 
-# Self-calibration file: Default is full 2x2 complex solutions (assuming this is for a pol cal)
+# Calibrator 2GC self-calibration file (their only 2GC solve): full 2x2 complex
+# (amplitude and phase) solutions, assuming this is for a pol cal
 CAL_2GC_FILE = DATA+'/quartical/2GC_complex.yaml'
 
 # ------------------------------------------------------------------------

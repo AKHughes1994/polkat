@@ -92,7 +92,7 @@ def main():
     # number of model channels written by wsclean, which would be under-constrained.
     ADAPTIVE_CHANNELS = True
 
-    # If True, replace the standard full-sky predict + amplitude selfcal (PRCMI/CL2GC)
+    # If True, replace the standard full-sky predict + stage 2 selfcal (PRCMI/CL2GC)
     # with a direction-dependent selfcal block (mirroring the 3GC_peel workflow).
     # Looks for DIR.reg in the CWD to define the calibration direction; extracts that
     # direction from the WSCMI inter model, populates a DIR1_DATA column in stage2_ms,
@@ -100,8 +100,16 @@ def main():
     DO_DD_SELFCAL = False
 
     # Path to the QuartiCal YAML to use for the direction-dependent selfcal step above.
-    # Should define G+dE (or equivalent DD) terms — distinct from CAL_2GC_YAML_COMPLEX.
+    # Should define G+dE (or equivalent DD) terms — distinct from CAL_2GC_YAML_STAGE2.
     CAL_DDECAL_YAML = DATA + '/quartical/2GC_complex_2dir.yaml'
+
+    # Target self-calibration with CASA (2GC_casa_selfcal.py, P1 then P2) instead
+    # of QuartiCal; calibrators always use QuartiCal
+    USE_CASA = cfg.CAL_2GC_USE_CASA
+    if USE_CASA and DO_DD_SELFCAL:
+        sys.exit(gen.col('Self-calibration')+'DO_DD_SELFCAL requires QuartiCal, but CAL_2GC_USE_CASA is True')
+    if USE_CASA:
+        print(gen.col('Self-calibration')+f'Targets: CASA (stage 1: P1; stage 2: P2, apply parang={not cfg.CAL_1GC_APPLYPARANG}); calibrators: QuartiCal')
 
     # Set this flag to True to use custom parameters for the final pcal (WSCMA) image of targets
     PCAL_TARGET_IMAGE = False
@@ -284,16 +292,18 @@ def main():
     freq_int_overrides_stage2 = []
     freq_int_overrides_cal    = []
     if ADAPTIVE_CHANNELS:
-        # Stage 2 YAML depends on whether DD selfcal is active
-        stage2_yaml = CAL_DDECAL_YAML if DO_DD_SELFCAL else cfg.CAL_2GC_YAML_COMPLEX
-        ratio1,   freq_int_overrides_stage1, zeros1,    ok1    = get_adaptive_freq_intervals(cfg.CAL_2GC_YAML,             cfg.WSC_DMASK_CHANNELSOUT)
-        ratio2,   freq_int_overrides_stage2, zeros2,    ok2    = get_adaptive_freq_intervals(stage2_yaml,                  cfg.WSC_DMASK_CHANNELSOUT)
         ratio_cal, freq_int_overrides_cal,   zeros_cal, ok_cal = get_adaptive_freq_intervals(cfg.CAL_2GC_FILE,  CALIBRATOR_CHANNELSOUT)
-        s2_label = 'Adaptive Chan (S2-DD)' if DO_DD_SELFCAL else 'Adaptive Chan (S2)'
-        for label, yaml_name, ratio, overrides, zeros, ok in [
-                ('Adaptive Chan (S1)',  o.basename(cfg.CAL_2GC_YAML),            ratio1,    freq_int_overrides_stage1, zeros1,    ok1),
-                (s2_label,             o.basename(stage2_yaml),                  ratio2,    freq_int_overrides_stage2, zeros2,    ok2),
-                ('Adaptive Chan (Cal)', o.basename(cfg.CAL_2GC_FILE), ratio_cal, freq_int_overrides_cal,   zeros_cal, ok_cal)]:
+        adaptive = [('Adaptive Chan (Cal)', o.basename(cfg.CAL_2GC_FILE), ratio_cal, freq_int_overrides_cal, zeros_cal, ok_cal)]
+        # The target YAMLs are only used when QuartiCal calibrates the targets;
+        # the stage 2 YAML depends on whether DD selfcal is active
+        if not USE_CASA:
+            stage2_yaml = CAL_DDECAL_YAML if DO_DD_SELFCAL else cfg.CAL_2GC_YAML_STAGE2
+            ratio1,   freq_int_overrides_stage1, zeros1,    ok1    = get_adaptive_freq_intervals(cfg.CAL_2GC_YAML_STAGE1,      cfg.WSC_DMASK_CHANNELSOUT)
+            ratio2,   freq_int_overrides_stage2, zeros2,    ok2    = get_adaptive_freq_intervals(stage2_yaml,                  cfg.WSC_DMASK_CHANNELSOUT)
+            s2_label = 'Adaptive Chan (S2-DD)' if DO_DD_SELFCAL else 'Adaptive Chan (S2)'
+            adaptive = [('Adaptive Chan (S1)',  o.basename(cfg.CAL_2GC_YAML_STAGE1), ratio1, freq_int_overrides_stage1, zeros1, ok1),
+                        (s2_label,             o.basename(stage2_yaml),       ratio2, freq_int_overrides_stage2, zeros2, ok2)] + adaptive
+        for label, yaml_name, ratio, overrides, zeros, ok in adaptive:
             parts = []
             parts += [f'{t}: 0 (all channels)'  for t in zeros]
             parts += [f'{t}: {old}→{new}'        for t, old, new in overrides]
@@ -570,31 +580,43 @@ def main():
         # Stage 1: phase-only self-calibration on original MS
         step = {}
         step['step'] = n
-        step['comment'] = 'Run Quartical phase-only self-calibration (stage 1) on {}'.format(fieldname)
         step['dependency'] = n - 1
         step['id'] = 'C02G2'+code
-        step['glam_config'] = cfg.GLAM_COREHEAVY
-        cores = '8' if FORCE_CORES_8 else step['glam_config']['CPUS']
-        syscall = CONTAINER_RUNNER + QUARTICAL_CONTAINER+' ' if USE_SINGULARITY else ''
-        extra_args = f'output.gain_directory={gain_outdir_2GC} output.log_directory={log_outdir_2GC}'
-        if not is_target and not cfg.CAL_1GC_APPLYPARANG:
-            # Calibrators have no stage 2 -- this is their last (only) 2GC calibration step,
-            # so rotate to the sky frame here if 1GC left the parang correction for later.
-            extra_args += ' output.apply_p_jones_inv=true'
-        if ref_ant_arg is not None:
-            extra_args += f' solver.reference_antenna={ref_ant_arg}'
-        # Apply adaptive freq_interval overrides: targets use stage1 YAML, non-targets use calibrator YAML
-        fi_overrides = freq_int_overrides_stage1 if is_target else freq_int_overrides_cal
-        for term, _, new_fi in fi_overrides:
-            extra_args += f' {term}.freq_interval={new_fi}'
         if minuvl != '' or maxuvl != '':
             min_uv = minuvl if minuvl != '' else '0'
             max_uv = maxuvl if maxuvl != '' else '0'
-            extra_args += f' input_ms.select_uv_range=[{min_uv},{max_uv}]'
-        cal_yaml = cfg.CAL_2GC_FILE if not is_target else cfg.CAL_2GC_YAML
-        syscall += gen.generate_syscall_quartical(yaml = cal_yaml,
-                myms = myms,
-                extra_args = extra_args)
+        if is_target and USE_CASA:
+            # Targets always have a stage 2, so the parang correction is never applied here
+            step['comment'] = 'Run CASA phase-only self-calibration (stage 1, P1) on {}'.format(fieldname)
+            step['glam_config'] = cfg.GLAM_CASA
+            syscall = cfg.CASA_RUNNER + CASA_CONTAINER+' ' if USE_SINGULARITY else ''
+            syscall += gen.generate_syscall_casa(casascript=f'{OXKAT}/2GC_casa_selfcal.py ms={myms} mode=P1 '
+                                                            f'solve_parang=False parang=False minuvl={minuvl} maxuvl={maxuvl}')
+        else:
+            if is_target:
+                step['comment'] = 'Run Quartical delay self-calibration (stage 1) on {}'.format(fieldname)
+            else:
+                step['comment'] = 'Run Quartical full 2x2 complex self-calibration on {}'.format(fieldname)
+            step['glam_config'] = cfg.GLAM_COREHEAVY
+            cores = '8' if FORCE_CORES_8 else step['glam_config']['CPUS']
+            syscall = CONTAINER_RUNNER + QUARTICAL_CONTAINER+' ' if USE_SINGULARITY else ''
+            extra_args = f'output.gain_directory={gain_outdir_2GC} output.log_directory={log_outdir_2GC}'
+            if not is_target and not cfg.CAL_1GC_APPLYPARANG:
+                # Calibrators have no stage 2 -- this is their last (only) 2GC calibration step,
+                # so rotate to the sky frame here if 1GC left the parang correction for later.
+                extra_args += ' output.apply_p_jones_inv=true'
+            if ref_ant_arg is not None:
+                extra_args += f' solver.reference_antenna={ref_ant_arg}'
+            # Apply adaptive freq_interval overrides: targets use stage1 YAML, non-targets use calibrator YAML
+            fi_overrides = freq_int_overrides_stage1 if is_target else freq_int_overrides_cal
+            for term, _, new_fi in fi_overrides:
+                extra_args += f' {term}.freq_interval={new_fi}'
+            if minuvl != '' or maxuvl != '':
+                extra_args += f' input_ms.select_uv_range=[{min_uv},{max_uv}]'
+            cal_yaml = cfg.CAL_2GC_FILE if not is_target else cfg.CAL_2GC_YAML_STAGE1
+            syscall += gen.generate_syscall_quartical(yaml = cal_yaml,
+                    myms = myms,
+                    extra_args = extra_args)
         step['syscall'] = syscall
         steps.append(step)
         n += 1
@@ -794,26 +816,36 @@ def main():
 
                 step = {}
                 step['step'] = n
-                step['comment'] = 'Run Quartical amplitude self-calibration (stage 2) on {}'.format(fieldname)
                 step['dependency'] = n - 1
                 step['id'] = 'CL2GC'+code
-                step['glam_config'] = cfg.GLAM_COREHEAVY
-                cores = '8' if FORCE_CORES_8 else step['glam_config']['CPUS']
-                syscall = CONTAINER_RUNNER + QUARTICAL_CONTAINER+' ' if USE_SINGULARITY else ''
-                extra_args = f'output.gain_directory={gain_outdir_stage2} output.log_directory={log_outdir_stage2}'
-                if not cfg.CAL_1GC_APPLYPARANG:
+                if USE_CASA:
                     # Last 2GC calibration step for targets -- rotate to the sky frame here
                     # if 1GC left the parang correction for later.
-                    extra_args += ' output.apply_p_jones_inv=true'
-                if ref_ant_arg is not None:
-                    extra_args += f' solver.reference_antenna={ref_ant_arg}'
-                for term, _, new_fi in freq_int_overrides_stage2:
-                    extra_args += f' {term}.freq_interval={new_fi}'
-                if minuvl != '' or maxuvl != '':
-                    extra_args += f' input_ms.select_uv_range=[{min_uv},{max_uv}]'
-                syscall += gen.generate_syscall_quartical(yaml = cfg.CAL_2GC_YAML_COMPLEX,
-                        myms = stage2_ms,
-                        extra_args = extra_args)
+                    step['comment'] = 'Run CASA phase-only self-calibration (stage 2, P2) on {}'.format(fieldname)
+                    step['glam_config'] = cfg.GLAM_CASA
+                    syscall = cfg.CASA_RUNNER + CASA_CONTAINER+' ' if USE_SINGULARITY else ''
+                    syscall += gen.generate_syscall_casa(casascript=f'{OXKAT}/2GC_casa_selfcal.py ms={stage2_ms} mode=P2 '
+                                                                    f'solve_parang=False parang={not cfg.CAL_1GC_APPLYPARANG} '
+                                                                    f'minuvl={minuvl} maxuvl={maxuvl}')
+                else:
+                    step['comment'] = 'Run Quartical phase-only self-calibration (stage 2) on {}'.format(fieldname)
+                    step['glam_config'] = cfg.GLAM_COREHEAVY
+                    cores = '8' if FORCE_CORES_8 else step['glam_config']['CPUS']
+                    syscall = CONTAINER_RUNNER + QUARTICAL_CONTAINER+' ' if USE_SINGULARITY else ''
+                    extra_args = f'output.gain_directory={gain_outdir_stage2} output.log_directory={log_outdir_stage2}'
+                    if not cfg.CAL_1GC_APPLYPARANG:
+                        # Last 2GC calibration step for targets -- rotate to the sky frame here
+                        # if 1GC left the parang correction for later.
+                        extra_args += ' output.apply_p_jones_inv=true'
+                    if ref_ant_arg is not None:
+                        extra_args += f' solver.reference_antenna={ref_ant_arg}'
+                    for term, _, new_fi in freq_int_overrides_stage2:
+                        extra_args += f' {term}.freq_interval={new_fi}'
+                    if minuvl != '' or maxuvl != '':
+                        extra_args += f' input_ms.select_uv_range=[{min_uv},{max_uv}]'
+                    syscall += gen.generate_syscall_quartical(yaml = cfg.CAL_2GC_YAML_STAGE2,
+                            myms = stage2_ms,
+                            extra_args = extra_args)
                 step['syscall'] = syscall
                 steps.append(step)
                 n += 1

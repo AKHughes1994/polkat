@@ -260,7 +260,7 @@ def main():
     step['dependency'] = n - 1
     step['id'] = 'QC2G1'+code
     syscall = CONTAINER_RUNNER + QUARTICAL_CONTAINER+' ' if USE_SINGULARITY else ''
-    syscall += gen.generate_syscall_quartical(yaml = cfg.CAL_2GC_YAML,
+    syscall += gen.generate_syscall_quartical(yaml = cfg.CAL_2GC_YAML_STAGE1,
             myms = polms,
             extra_args = f'output.gain_directory={gain_outdir_2GC} output.log_directory={log_outdir_2GC}')
     step['syscall'] = syscall
@@ -390,7 +390,7 @@ def main():
     step['dependency'] = n - 1
     step['id'] = 'QC2G2'+code
     syscall = CONTAINER_RUNNER + QUARTICAL_CONTAINER+' ' if USE_SINGULARITY else ''
-    syscall += gen.generate_syscall_quartical(yaml = cfg.CAL_2GC_YAML,
+    syscall += gen.generate_syscall_quartical(yaml = cfg.CAL_2GC_YAML_STAGE1,
             myms = polms,
             extra_args = f'output.gain_directory={gain_outdir_2GC} output.log_directory={log_outdir_2GC}')
     step['syscall'] = syscall
