@@ -21,7 +21,7 @@ DO_DD_SELFCAL    = False
 
 # Path to the QuartiCal YAML for direction-dependent selfcal (used when
 # DO_DD_SELFCAL=True). Should define G+dE (or equivalent DD) terms --
-# distinct from CAL_2GC_YAML_COMPLEX.
+# distinct from CAL_2GC_YAML_STAGE2.
 CAL_DDECAL_YAML = cfg.DATA + '/quartical/2GC_complex_2dir.yaml'
 
 # Never True when CAL_1GC_APPLYPARANG is True — 1GC already puts CORRECTED_DATA
@@ -70,21 +70,21 @@ def main():
     gen.print_spacer()
 
     # QuartiCal YAML(s) this run depends on must exist before any job is generated.
-    # Stage 1 always uses CAL_2GC_YAML; stage 2 uses the DD-selfcal YAML when
-    # DO_DD_SELFCAL is set, otherwise CAL_2GC_YAML_COMPLEX -- only ever one of
+    # Stage 1 always uses CAL_2GC_YAML_STAGE1; stage 2 uses the DD-selfcal YAML when
+    # DO_DD_SELFCAL is set, otherwise CAL_2GC_YAML_STAGE2 -- only ever one of
     # the two, mirroring the branch each is actually used in below.
     if USE_CASA:
         if DO_DD_SELFCAL:
             sys.exit(gen.col('Self-calibration')+'DO_DD_SELFCAL requires QuartiCal, but CAL_2GC_USE_CASA is True')
         print(gen.col('Self-calibration')+f'CASA (solve parang={CASA_SOLVE_PARANG}; stage 1: phase P1, apply parang={CASA_APPLY_PARANG_STAGE1}; stage 2: phase P2, apply parang={CASA_APPLY_PARANG_STAGE2})')
     else:
-        if not o.isfile(cfg.CAL_2GC_YAML):
-            sys.exit(gen.col('QuartiCal YAML')+f'CAL_2GC_YAML is set to {cfg.CAL_2GC_YAML}, which does not exist')
+        if not o.isfile(cfg.CAL_2GC_YAML_STAGE1):
+            sys.exit(gen.col('QuartiCal YAML')+f'CAL_2GC_YAML_STAGE1 is set to {cfg.CAL_2GC_YAML_STAGE1}, which does not exist')
         if DO_DD_SELFCAL:
             if not o.isfile(CAL_DDECAL_YAML):
                 sys.exit(gen.col('QuartiCal YAML')+f'DO_DD_SELFCAL is True but {CAL_DDECAL_YAML} does not exist')
-        elif not o.isfile(cfg.CAL_2GC_YAML_COMPLEX):
-            sys.exit(gen.col('QuartiCal YAML')+f'CAL_2GC_YAML_COMPLEX is set to {cfg.CAL_2GC_YAML_COMPLEX}, which does not exist')
+        elif not o.isfile(cfg.CAL_2GC_YAML_STAGE2):
+            sys.exit(gen.col('QuartiCal YAML')+f'CAL_2GC_YAML_STAGE2 is set to {cfg.CAL_2GC_YAML_STAGE2}, which does not exist')
 
     # ------------------------------------------------------------------------------
     #
@@ -174,12 +174,12 @@ def main():
     freq_int_overrides_stage2 = []
     if ADAPTIVE_CHANNELS and not USE_CASA:
         # Stage 2 YAML depends on whether DD selfcal is active
-        stage2_yaml = CAL_DDECAL_YAML if DO_DD_SELFCAL else cfg.CAL_2GC_YAML_COMPLEX
-        ratio1, freq_int_overrides_stage1, zeros1, ok1 = get_adaptive_freq_intervals(cfg.CAL_2GC_YAML, cfg.WSC_DMASK_CHANNELSOUT)
+        stage2_yaml = CAL_DDECAL_YAML if DO_DD_SELFCAL else cfg.CAL_2GC_YAML_STAGE2
+        ratio1, freq_int_overrides_stage1, zeros1, ok1 = get_adaptive_freq_intervals(cfg.CAL_2GC_YAML_STAGE1, cfg.WSC_DMASK_CHANNELSOUT)
         ratio2, freq_int_overrides_stage2, zeros2, ok2 = get_adaptive_freq_intervals(stage2_yaml,       cfg.WSC_DMASK_CHANNELSOUT)
         s2_label = 'Adaptive Chan (S2-DD)' if DO_DD_SELFCAL else 'Adaptive Chan (S2)'
         for label, yaml_name, ratio, overrides, zeros, ok in [
-                ('Adaptive Chan (S1)', o.basename(cfg.CAL_2GC_YAML), ratio1, freq_int_overrides_stage1, zeros1, ok1),
+                ('Adaptive Chan (S1)', o.basename(cfg.CAL_2GC_YAML_STAGE1), ratio1, freq_int_overrides_stage1, zeros1, ok1),
                 (s2_label,            o.basename(stage2_yaml),       ratio2, freq_int_overrides_stage2, zeros2, ok2)]:
             parts = []
             parts += [f'{t}: 0 (all channels)'   for t in zeros]
@@ -429,7 +429,7 @@ def main():
                     minuv_val = minuvl if minuvl != '' else '0'
                     maxuv_val = maxuvl if maxuvl != '' else '0'
                     extra_args += f' input_ms.select_uv_range=[{minuv_val},{maxuv_val}]'
-                syscall += gen.generate_syscall_quartical(yaml = cfg.CAL_2GC_YAML,
+                syscall += gen.generate_syscall_quartical(yaml = cfg.CAL_2GC_YAML_STAGE1,
                         myms = myms,
                         extra_args = extra_args)
             step['syscall'] = syscall
@@ -632,7 +632,7 @@ def main():
                         extra_args += ' output.apply_p_jones_inv=true'
                     if maxuvl != '' or minuvl != '':
                         extra_args += f' input_ms.select_uv_range=[{minuv_val},{maxuv_val}]'
-                    syscall += gen.generate_syscall_quartical(yaml = cfg.CAL_2GC_YAML_COMPLEX,
+                    syscall += gen.generate_syscall_quartical(yaml = cfg.CAL_2GC_YAML_STAGE2,
                             myms = stage2_ms,
                             extra_args = extra_args)
                 step['syscall'] = syscall
@@ -642,7 +642,7 @@ def main():
             # Safety check: verify parang solve succeeded; fall back to feed-frame + CASA applycal if not
             # (QuartiCal only; CASA applies parang itself in stage 2)
             if not cfg.CAL_1GC_APPLYPARANG and not USE_CASA:
-                fallback_yaml = CAL_DDECAL_YAML if DO_DD_SELFCAL else cfg.CAL_2GC_YAML_COMPLEX
+                fallback_yaml = CAL_DDECAL_YAML if DO_DD_SELFCAL else cfg.CAL_2GC_YAML_STAGE2
                 fallback_extra_args = f'output.gain_directory={gain_outdir_stage2} output.log_directory={log_outdir_stage2}'
                 if DO_DD_SELFCAL:
                     fallback_extra_args += f' input_model.recipe={dd_recipe} output.subtract_directions={dd_subtract}'
