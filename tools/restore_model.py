@@ -254,7 +254,10 @@ if __name__ == '__main__':
         cropsize = 51 # Size of convolving kernel in pixels 
 
         # Get the array of modelsub images and restoring model images
+        # Plin/Ptot images are derived from the restored Q/U/V images at the very end
+        # of the recipe, so any present here are never themselves restored
         modelsub_images = sorted(glob.glob(f'{target_prefix}*image.fits'))
+        modelsub_images = [im for im in modelsub_images if '-Plin-' not in im and '-Ptot-' not in im]
         if mfs_only:
             modelsub_images = [im for im in modelsub_images if '-MFS-' in im]
         model_images = sorted(glob.glob(f'{model_prefix}*-model.fits'))
