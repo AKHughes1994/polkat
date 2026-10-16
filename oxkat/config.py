@@ -366,6 +366,12 @@ CAL_1GC_PRIMARY_MODEL = 'auto'       # setjy = use setjy component model only
 CAL_1GC_DELAYCUT = 2.5               # [now defunct] Jy at central freq. Do not solve for K on secondaries weaker than this
 CAL_1GC_FILLGAPS = 8                 # Maximum channel gap over which to interpolate bandpass solutions
 
+# Secondaries too poor to calibrate against. In 1GC_05_casa_refcal.py and
+# tools/global_crosshand_phase.py, targets paired with one of these take their
+# gains from the primary instead, and the secondary itself is dropped.
+CAL_1GC_REPLACE_SECONDARY_WITH_PRIMARY = True
+CAL_1GC_BAD_SECONDARIES = ['J1712-281']
+
 # Parallactic angle correction during 1GC.
 # If True, CASA applies the P-Jones correction as part of the 1GC solve.
 # This is safe for phase-only and standard polarisation calibration.

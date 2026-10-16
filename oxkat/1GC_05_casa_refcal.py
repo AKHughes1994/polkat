@@ -23,18 +23,15 @@ if PRE_FIELDS != '':
     pcal_names = user_pcals
     target_cal_map = user_cal_map
 
-# Secondaries too poor to calibrate against. Targets paired with one of these
-# take their gains from the primary instead, and the secondary itself is
-# dropped from the solves, flagging and applycal below.
-REPLACE_SECONDARY_WITH_PRIMARY = True
-BAD_SECONDARIES = ['J1712-281']
-
-if REPLACE_SECONDARY_WITH_PRIMARY:
-    for bad_pcal in BAD_SECONDARIES:
+# Targets paired with a CAL_1GC_BAD_SECONDARIES secondary take their gains from
+# the primary, and the secondary is dropped from the solves, flagging and
+# applycal below. tools/global_crosshand_phase.py applies the same mapping.
+if CAL_1GC_REPLACE_SECONDARY_WITH_PRIMARY:
+    for bad_pcal in CAL_1GC_BAD_SECONDARIES:
         if bad_pcal in pcal_names or bad_pcal in target_cal_map:
             print(f'Replacing secondary {bad_pcal} with primary {bpcal_name} in the target-calibrator matching')
-    target_cal_map = [bpcal_name if c in BAD_SECONDARIES else c for c in target_cal_map]
-    pcal_names = [p for p in pcal_names if p not in BAD_SECONDARIES]
+    target_cal_map = [bpcal_name if c in CAL_1GC_BAD_SECONDARIES else c for c in target_cal_map]
+    pcal_names = [p for p in pcal_names if p not in CAL_1GC_BAD_SECONDARIES]
 
 def stamp():
     now = str(datetime.datetime.now()).replace(' ','-').replace(':','-').split('.')[0]

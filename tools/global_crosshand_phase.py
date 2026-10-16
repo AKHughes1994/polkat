@@ -251,6 +251,13 @@ if PRE_FIELDS != '':
     pcal_names     = user_pcals
     target_cal_map = user_cal_map
 
+# Same secondary-to-primary mapping as 1GC_05_casa_refcal.py, which writes no
+# K/Gp/G solutions for a CAL_1GC_BAD_SECONDARIES secondary: targets paired with
+# one use the primary's solutions, and the secondary is left out of the solve.
+if CAL_1GC_REPLACE_SECONDARY_WITH_PRIMARY:
+    target_cal_map = [bpcal_name if c in CAL_1GC_BAD_SECONDARIES else c for c in target_cal_map]
+    pcal_names     = [p for p in pcal_names if p not in CAL_1GC_BAD_SECONDARIES]
+
 # ======================= DEFAULT FIELDS INCLUDED IN THE Xf SOLVE =======================
 #   targets (target_names)  +  secondaries (pcal_names)  +  polarization-angle
 #   calibrator (polang_name).  The primary is never included.
