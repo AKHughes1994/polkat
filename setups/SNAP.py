@@ -441,13 +441,17 @@ def main():
             #    n += 1
 
             if cfg.SNAP_POL:
+                # Only Plin with a polarization angle calibrator; Plin and Ptot without one
+                only_Plin = pacal_name != ''
+
                 step = {}
                 step['step'] = n
-                step['comment'] = 'Make Polarization Intensity Images'
+                step['comment'] = 'Make Polarization Intensity Images for '+targetname
                 step['dependency'] = n - 1
                 step['id'] = 'PISNA'+code
                 syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
-                syscall += f"python3 {cfg.TOOLS}/make_pol_images.py {cfg.INTERVALS}"
+                syscall += (f"python3 {cfg.TOOLS}/make_pol_images.py "
+                            f"{cfg.INTERVALS}/{filename_targetname} {targetname} {only_Plin}")
                 step['syscall'] = syscall
                 steps.append(step)
                 n += 1

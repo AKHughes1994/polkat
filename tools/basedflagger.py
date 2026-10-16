@@ -64,7 +64,7 @@ def parse_arguments():
                         help='Directory to save plots')
     parser.add_argument('--output-suffix', type=str, default='',
                         help='Suffix for output files (e.g., "_test" -> baseline_flags_test.txt)')
-    parser.add_argument('--sigma-threshold', type=float, default=3.0,
+    parser.add_argument('--sigma-threshold', type=float, default=5.0,
                         help='Sigma threshold for outlier detection')
     parser.add_argument('--outlier-mode', type=str, default='mixed',
                         choices=['high', 'low', 'both', 'mixed'],
@@ -75,7 +75,7 @@ def parse_arguments():
                              'flag: a baseline broadened by factor b is caught when '
                              'b > sigma_threshold/z(X), for z the normal quantile. '
                              'The resulting sensitivity is reported in the run log')
-    parser.add_argument('--point-sigma-threshold', type=float, default=5.0,
+    parser.add_argument('--point-sigma-threshold', type=float, default=10.0,
                         help='Stricter sigma threshold for individual points. A baseline '
                              'is flagged outright the moment >= --point-outlier-min-count '
                              'points cross this, independent of --outlier-fraction-threshold '
