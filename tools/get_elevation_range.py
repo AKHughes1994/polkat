@@ -8,8 +8,6 @@ from astropy.coordinates import SkyCoord, EarthLocation, AltAz
 from astropy import units as u
 from astropy.time import Time
 from pyrap.tables import table
-from pyrap.measures import measures
-from pyrap.quanta import quantity
 from optparse import OptionParser
 
 
@@ -85,32 +83,18 @@ def main():
 
     maintab.done()
 
-    # Parallactic angle reference frame: the array's own position, read
-    # straight from the first row of the MS's ANTENNA table (ITRF), rather
-    # than a separately maintained lon/lat/height constant. Per-antenna
-    # differences in parallactic angle are negligible for this diagnostic.
-    antab = table(myms + '/ANTENNA', ack=False)
-    ant0_pos = antab.getcol('POSITION')[0]
-    antab.done()
-
-    dm = measures()
-    dm.doframe(dm.position('itrf', *[quantity(x, 'm') for x in ant0_pos]))
-    zenith = dm.direction('AZELGEO', '0deg', '90deg')
-
     def parallactic_angle_deg(ra_rad, dec_rad, times_s):
         """
-        Parallactic angle (deg, wrapped by casacore to (-180, 180]) at each
-        time in `times_s` (raw MS TIME values, seconds), for a field at
-        (ra_rad, dec_rad). Position angle between the field direction and the
-        local zenith, computed directly via casacore.measures -- the same
-        method tools/correct_parang.py uses per-antenna.
+        Parallactic angle (deg, wrapped to (-180, 180]) at each time in
+        `times_s` (raw MS TIME values, seconds), for a field at
+        (ra_rad, dec_rad). Position angle, east of north in ICRS, between the
+        field direction and the local zenith at the MeerKAT location above.
         """
-        field_dir = dm.direction('J2000', quantity(ra_rad, 'rad'), quantity(dec_rad, 'rad'))
-        chi = numpy.empty(len(times_s))
-        for i, t in enumerate(times_s):
-            dm.doframe(dm.epoch('utc', quantity(t, 's')))
-            chi[i] = dm.posangle(field_dir, zenith).get_value('rad')
-        return numpy.degrees(chi)
+        obs_t = Time(numpy.asarray(times_s) / 86400.0, format='mjd', scale='utc')
+        field_dir = SkyCoord(ra=ra_rad * u.rad, dec=dec_rad * u.rad, frame='icrs')
+        zenith = SkyCoord(AltAz(alt=90 * u.deg, az=0 * u.deg, obstime=obs_t, location=meerkat)).transform_to('icrs')
+        chi = field_dir.position_angle(zenith).wrap_at(180 * u.deg)
+        return chi.degree
 
     # ------- CALCULATE ELEVATIONS PER SCAN -------
 
@@ -165,7 +149,7 @@ def main():
         az_max = numpy.max(azimuths)
         az_mean = numpy.mean(azimuths)
 
-        # Parallactic angle: one measures call per unique dump time (the raw
+        # Parallactic angle: evaluated at each unique dump time (the raw
         # `times` column repeats every timestamp once per baseline), unwrapped
         # so a swing through the +-180 degree branch doesn't corrupt the range.
         unique_times = numpy.unique(times)

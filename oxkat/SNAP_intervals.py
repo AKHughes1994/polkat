@@ -49,6 +49,19 @@ def msg(txt):
     print(stamp+txt, flush=True)
 
 
+def is_pol_intensity_image(path):
+    """
+    Polarisation intensity images (Plin/Ptot) are derived products made only at
+    the very end of the SNAP recipe, so they are ignored by every matching,
+    counting and renaming check here.
+    """
+    return '-Plin-' in path or '-Ptot-' in path
+
+
+def glob_no_pol_intensity(pattern):
+    return [image for image in glob.glob(pattern) if not is_pol_intensity_image(image)]
+
+
 def parse_scan_spec(spec, n_scans):
     scans = set()
     for token in spec.split(','):
@@ -88,7 +101,7 @@ def check_final_totals(myms, expected_total_nint, img_re):
     images remain anywhere, then confirm the total number of distinct t-labels
     actually present on disk matches the predicted total computed up front.
     """
-    leftover_scan_images = sorted(glob.glob(cfg.INTERVALS + f'/img_{myms}_modelsub_scan*'))
+    leftover_scan_images = sorted(glob_no_pol_intensity(cfg.INTERVALS + f'/img_{myms}_modelsub_scan*'))
     if leftover_scan_images:
         msg(f'WARNING: Something has gone wrong -- {len(leftover_scan_images)} un-renamed '
             f"'_scanNNNN' modelsub image(s) still present after everything should be renamed:")
@@ -150,6 +163,29 @@ def scan_output_complete(myms, scan_n, expected_nint, expected_channels, expecte
         return True
 
     return False
+
+
+def add_single_interval_t_label(image_prefix):
+    """
+    wsclean omits the '-tNNNN' label entirely when -intervals-out is 1, so a
+    single-interval scan's output comes out as '{prefix}-0005-I-image.fits'
+    rather than '{prefix}-t0000-0005-I-image.fits'. Insert the '-t0000' label
+    so these files go through the same validation/rename path as every other
+    scan. Files that already carry a t-label are left alone.
+    """
+    n_tagged = 0
+    for image in sorted(glob_no_pol_intensity(f'{image_prefix}-*')):
+        suffix = image[len(image_prefix):]
+        if suffix.startswith('-t'):
+            continue
+        tagged = image_prefix + '-t0000' + suffix
+        if os.path.exists(tagged):
+            msg(f'WARNING: Not adding t-label to {image}, target already exists: {tagged}')
+            continue
+        os.rename(image, tagged)
+        n_tagged += 1
+    if n_tagged:
+        msg(f'Added missing -t0000 label to {n_tagged} single-interval image(s) for {image_prefix}')
 
 
 def get_total_ints(myms):
@@ -266,6 +302,8 @@ def main():
     for scan_n, (nint, t0) in enumerate(zip(nint_arr, t_offset_arr)):
         t_end = t0 + nint - 1
         msg(f'Predicted: scan{scan_n:04d} -> {nint} interval(s) -> after renaming: t{t0:04d}-t{t_end:04d}')
+        if nint == 1:
+            msg(f'Scan {scan_n:04d} has 1 interval -- wsclean will omit the t-label, adding -t0000 manually')
     msg(f'Predicted total: {expected_total_nint} interval(s) across {len(int_arr)} scan(s) -> t0000-t{expected_total_nint - 1:04d}')
 
     SNAP_SCANS_stripped = SNAP_SCANS.strip()
@@ -285,6 +323,12 @@ def main():
         msg(f"SNAP_SCANS = '{SNAP_SCANS_stripped}' -- imaging the listed scan(s), overwriting any existing output")
 
     msg(f'Imaging {len(to_image)}/{len(int_arr)} scan(s): {to_image}')
+
+    # Tag any untagged single-interval output left over from an earlier run before the
+    # completion check, so it is recognised as complete rather than re-imaged.
+    for scan_n, nint in enumerate(nint_arr):
+        if nint == 1:
+            add_single_interval_t_label(cfg.INTERVALS+f'/img_{myms}_modelsub_scan{scan_n:04d}')
 
     # Regex used to count distinct per-channel (non-MFS) image files and pull out their
     # t-index, e.g. '...-t0000-0005-image.fits' or '...-t0000-0005-I-image.fits'
@@ -371,7 +415,10 @@ def main():
         syscall = f'python3 {cfg.TOOLS}/fix_image_naming.py {chanout} {image_prefix}'
         subprocess.run([syscall], shell=True)
 
-        images = sorted(glob.glob(f'{image_prefix}*'))
+        if nint == 1:
+            add_single_interval_t_label(image_prefix)
+
+        images = sorted(glob_no_pol_intensity(f'{image_prefix}*'))
 
         if not images:
             msg(f'ERROR: Scan {scan_n:04d} produced no output images -- imaging failed, skipping')
@@ -397,7 +444,7 @@ def main():
         if scan_n in scan_images:
             continue
         image_prefix = cfg.INTERVALS+f'/img_{myms}_modelsub_scan{scan_n:04d}'
-        images = sorted(glob.glob(f'{image_prefix}*'))
+        images = sorted(glob_no_pol_intensity(f'{image_prefix}*'))
         if images:
             scan_images[scan_n] = images
 

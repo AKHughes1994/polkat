@@ -21,12 +21,21 @@ DO_DD_SELFCAL    = False
 
 # Path to the QuartiCal YAML for direction-dependent selfcal (used when
 # DO_DD_SELFCAL=True). Should define G+dE (or equivalent DD) terms --
-# distinct from CAL_2GC_YAML_COMPLEX.
+# distinct from CAL_2GC_YAML_STAGE2.
 CAL_DDECAL_YAML = cfg.DATA + '/quartical/2GC_complex_2dir.yaml'
 
 # Never True when CAL_1GC_APPLYPARANG is True — 1GC already puts CORRECTED_DATA
 # in the sky frame, so re-applying parang here would double-correct it.
 PARANGMODEL = cfg.CAL_2GC_PARANGMODEL and not cfg.CAL_1GC_APPLYPARANG
+
+# Use CASA (2GC_casa_selfcal.py) instead of QuartiCal for both stages
+USE_CASA = cfg.CAL_2GC_USE_CASA
+
+# Mirrors the QuartiCal flags: both solves rotate the sky-frame model into the feed
+# frame (apply_p_jones), and only the final solve derotates its output (apply_p_jones_inv).
+CASA_SOLVE_PARANG = PARANGMODEL
+CASA_APPLY_PARANG_STAGE1 = False
+CASA_APPLY_PARANG_STAGE2 = not cfg.CAL_1GC_APPLYPARANG
 
 
 def get_adaptive_freq_intervals(yaml_path, n_model_channels):
@@ -61,16 +70,21 @@ def main():
     gen.print_spacer()
 
     # QuartiCal YAML(s) this run depends on must exist before any job is generated.
-    # Stage 1 always uses CAL_2GC_YAML; stage 2 uses the DD-selfcal YAML when
-    # DO_DD_SELFCAL is set, otherwise CAL_2GC_YAML_COMPLEX -- only ever one of
+    # Stage 1 always uses CAL_2GC_YAML_STAGE1; stage 2 uses the DD-selfcal YAML when
+    # DO_DD_SELFCAL is set, otherwise CAL_2GC_YAML_STAGE2 -- only ever one of
     # the two, mirroring the branch each is actually used in below.
-    if not o.isfile(cfg.CAL_2GC_YAML):
-        sys.exit(gen.col('QuartiCal YAML')+f'CAL_2GC_YAML is set to {cfg.CAL_2GC_YAML}, which does not exist')
-    if DO_DD_SELFCAL:
-        if not o.isfile(CAL_DDECAL_YAML):
-            sys.exit(gen.col('QuartiCal YAML')+f'DO_DD_SELFCAL is True but {CAL_DDECAL_YAML} does not exist')
-    elif not o.isfile(cfg.CAL_2GC_YAML_COMPLEX):
-        sys.exit(gen.col('QuartiCal YAML')+f'CAL_2GC_YAML_COMPLEX is set to {cfg.CAL_2GC_YAML_COMPLEX}, which does not exist')
+    if USE_CASA:
+        if DO_DD_SELFCAL:
+            sys.exit(gen.col('Self-calibration')+'DO_DD_SELFCAL requires QuartiCal, but CAL_2GC_USE_CASA is True')
+        print(gen.col('Self-calibration')+f'CASA (solve parang={CASA_SOLVE_PARANG}; stage 1: phase P1, apply parang={CASA_APPLY_PARANG_STAGE1}; stage 2: phase P2, apply parang={CASA_APPLY_PARANG_STAGE2})')
+    else:
+        if not o.isfile(cfg.CAL_2GC_YAML_STAGE1):
+            sys.exit(gen.col('QuartiCal YAML')+f'CAL_2GC_YAML_STAGE1 is set to {cfg.CAL_2GC_YAML_STAGE1}, which does not exist')
+        if DO_DD_SELFCAL:
+            if not o.isfile(CAL_DDECAL_YAML):
+                sys.exit(gen.col('QuartiCal YAML')+f'DO_DD_SELFCAL is True but {CAL_DDECAL_YAML} does not exist')
+        elif not o.isfile(cfg.CAL_2GC_YAML_STAGE2):
+            sys.exit(gen.col('QuartiCal YAML')+f'CAL_2GC_YAML_STAGE2 is set to {cfg.CAL_2GC_YAML_STAGE2}, which does not exist')
 
     # ------------------------------------------------------------------------------
     #
@@ -158,14 +172,14 @@ def main():
 
     freq_int_overrides_stage1 = []
     freq_int_overrides_stage2 = []
-    if ADAPTIVE_CHANNELS:
+    if ADAPTIVE_CHANNELS and not USE_CASA:
         # Stage 2 YAML depends on whether DD selfcal is active
-        stage2_yaml = CAL_DDECAL_YAML if DO_DD_SELFCAL else cfg.CAL_2GC_YAML_COMPLEX
-        ratio1, freq_int_overrides_stage1, zeros1, ok1 = get_adaptive_freq_intervals(cfg.CAL_2GC_YAML, cfg.WSC_DMASK_CHANNELSOUT)
+        stage2_yaml = CAL_DDECAL_YAML if DO_DD_SELFCAL else cfg.CAL_2GC_YAML_STAGE2
+        ratio1, freq_int_overrides_stage1, zeros1, ok1 = get_adaptive_freq_intervals(cfg.CAL_2GC_YAML_STAGE1, cfg.WSC_DMASK_CHANNELSOUT)
         ratio2, freq_int_overrides_stage2, zeros2, ok2 = get_adaptive_freq_intervals(stage2_yaml,       cfg.WSC_DMASK_CHANNELSOUT)
         s2_label = 'Adaptive Chan (S2-DD)' if DO_DD_SELFCAL else 'Adaptive Chan (S2)'
         for label, yaml_name, ratio, overrides, zeros, ok in [
-                ('Adaptive Chan (S1)', o.basename(cfg.CAL_2GC_YAML), ratio1, freq_int_overrides_stage1, zeros1, ok1),
+                ('Adaptive Chan (S1)', o.basename(cfg.CAL_2GC_YAML_STAGE1), ratio1, freq_int_overrides_stage1, zeros1, ok1),
                 (s2_label,            o.basename(stage2_yaml),       ratio2, freq_int_overrides_stage2, zeros2, ok2)]:
             parts = []
             parts += [f'{t}: 0 (all channels)'   for t in zeros]
@@ -390,29 +404,34 @@ def main():
 
             step = {}
             step['step'] = n
-            step['comment'] = 'Run Quartical phase self-calibration (stage 1) on the target {}'.format(targetname)
             step['dependency'] = n - 1
             step['id'] = 'C02G2'+code
             step['slurm_config'] = cfg.SLURM_WSCLEAN
             step['pbs_config'] = cfg.PBS_WSCLEAN
-            syscall = CONTAINER_RUNNER + QUARTICAL_CONTAINER+' ' if USE_SINGULARITY else ''
-            extra_args = f'output.gain_directory={gain_outdir_2GC} output.log_directory={log_outdir_2GC}'
-            if PARANGMODEL:
-                # DATA is feed-frame; MODEL_DATA is sky-frame (built from the
-                # parang-corrected WSDMA image) — forward-rotate the model to
-                # match. Do not derotate the output here; this isn't the final solve.
-                extra_args += ' input_model.apply_p_jones=true'
-            if ref_ant_arg is not None:
-                extra_args += f' solver.reference_antenna={ref_ant_arg}'
-            for term, _, new_fi in freq_int_overrides_stage1:
-                extra_args += f' {term}.freq_interval={new_fi}'
-            if maxuvl != '' or minuvl != '':
-                minuv_val = minuvl if minuvl != '' else '0'
-                maxuv_val = maxuvl if maxuvl != '' else '0'
-                extra_args += f' input_ms.select_uv_range=[{minuv_val},{maxuv_val}]'
-            syscall += gen.generate_syscall_quartical(yaml = cfg.CAL_2GC_YAML,
-                    myms = myms,
-                    extra_args = extra_args)
+            if USE_CASA:
+                step['comment'] = 'Run CASA phase self-calibration (stage 1, P1) on the target {}'.format(targetname)
+                syscall = CONTAINER_RUNNER + CASA_CONTAINER+' ' if USE_SINGULARITY else ''
+                syscall += gen.generate_syscall_casa(casascript=f'{OXKAT}/2GC_casa_selfcal.py ms={myms} mode=P1 solve_parang={CASA_SOLVE_PARANG} parang={CASA_APPLY_PARANG_STAGE1}')
+            else:
+                step['comment'] = 'Run Quartical phase self-calibration (stage 1) on the target {}'.format(targetname)
+                syscall = CONTAINER_RUNNER + QUARTICAL_CONTAINER+' ' if USE_SINGULARITY else ''
+                extra_args = f'output.gain_directory={gain_outdir_2GC} output.log_directory={log_outdir_2GC}'
+                if PARANGMODEL:
+                    # DATA is feed-frame; MODEL_DATA is sky-frame (built from the
+                    # parang-corrected WSDMA image) — forward-rotate the model to
+                    # match. Do not derotate the output here; this isn't the final solve.
+                    extra_args += ' input_model.apply_p_jones=true'
+                if ref_ant_arg is not None:
+                    extra_args += f' solver.reference_antenna={ref_ant_arg}'
+                for term, _, new_fi in freq_int_overrides_stage1:
+                    extra_args += f' {term}.freq_interval={new_fi}'
+                if maxuvl != '' or minuvl != '':
+                    minuv_val = minuvl if minuvl != '' else '0'
+                    maxuv_val = maxuvl if maxuvl != '' else '0'
+                    extra_args += f' input_ms.select_uv_range=[{minuv_val},{maxuv_val}]'
+                syscall += gen.generate_syscall_quartical(yaml = cfg.CAL_2GC_YAML_STAGE1,
+                        myms = myms,
+                        extra_args = extra_args)
             step['syscall'] = syscall
             steps.append(step)
             n += 1
@@ -589,35 +608,41 @@ def main():
 
                 step = {}
                 step['step'] = n
-                step['comment'] = 'Run Quartical refined self-calibration (stage 2) on the target {}'.format(targetname)
                 step['dependency'] = n - 1
                 step['id'] = 'CL2GC'+code
                 step['slurm_config'] = cfg.SLURM_WSCLEAN
                 step['pbs_config'] = cfg.PBS_WSCLEAN
-                syscall = CONTAINER_RUNNER + QUARTICAL_CONTAINER+' ' if USE_SINGULARITY else ''
-                extra_args = f'output.gain_directory={gain_outdir_stage2} output.log_directory={log_outdir_stage2}'
-                if ref_ant_arg is not None:
-                    extra_args += f' solver.reference_antenna={ref_ant_arg}'
-                for term, _, new_fi in freq_int_overrides_stage2:
-                    extra_args += f' {term}.freq_interval={new_fi}'
-                if PARANGMODEL:
-                    # Forward-rotate the model to match feed-frame DATA.
-                    extra_args += ' input_model.apply_p_jones=true'
-                if not cfg.CAL_1GC_APPLYPARANG:
-                    # Last solve: derotate CORRECTED_DATA back to the sky frame.
-                    extra_args += ' output.apply_p_jones_inv=true'
-                if maxuvl != '' or minuvl != '':
-                    extra_args += f' input_ms.select_uv_range=[{minuv_val},{maxuv_val}]'
-                syscall += gen.generate_syscall_quartical(yaml = cfg.CAL_2GC_YAML_COMPLEX,
-                        myms = stage2_ms,
-                        extra_args = extra_args)
+                if USE_CASA:
+                    step['comment'] = 'Run CASA phase self-calibration (stage 2, P2) on the target {}'.format(targetname)
+                    syscall = CONTAINER_RUNNER + CASA_CONTAINER+' ' if USE_SINGULARITY else ''
+                    syscall += gen.generate_syscall_casa(casascript=f'{OXKAT}/2GC_casa_selfcal.py ms={stage2_ms} mode=P2 solve_parang={CASA_SOLVE_PARANG} parang={CASA_APPLY_PARANG_STAGE2}')
+                else:
+                    step['comment'] = 'Run Quartical refined self-calibration (stage 2) on the target {}'.format(targetname)
+                    syscall = CONTAINER_RUNNER + QUARTICAL_CONTAINER+' ' if USE_SINGULARITY else ''
+                    extra_args = f'output.gain_directory={gain_outdir_stage2} output.log_directory={log_outdir_stage2}'
+                    if ref_ant_arg is not None:
+                        extra_args += f' solver.reference_antenna={ref_ant_arg}'
+                    for term, _, new_fi in freq_int_overrides_stage2:
+                        extra_args += f' {term}.freq_interval={new_fi}'
+                    if PARANGMODEL:
+                        # Forward-rotate the model to match feed-frame DATA.
+                        extra_args += ' input_model.apply_p_jones=true'
+                    if not cfg.CAL_1GC_APPLYPARANG:
+                        # Last solve: derotate CORRECTED_DATA back to the sky frame.
+                        extra_args += ' output.apply_p_jones_inv=true'
+                    if maxuvl != '' or minuvl != '':
+                        extra_args += f' input_ms.select_uv_range=[{minuv_val},{maxuv_val}]'
+                    syscall += gen.generate_syscall_quartical(yaml = cfg.CAL_2GC_YAML_STAGE2,
+                            myms = stage2_ms,
+                            extra_args = extra_args)
                 step['syscall'] = syscall
                 steps.append(step)
                 n += 1
 
             # Safety check: verify parang solve succeeded; fall back to feed-frame + CASA applycal if not
-            if not cfg.CAL_1GC_APPLYPARANG:
-                fallback_yaml = CAL_DDECAL_YAML if DO_DD_SELFCAL else cfg.CAL_2GC_YAML_COMPLEX
+            # (QuartiCal only; CASA applies parang itself in stage 2)
+            if not cfg.CAL_1GC_APPLYPARANG and not USE_CASA:
+                fallback_yaml = CAL_DDECAL_YAML if DO_DD_SELFCAL else cfg.CAL_2GC_YAML_STAGE2
                 fallback_extra_args = f'output.gain_directory={gain_outdir_stage2} output.log_directory={log_outdir_stage2}'
                 if DO_DD_SELFCAL:
                     fallback_extra_args += f' input_model.recipe={dd_recipe} output.subtract_directions={dd_subtract}'

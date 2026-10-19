@@ -64,7 +64,7 @@ def parse_arguments():
                         help='Directory to save plots')
     parser.add_argument('--output-suffix', type=str, default='',
                         help='Suffix for output files (e.g., "_test" -> baseline_flags_test.txt)')
-    parser.add_argument('--sigma-threshold', type=float, default=3.0,
+    parser.add_argument('--sigma-threshold', type=float, default=5.0,
                         help='Sigma threshold for outlier detection')
     parser.add_argument('--outlier-mode', type=str, default='mixed',
                         choices=['high', 'low', 'both', 'mixed'],
@@ -75,7 +75,7 @@ def parse_arguments():
                              'flag: a baseline broadened by factor b is caught when '
                              'b > sigma_threshold/z(X), for z the normal quantile. '
                              'The resulting sensitivity is reported in the run log')
-    parser.add_argument('--point-sigma-threshold', type=float, default=5.0,
+    parser.add_argument('--point-sigma-threshold', type=float, default=10.0,
                         help='Stricter sigma threshold for individual points. A baseline '
                              'is flagged outright the moment >= --point-outlier-min-count '
                              'points cross this, independent of --outlier-fraction-threshold '
@@ -110,13 +110,14 @@ def parse_arguments():
                              'data (a --data-column with gains applied), since on '
                              'uncalibrated data every baseline carries its own delay slope')
     parser.add_argument('--antenna-flag-threshold', type=float, default=0.90,
-                        help='Flag entire antenna if >X fraction of its baselines are bad')
+                        help='Flag an antenna in a scan if >X fraction of its baselines are bad '
+                             'in that scan (per chunk, and over all chunks for the global pass)')
     parser.add_argument('--antenna-relative-sigma', type=float, default=5.0,
                         help='Sigma threshold for relative antenna outlier detection '
                              '(<=0 disables it; off by default because the threshold '
                              'degenerates to the population median when the MAD is zero)')
     parser.add_argument('--antenna-flag-cap', type=int, default=3,
-                        help='Maximum number of antennas to flag globally')
+                        help='Maximum number of antennas to flag globally in each scan')
     parser.add_argument('--num-chunks', type=int, default=None,
                         help='Number of chunks to process (None = all chunks)')
     parser.add_argument('--no-printing', action='store_true',
@@ -1064,13 +1065,13 @@ def main():
 
     log("ANTENNA FLAGGING:")
     log(f"  Method 1 - Absolute threshold: {args.antenna_flag_threshold*100:.0f}%")
-    log(f"    → Flag antenna if >{args.antenna_flag_threshold*100:.0f}% of its baselines are bad")
+    log(f"    → Flag antenna in a scan if >{args.antenna_flag_threshold*100:.0f}% of its baselines are bad in that scan")
     if args.antenna_relative_sigma <= 0:
         log(f"  Method 2 - Relative outlier detection: DISABLED")
     else:
         log(f"  Method 2 - Relative outlier detection: {args.antenna_relative_sigma:.1f}σ")
         log(f"    → Flag antenna if it's >{args.antenna_relative_sigma:.1f}σ above population median")
-    log(f"  Maximum antennas to flag globally: {args.antenna_flag_cap}")
+    log(f"  Maximum antennas to flag globally per scan: {args.antenna_flag_cap}")
     log("")
     
     log("OUTPUT:")
@@ -1262,7 +1263,7 @@ def main():
     cumulative_new_flags = 0
     
     # Track antenna statistics across all chunks
-    global_antenna_stats = {}  # {ant_name: {'total': N, 'flagged': M, 'chunks': [...]}}
+    global_antenna_stats = {}  # {ant_name: {'scans': {scan: {'total': N, 'flagged': M}}, 'chunks': [...]}}
     
     # Display processing plan
     log("")
@@ -1329,10 +1330,6 @@ def main():
                                     [fid for fid, _ in flag_fields])
     for scan in all_scans:
         extra_scans.setdefault(int(scan), [])
-    # Antenna flags cover every scan of this field, and so every other scan
-    # any of them is passed on to.
-    antenna_scan_sel = scan_selection(
-        list(extra_scans) + [s for extras in extra_scans.values() for s in extras])
     if flag_fields:
         log("Flag propagation (scan of this field -> other scans flagged with it):")
         for scan in sorted(extra_scans):
@@ -1824,56 +1821,50 @@ def main():
         log("")
         log(f"Analyzing antenna-level flagging for chunk {chunk_num}...")
 
-        # A baseline counts as "flagged" here if it has >=1 flagged scan; this
-        # feeds the "kill this whole antenna" rollup below.
-        chunk_flagged_baselines = {bl_idx for bl_idx, _ in chunk_flagged_baseline_scans}
+        # Antenna flagging is decided scan by scan: an antenna is flagged in a
+        # scan when more than --antenna-flag-threshold of its baselines failed
+        # in that scan, and the flag covers that scan only.
+        flagged_bls_by_scan = {}  # {scan: {bl_idx, ...}}
+        for bl_idx, scan in chunk_flagged_baseline_scans:
+            flagged_bls_by_scan.setdefault(int(scan), set()).add(bl_idx)
 
-        # Count how many baselines each antenna participates in (total and flagged)
-        antenna_stats = {}  # {ant_name: {'total': N, 'flagged': M}}
+        flagged_antennas = []  # [(ant_name, scan, fraction, flagged, total)]
+        for scan in (int(s) for s in all_scans):
+            scan_flagged_bls = flagged_bls_by_scan.get(scan, set())
 
-        for bl_idx, (a1, a2, bl_name, ant1_name, ds) in enumerate(baseline_info):
-            ant1 = antenna_names[a1]
-            ant2 = antenna_names[a2]
-            
-            # Initialize if not seen
-            if ant1 not in antenna_stats:
-                antenna_stats[ant1] = {'total': 0, 'flagged': 0}
-            if ant2 not in antenna_stats:
-                antenna_stats[ant2] = {'total': 0, 'flagged': 0}
-            
-            # Count baseline for both antennas
-            antenna_stats[ant1]['total'] += 1
-            antenna_stats[ant2]['total'] += 1
-            
-            # If this baseline is flagged, count for both antennas
-            if bl_idx in chunk_flagged_baselines:
-                antenna_stats[ant1]['flagged'] += 1
-                antenna_stats[ant2]['flagged'] += 1
-        
-        # Identify antennas exceeding threshold
-        flagged_antennas = []
-        for ant_name, stats in antenna_stats.items():
-            if stats['total'] > 0:
-                fraction = stats['flagged'] / stats['total']
-                if fraction > args.antenna_flag_threshold:
-                    flagged_antennas.append((ant_name, fraction, stats['flagged'], stats['total']))
-        
-        # Update global antenna statistics
-        for ant_name, stats in antenna_stats.items():
-            if ant_name not in global_antenna_stats:
-                global_antenna_stats[ant_name] = {'total': 0, 'flagged': 0, 'chunks': []}
-            global_antenna_stats[ant_name]['total'] += stats['total']
-            global_antenna_stats[ant_name]['flagged'] += stats['flagged']
-            if stats['flagged'] > 0:
-                global_antenna_stats[ant_name]['chunks'].append(chunk_num)
-        
+            # Count how many baselines each antenna participates in (total and
+            # flagged in this scan)
+            antenna_stats = {}  # {ant_name: {'total': N, 'flagged': M}}
+            for bl_idx, (a1, a2, bl_name, ant1_name, ds) in enumerate(baseline_info):
+                for ant in (antenna_names[a1], antenna_names[a2]):
+                    stats = antenna_stats.setdefault(ant, {'total': 0, 'flagged': 0})
+                    stats['total'] += 1
+                    if bl_idx in scan_flagged_bls:
+                        stats['flagged'] += 1
+
+            for ant_name, stats in antenna_stats.items():
+                if stats['total'] > 0:
+                    fraction = stats['flagged'] / stats['total']
+                    if fraction > args.antenna_flag_threshold:
+                        flagged_antennas.append((ant_name, scan, fraction, stats['flagged'], stats['total']))
+
+                # Global statistics are kept per antenna per scan, in
+                # baseline counts summed over chunks
+                ant_global = global_antenna_stats.setdefault(ant_name, {'scans': {}, 'chunks': []})
+                scan_global = ant_global['scans'].setdefault(scan, {'total': 0, 'flagged': 0})
+                scan_global['total'] += stats['total']
+                scan_global['flagged'] += stats['flagged']
+                if stats['flagged'] > 0 and chunk_num not in ant_global['chunks']:
+                    ant_global['chunks'].append(chunk_num)
+
         if len(flagged_antennas) > 0:
             log("")
-            log(f"Antennas exceeding {args.antenna_flag_threshold*100:.0f}% threshold:")
-            for ant_name, frac, flagged, total in sorted(flagged_antennas, key=lambda x: x[1], reverse=True):
-                log(f"  {ant_name}: {frac:.2%} ({flagged}/{total} baselines flagged) - FLAGGING ENTIRE ANTENNA")
+            log(f"Antenna-scans exceeding {args.antenna_flag_threshold*100:.0f}% threshold:")
+            for ant_name, scan, frac, flagged, total in sorted(flagged_antennas, key=lambda x: (x[1], -x[2])):
+                log(f"  {ant_name} scan {scan}: {frac:.2%} ({flagged}/{total} baselines flagged) "
+                    f"- FLAGGING ANTENNA IN THIS SCAN")
         else:
-            log("No antennas exceed the antenna flagging threshold")
+            log("No antenna-scans exceed the antenna flagging threshold")
         
         # Write flags to file (baseline-scans + antennas)
         if len(chunk_flagged_baseline_scans) > 0 or len(flagged_antennas) > 0:
@@ -1898,43 +1889,41 @@ def main():
                                  f"scan='{scan_sel}' reason='{reason}'\n")
                     f.write(flag_line)
 
-            # Antenna flags cover every scan of this field on that antenna's
-            # baselines, plus every scan those propagate to
+            # Antenna flags cover that antenna's baselines in the one scan it
+            # failed, plus the scans that scan propagates to
             with open(flag_file_path, 'a') as f:
-                for ant_idx, (ant_name, frac, flagged, total) in enumerate(flagged_antennas):
-                    reason = f"BASED_FLAGGER_CHUNK_{chunk_num}_ANT{ant_idx}"
+                for ant_idx, (ant_name, scan, frac, flagged, total) in enumerate(flagged_antennas):
+                    reason = f"BASED_FLAGGER_CHUNK_{chunk_num}_ANT{ant_idx}_SCAN{scan}"
+                    scan_sel = scan_selection([scan] + extra_scans.get(scan, []))
                     flag_line = (f"mode='manual' antenna='{ant_name}' spw='0:{start_chan}~{end_chan-1}' "
-                                 f"scan='{antenna_scan_sel}' reason='{reason}'\n")
+                                 f"scan='{scan_sel}' reason='{reason}'\n")
                     f.write(flag_line)
 
-            # Calculate new flags for this chunk.
-            # Baseline-scan flags only remove that scan's rows on that
-            # baseline; antenna flags remove every row of every baseline
-            # touching that antenna. A baseline can carry both, so baselines
-            # already fully covered by an antenna flag are excluded from the
-            # per-scan tally to avoid double-counting their rows.
+            # Calculate new flags for this chunk: the rows of every
+            # (baseline, scan) covered by a baseline-scan flag or by an
+            # antenna-scan flag, each counted once.
             n_freq_in_chunk = end_chan - start_chan
             n_corr_flagged = len(correlations)
 
-            flagged_ant_names = {ant_name for ant_name, _, _, _ in flagged_antennas}
-            antenna_flagged_bls = set()
-            if flagged_ant_names:
-                for bl_idx, (a1, a2, _, _, _) in enumerate(baseline_info):
-                    if (antenna_names[a1] in flagged_ant_names
-                            or antenna_names[a2] in flagged_ant_names):
-                        antenna_flagged_bls.add(bl_idx)
+            flagged_ants_by_scan = {}  # {scan: {ant_name, ...}}
+            for ant_name, scan, _, _, _ in flagged_antennas:
+                flagged_ants_by_scan.setdefault(scan, set()).add(ant_name)
 
-            scan_flag_rows = sum(
+            covered_baseline_scans = {(bl_idx, int(scan)) for bl_idx, scan in chunk_flagged_baseline_scans}
+            for scan, ant_names in flagged_ants_by_scan.items():
+                for bl_idx, (a1, a2, _, _, _) in enumerate(baseline_info):
+                    if antenna_names[a1] in ant_names or antenna_names[a2] in ant_names:
+                        covered_baseline_scans.add((bl_idx, scan))
+
+            flagged_rows = sum(
                 int(np.sum(scan_arrays[bl_idx] == scan))
-                for (bl_idx, scan) in chunk_flagged_baseline_scans
-                if bl_idx not in antenna_flagged_bls
+                for (bl_idx, scan) in covered_baseline_scans
             )
 
-            chunk_new_flags = ((scan_flag_rows + len(antenna_flagged_bls) * n_time_samples)
-                                * n_freq_in_chunk * n_corr_flagged)
+            chunk_new_flags = flagged_rows * n_freq_in_chunk * n_corr_flagged
 
             cumulative_new_flags += chunk_new_flags
-            n_distinct_bl_flagged = len(chunk_flagged_baselines | antenna_flagged_bls)
+            n_distinct_bl_flagged = len({bl_idx for bl_idx, _ in covered_baseline_scans})
             log(f"New flags this chunk: {chunk_new_flags:,} "
                 f"({len(chunk_flagged_baseline_scans)} baseline-scan flag(s), "
                 f"{n_distinct_bl_flagged} distinct baseline(s))")
@@ -1951,21 +1940,29 @@ def main():
     log("GLOBAL ANTENNA FLAGGING (ALL CHUNKS)")
     log("="*60)
     
-    # Build list of all antennas with their flagging fractions
-    antenna_fractions = []
-    for ant_name, stats in global_antenna_stats.items():
-        if stats['total'] > 0:
-            fraction = stats['flagged'] / stats['total']
-            antenna_fractions.append((ant_name, fraction, stats['flagged'], stats['total']))
-    
-    capped_flagged = []  # stays empty if no antenna statistics were gathered
+    # Antenna statistics summed over all chunks, scan by scan: an antenna is
+    # flagged across the band in a scan it fails, and in that scan only
+    global_scans = sorted({scan for stats in global_antenna_stats.values() for scan in stats['scans']})
 
-    if len(antenna_fractions) == 0:
+    capped_flagged = []  # [(ant_name, scan, frac, flagged, total, methods)]
+
+    if len(global_scans) == 0:
         log("No antenna statistics available")
-    else:
-        log(f"Analyzing {len(antenna_fractions)} antennas...")
+
+    for scan in global_scans:
+        antenna_fractions = []
+        for ant_name, stats in global_antenna_stats.items():
+            scan_stats = stats['scans'].get(scan)
+            if scan_stats and scan_stats['total'] > 0:
+                fraction = scan_stats['flagged'] / scan_stats['total']
+                antenna_fractions.append((ant_name, fraction, scan_stats['flagged'], scan_stats['total']))
+        if len(antenna_fractions) == 0:
+            continue
+
         log("")
-        
+        log(f"--- Scan {scan}: analyzing {len(antenna_fractions)} antennas ---")
+        log("")
+
         # METHOD 1: Absolute threshold
         absolute_flagged = []
         for ant_name, frac, flagged, total in antenna_fractions:
@@ -2034,11 +2031,11 @@ def main():
         if len(combined_flagged) > args.antenna_flag_cap:
             log(f"Combined: {len(combined_flagged)} antennas flagged by at least one method")
             log(f"Applying cap: Flagging worst {args.antenna_flag_cap} antennas only")
-            capped_flagged = combined_flagged[:args.antenna_flag_cap]
+            scan_capped = combined_flagged[:args.antenna_flag_cap]
             excluded = combined_flagged[args.antenna_flag_cap:]
             log("")
             log(f"Antennas being flagged:")
-            for ant_name, frac, flagged, total, methods in capped_flagged:
+            for ant_name, frac, flagged, total, methods in scan_capped:
                 methods_str = '+'.join(methods)
                 log(f"  {ant_name}: {frac:.2%} ({flagged}/{total} baselines) [{methods_str}]")
             log("")
@@ -2049,32 +2046,38 @@ def main():
             if len(excluded) > 5:
                 log(f"  ... and {len(excluded)-5} more")
         else:
-            capped_flagged = combined_flagged
-            if len(capped_flagged) > 0:
-                log(f"Flagging {len(capped_flagged)} antenna(s):")
-                for ant_name, frac, flagged, total, methods in capped_flagged:
+            scan_capped = combined_flagged
+            if len(scan_capped) > 0:
+                log(f"Flagging {len(scan_capped)} antenna(s):")
+                for ant_name, frac, flagged, total, methods in scan_capped:
                     methods_str = '+'.join(methods)
                     log(f"  {ant_name}: {frac:.2%} ({flagged}/{total} baselines) [{methods_str}]")
             else:
                 log("No antennas meet flagging criteria")
         
-        # Write global antenna flags to file
-        if len(capped_flagged) > 0 and len(chunks_to_process) > 0:
+        # Write this scan's global antenna flags to file: that scan plus the
+        # scans it propagates to
+        if len(scan_capped) > 0 and len(chunks_to_process) > 0:
             min_chan = min(chunks_to_process)
             max_chan = max(chunks_to_process) + args.channel_group_size
             max_chan = min(max_chan, n_chan)  # Don't exceed total channels
-            
+            scan_sel = scan_selection([scan] + extra_scans.get(scan, []))
+
             log("")
-            log(f"Writing {len(capped_flagged)} global antenna flag(s) for channels {min_chan}~{max_chan-1}...")
-            
+            log(f"Writing {len(scan_capped)} global antenna flag(s) for scan {scan}, "
+                f"channels {min_chan}~{max_chan-1}...")
+
             with open(flag_file_path, 'a') as f:
-                for ant_idx, (ant_name, frac, flagged, total, methods) in enumerate(capped_flagged):
-                    reason = f"BASED_FLAGGER_GLOBAL_ANT{ant_idx}"
+                for ant_idx, (ant_name, frac, flagged, total, methods) in enumerate(scan_capped):
+                    reason = f"BASED_FLAGGER_GLOBAL_ANT{ant_idx}_SCAN{scan}"
                     flag_line = (f"mode='manual' antenna='{ant_name}' spw='0:{min_chan}~{max_chan-1}' "
-                                 f"scan='{antenna_scan_sel}' reason='{reason}'\n")
+                                 f"scan='{scan_sel}' reason='{reason}'\n")
                     f.write(flag_line)
-            
-            log(f"✓ Wrote {len(capped_flagged)} global antenna flags to {flag_file_path}")
+
+            log(f"✓ Wrote {len(scan_capped)} global antenna flags to {flag_file_path}")
+
+        capped_flagged += [(ant_name, scan, frac, flagged, total, methods)
+                           for ant_name, frac, flagged, total, methods in scan_capped]
     
     # Print top 5 antennas with highest flagging fraction across all chunks
     log("")
@@ -2085,9 +2088,10 @@ def main():
     # Calculate fractions and sort
     antenna_fractions = []
     for ant_name, stats in global_antenna_stats.items():
-        if stats['total'] > 0:
-            fraction = stats['flagged'] / stats['total']
-            antenna_fractions.append((ant_name, fraction, stats['flagged'], stats['total'], stats['chunks']))
+        total = sum(s['total'] for s in stats['scans'].values())
+        flagged = sum(s['flagged'] for s in stats['scans'].values())
+        if total > 0:
+            antenna_fractions.append((ant_name, flagged / total, flagged, total, stats['chunks']))
     
     antenna_fractions.sort(key=lambda x: x[1], reverse=True)
     
@@ -2096,7 +2100,7 @@ def main():
     if len(top_5) > 0:
         for rank, (ant_name, frac, flagged, total, chunks) in enumerate(top_5, start=1):
             chunks_str = ','.join(map(str, sorted(set(chunks))))
-            log(f"{rank}. {ant_name}: {frac:.2%} ({flagged}/{total} baselines) - chunks: {chunks_str}")
+            log(f"{rank}. {ant_name}: {frac:.2%} ({flagged}/{total} baseline-scans) - chunks: {chunks_str}")
     else:
         log("No antenna flagging data available")
     log("")
@@ -2106,12 +2110,12 @@ def main():
     if capped_flagged and chunks_to_process:
         span_chan = min(max(chunks_to_process) + args.channel_group_size, n_chan) \
                     - min(chunks_to_process)
-        for ant_name, _, _, _, _ in capped_flagged:
-            ant_baselines = sum(1 for a1, a2, _, _, _ in baseline_info
+        for ant_name, scan, _, _, _, _ in capped_flagged:
+            ant_scan_rows = sum(int(np.sum(scan_arrays[bl_idx] == scan))
+                                for bl_idx, (a1, a2, _, _, _) in enumerate(baseline_info)
                                 if antenna_names[a1] == ant_name
                                 or antenna_names[a2] == ant_name)
-            cumulative_new_flags += (ant_baselines * n_time_samples
-                                     * span_chan * len(correlations))
+            cumulative_new_flags += ant_scan_rows * span_chan * len(correlations)
 
     # =================================================================
     # FINAL SUMMARY

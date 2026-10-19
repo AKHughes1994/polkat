@@ -225,13 +225,10 @@ def main():
     if not os.path.isdir(directory):
         sys.exit(f'ERROR: Directory "{directory}" does not exist')
 
-    if target_name:
-        msg(f'Searching for images matching target: {target_name}')
-    else:
-        msg(f'Searching for all images in: {directory}')
-
-    pattern1 = f'{directory}/*-Q-*image.fits'
-    pattern2 = f'{directory}/*-Q-*image.homogenized.fits'
+    name = f'*{target_name}*' if target_name else '*'
+    pattern1 = f'{directory}/{name}-Q-*image.fits'
+    pattern2 = f'{directory}/{name}-Q-*image.homogenized.fits'
+    msg(f'Searching for Q images: {pattern1}, {pattern2}')
     image_list = sorted(glob.glob(pattern1) + glob.glob(pattern2))
 
     if not image_list:

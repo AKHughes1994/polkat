@@ -27,8 +27,8 @@ def main():
     gen.print_spacer()
 
     # QuartiCal YAML(s) this run depends on must exist before any job is generated
-    if not o.isfile(cfg.CAL_2GC_YAML):
-        sys.exit(gen.col('QuartiCal YAML')+f'CAL_2GC_YAML is set to {cfg.CAL_2GC_YAML}, which does not exist')
+    if not o.isfile(cfg.CAL_2GC_YAML_STAGE1):
+        sys.exit(gen.col('QuartiCal YAML')+f'CAL_2GC_YAML_STAGE1 is set to {cfg.CAL_2GC_YAML_STAGE1}, which does not exist')
 
     # ------------------------------------------------------------------------------
     #
@@ -335,7 +335,7 @@ def main():
                 minuv_val = minuvl if minuvl != '' else '0'
                 maxuv_val = maxuvl if maxuvl != '' else '0'
                 extra_args += f' input_ms.select_uv_range=[{minuv_val},{maxuv_val}]'
-            syscall += gen.generate_syscall_quartical(yaml = cfg.CAL_2GC_YAML,
+            syscall += gen.generate_syscall_quartical(yaml = cfg.CAL_2GC_YAML_STAGE1,
                     myms = myms,
                     extra_args = extra_args)
             step['syscall'] = syscall
@@ -350,7 +350,7 @@ def main():
                 if maxuvl != '' or minuvl != '':
                     fallback_extra_args += f' input_ms.select_uv_range=[{minuv_val},{maxuv_val}]'
                 fallback_qc_cmd = (CONTAINER_RUNNER + QUARTICAL_CONTAINER + ' ' if USE_SINGULARITY else '') + \
-                    gen.generate_syscall_quartical(yaml=cfg.CAL_2GC_YAML, myms=myms, extra_args=fallback_extra_args)
+                    gen.generate_syscall_quartical(yaml=cfg.CAL_2GC_YAML_STAGE1, myms=myms, extra_args=fallback_extra_args)
 
                 step = {}
                 step['step'] = n

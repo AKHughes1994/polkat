@@ -361,7 +361,7 @@ def main():
         steps.append(step)
         n += 1
 
-        # ---- Single round selfcal with CAL_2GC_YAML_COMPLEX ----------------------
+        # ---- Single round selfcal with CAL_2GC_FILE ------------------------------
         step = {}
         step['step']       = n
         step['comment']    = f'Run Quartical self-calibration on {fieldname}'
@@ -387,11 +387,16 @@ def main():
 
         # ---- Parang safety check (only when parang not applied in 1GC) -----------
         if not cfg.CAL_1GC_APPLYPARANG:
+            # The fallback is the solve above without apply_p_jones_inv
             fallback_extra = f'output.gain_directory={gain_outdir} output.log_directory={log_outdir}'
+            if ref_ant_arg is not None:
+                fallback_extra += f' solver.reference_antenna={ref_ant_arg}'
+            for term, _, new_fi in freq_int_overrides:
+                fallback_extra += f' {term}.freq_interval={new_fi}'
             if minuvl != '':
                 fallback_extra += f' input_ms.select_uv_range=[{minuvl},0]'
             fallback_qc_cmd = (CONTAINER_RUNNER + QUARTICAL_CONTAINER + ' ' if USE_SINGULARITY else '') + \
-                gen.generate_syscall_quartical(yaml=cfg.CAL_2GC_YAML_COMPLEX, myms=calms, extra_args=fallback_extra)
+                gen.generate_syscall_quartical(yaml=cfg.CAL_2GC_FILE, myms=calms, extra_args=fallback_extra)
 
             step = {}
             step['step']       = n

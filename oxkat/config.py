@@ -284,14 +284,20 @@ XF_SKIP_KCROSS = True # weather to skip the cross-hand delay and only solve for 
 # XF table solution interval
 XF_CHANINT = 16             # Channels per polcal solution interval; e.g. 1024 ch / 16 = 64 XF phase solutions across the band
 
-# Calibration and outlier thresholds
-XF_GLOBAL_SIGMA_CLIP = 10.0 # N-sigma threshold for global circular phase clip (gross outlier removal, wrap-safe)
-XF_POLY_ORDER        = 4    # Polynomial order for cos/sin(phase) baseline fit; set to 0 to disable
-XF_MAD_WINDOW        = None # Sliding circular MAD window size in channels; None = auto (ceil_odd(N_chan/5))
-XF_MAD_SIGMA_CLIP    = 5.0  # N-sigma threshold for sliding circular MAD clip (local, wrap-safe)
+# Sign choice and flagging in tools/manual_XF_solver_v2.py
+XF_SIGN_SYS_FLOOR    = 1.0   # deg: smallest EVPA difference between the two XF signs that counts as decisive (model, RM and leakage errors)
+XF_SIGN_NSIGMA       = 3.0   # ... or this many times the EVPA noise, whichever is larger; below it the sign follows continuity
+XF_SIGN_JUMP_COST    = 25.0  # Cost of a pi jump between neighbouring channels, in units of (margin/threshold)^2: a run of confident channels must outweigh it to create a jump
+XF_TREND_CLIP_NSIGMA = 5.0   # Local-trend clip: flag channels off a line through their neighbours by > N x max(MAD, 1/S/N); 0 = off
+XF_TREND_CLIP_WINDOW = None  # Neighbours used for the local-trend line; None = auto (max(5, N_chan/10))
+
+# Calibration thresholds
 XF_AVG_SCAN          = False # If True, flux-weighted circular average across scans after per-scan solve (increases SNR, loses scan-to-scan variation)
-XF_MAD_ITERATIVE = True  # Iterative poly-baseline + sliding circular MAD clip until convergence (refits baseline each pass); False = single pass only
-XF_MIN_SN = 5.0  # Minimum cross-hand S/N per channel; channels below this are flagged (0 = disabled)
+XF_MIN_SN            = 5.0   # Minimum cross-hand S/N per channel; channels below this are flagged (0 = disabled)
+XF_MAX_IMAG_FRAC     = 0.15   # Flag XF channels where |Im(U, V)| / |Re(U, V)| exceeds this: the cross-hand is contaminated (off-axis sources, phase errors) 
+                              # relative to the calibrator's signal (0 = disabled)
+                              # Catches channels the S/N cut misses: contamination is systematic, so the S/N can be very high while the phase is still wrong. 
+                              # NOTE: ad hoc value chosen by eye, not derived; tune per dataset, this should be alright for most use cases
 
 # Smoothing control
 XF_USE_SMOOTHING     = False # Apply Savitzky-Golay smoothing to XF solutions before writing the table
@@ -310,10 +316,17 @@ XF_OVERRIDE_TABLE  = ''  # If non-empty, replace the solved Xf table with this p
                           # Empty string = use the solved table.
 
 # -----------------------------------------------------------------------
-# DEPRECATED — parameters below are no longer used in the current
-# manual XF solver (tools/manual_XF_solver.py). Retained for
-# compatibility with older workflows or the CASA-based XF path.
+# DEPRECATED — parameters below are not used by tools/manual_XF_solver_v2.py.
 # -----------------------------------------------------------------------
+# Still read by the old solver (tools/manual_XF_solver.py, called from 1GC_05);
+# remove once 1GC_05 switches to v2.
+XF_GLOBAL_SIGMA_CLIP = 10.0  # N-sigma threshold for global circular phase clip (gross outlier removal, wrap-safe)
+XF_POLY_ORDER        = 0     # Polynomial order for cos/sin(phase) baseline fit; set to 0 to disable
+XF_MAD_WINDOW        = None  # Sliding circular MAD window size in channels; None = auto (ceil_odd(N_chan/5))
+XF_MAD_SIGMA_CLIP    = 5.0   # N-sigma threshold for sliding circular MAD clip (local, wrap-safe); set to 0 to disable
+XF_MAD_ITERATIVE     = True  # Iterative poly-baseline + sliding circular MAD clip until convergence; False = single pass
+
+# Not read by any current code
 XF_POLY_SIGMA_CLIP   = 3.0   # Was: sigma threshold for iterative polynomial outlier clipping
 XF_MAX_AVG_CHANNELS  = None  # Was: upper limit on channel averaging for XF solutions
 XF_MIN_CROSS_FLUX    = 0.07  # Was: minimum total cross-hand flux (Jy) threshold for reliable solutions
@@ -486,21 +499,26 @@ CAL_1GC_LINE_FILLGAPS = 48
 # 2GC settings — QuartiCal self-calibration
 #
 
-# Legacy CASA gaincal solution intervals (not used by QuartiCal; kept for reference)
-CAL_2GC_UVRANGE = '>150m'            # UV range for baseline selection during gain solving
-CAL_2GC_PSOLINT = '32s'              # Phase-only solution interval (DEFUNCT in QuartiCal version)
-CAL_2GC_APSOLINT = 'inf'             # Amplitude+phase solution interval (DEFUNCT in QuartiCal version)
+# If True, 2GC self-calibration in extra/setup_2GC_twostage.py is done with CASA
+# (2GC_casa_selfcal.py) instead of QuartiCal: phase-only P1 (64s, replacing the stage 1
+# delay solve), then P2 (per integration, replacing the stage 2 phase solve).
+# The CASA parameters (solints, min S/N) can be changed at the top of that file.
+CAL_2GC_USE_CASA = False
 
-# QuartiCal YAML configurations
+# QuartiCal YAML configurations for the targets. Both stages are phase-only (no amplitudes).
 # See the individual .yaml files and the QuartiCal docs for full parameter details.
-# Phase-only: solves diagonal Jones terms (XX, YY) for phase only.
-CAL_2GC_YAML         = DATA+'/quartical/2GC_delay.yaml'
+# Stage 1: K delay_and_offset -- per-antenna delay + phase offset, whole band, 8 integrations
+CAL_2GC_YAML_STAGE1 = DATA+'/quartical/2GC_delay.yaml'
 
-# Complex: solves the full 2x2 Jones matrix (XX, YY, XY, YX) for amplitude and phase.
-# See the .yaml file for the exact solver configuration.
-CAL_2GC_YAML_COMPLEX = DATA+'/quartical/2GC_phase.yaml'
-# To use phase-only calibration for both stages (i.e. override the complex solve), uncomment:
-# CAL_2GC_YAML_COMPLEX = CAL_2GC_YAML
+# Stage 2: G phase -- per antenna, every integration, 16-channel blocks
+CAL_2GC_YAML_STAGE2 = DATA+'/quartical/2GC_phase.yaml'
+
+# Other templates in data/quartical/ (point either stage at one, or copy and edit):
+#   2GC_ampphase.yaml     G complex (amplitude + phase)
+#   2GC_complex.yaml      G complex (calibrator default, CAL_2GC_FILE)
+#   2GC_complex_2x2.yaml  G diag_complex
+#   2GC_polmulti.yaml     K delay_and_offset + G complex
+#   2GC_complex_2dir.yaml G diag_complex + dE complex (direction-dependent)
 
 # Skip primary beam correction in post-processing
 SKIP_PB = False
@@ -784,7 +802,8 @@ CAL_COMBINESCAN = False
 # avoids cleaning noise into the model before self-calibration.
 WSC_CALS_BLINDMASK = WSC_AUTOMASK_BLIND * 3
 
-# Self-calibration file: Default is full 2x2 complex solutions (assuming this is for a pol cal)
+# Calibrator 2GC self-calibration file (extra/setup_2GC_cals.py): full 2x2 complex
+# (amplitude and phase) solutions, assuming this is for a pol cal
 CAL_2GC_FILE = DATA+'/quartical/2GC_complex.yaml'
 
 # ------------------------------------------------------------------------

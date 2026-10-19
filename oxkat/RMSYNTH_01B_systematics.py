@@ -1,6 +1,10 @@
 # andrew.hughes@physics.ox.ac.uk
 # fraser.cowie@physics.ox.ac.uk
 
+# Modular CASA: imfit/imstat/imhead are imported from casatasks, so this runs
+# under `python-pycasa`. Per-channel fits run in a ProcessPoolExecutor, as in
+# RMSYNTH_01_extract_fluxes.py; each spawned worker re-imports this module.
+
 import glob
 import os
 import re
@@ -9,6 +13,9 @@ import json
 import time
 import numpy as np
 import os.path as o
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from astropy.io import fits
 sys.path.append(o.abspath(o.join(o.dirname(sys.modules[__name__].__file__), "..")))
 
 import matplotlib
@@ -16,6 +23,8 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 from oxkat import config as cfg
+
+from casatasks import imfit, imstat, imhead
 
 
 # =============================================================================
@@ -28,6 +37,11 @@ from oxkat import config as cfg
 # the downstream appending logic without redoing slow imfit calls).
 OVERWRITE = True
 
+# Plot y ranges cover points within this many robust sigmas of the median
+# (+/- error bars), padded by this fraction of the range
+PLOT_YLIM_MAD_SIGMA = 10.0
+PLOT_YLIM_PAD       = 0.25
+
 # =============================================================================
 
 
@@ -35,6 +49,130 @@ def msg(txt):
     """Print a timestamped log message to stdout."""
     stamp = time.strftime(' %Y-%m-%d %H:%M:%S | ')
     print(stamp + txt, flush=True)
+
+
+# =============================================================================
+# Channel-fit parallelization: worker count + job chunking.
+# Same approach as RMSYNTH_01_extract_fluxes.py.
+# =============================================================================
+
+def get_available_memory_bytes():
+    """Memory available to this job: the SLURM allocation if there is one,
+    otherwise the node's available memory."""
+    slurm_mem_node = os.environ.get('SLURM_MEM_PER_NODE')
+    if slurm_mem_node:
+        try:
+            allocated = int(slurm_mem_node) * 1024 ** 2
+            msg(f'SLURM memory detected: SLURM_MEM_PER_NODE={slurm_mem_node} MB -> {allocated / 1024**3:.1f} GB')
+            return allocated
+        except ValueError:
+            pass
+
+    slurm_mem_cpu = os.environ.get('SLURM_MEM_PER_CPU')
+    cpus_per_task = os.environ.get('SLURM_CPUS_PER_TASK')
+    ntasks        = os.environ.get('SLURM_NTASKS')
+    alloc_cpus    = (int(cpus_per_task) * int(ntasks) if cpus_per_task and ntasks
+                     else int(cpus_per_task) if cpus_per_task
+                     else int(ntasks) if ntasks
+                     else None)
+    if slurm_mem_cpu and alloc_cpus:
+        try:
+            allocated = int(slurm_mem_cpu) * alloc_cpus * 1024 ** 2
+            msg(f'SLURM memory detected: SLURM_MEM_PER_CPU={slurm_mem_cpu} MB x {alloc_cpus} CPUs -> {allocated / 1024**3:.1f} GB')
+            return allocated
+        except ValueError:
+            pass
+
+    try:
+        import psutil
+        available = psutil.virtual_memory().available
+        msg(f'No SLURM memory allocation detected -- using node available memory: {available / 1024**3:.1f} GB')
+        return available
+    except ImportError:
+        pass
+
+    try:
+        with open('/proc/meminfo') as f:
+            for line in f:
+                if line.startswith('MemAvailable:'):
+                    available = int(line.split()[1]) * 1024
+                    msg(f'No SLURM memory allocation detected -- using /proc/meminfo: {available / 1024**3:.1f} GB')
+                    return available
+    except OSError:
+        pass
+
+    msg('WARNING: Could not determine available memory. Assuming 4 GB.')
+    return 4 * 1024 ** 3
+
+
+def estimate_memory_per_worker_bytes(image, casa_worker_floor_mb=350):
+    """Conservative peak estimate for one channel-fit worker: pixel data size
+    (x4 for headroom) or a floor for a fresh casatasks import per spawned
+    worker, whichever is larger."""
+    with fits.open(image) as hdul:
+        shape       = hdul[0].data.shape
+        dtype       = hdul[0].data.dtype
+        image_bytes = 4 * hdul[0].data.nbytes
+    floor_bytes  = casa_worker_floor_mb * 1024 ** 2
+    chosen_bytes = max(image_bytes, floor_bytes)
+    msg(f'  [mem-est] sample={os.path.basename(image)}  shape={shape}  '
+        f'dtype={dtype}  x4 copies = {image_bytes / 1024**2:.1f}MB  '
+        f'vs  floor={floor_bytes / 1024**2:.0f}MB  '
+        f'-> using {"image size" if image_bytes >= floor_bytes else "casatasks import floor"} '
+        f'({chosen_bytes / 1024**2:.1f}MB/worker)')
+    return chosen_bytes
+
+
+def compute_max_workers(sample_images, n_jobs):
+    """Number of workers: the smallest of the memory cap (from sample_images,
+    a few representative images), the allocated CPUs, and n_jobs (the number
+    of channels to fit)."""
+    available  = get_available_memory_bytes()
+    per_worker = max(estimate_memory_per_worker_bytes(im) for im in sample_images)
+    mem_cap    = max(1, int(available // per_worker))
+
+    cpus_per_task = os.environ.get('SLURM_CPUS_PER_TASK')
+    ntasks        = os.environ.get('SLURM_NTASKS')
+    job_cpus      = os.environ.get('SLURM_JOB_CPUS_PER_NODE', '')
+    job_cpus_m    = re.match(r'(\d+)', job_cpus)
+
+    if cpus_per_task and ntasks:
+        cpu_cap  = int(cpus_per_task) * int(ntasks)
+        cpu_src  = f'SLURM_CPUS_PER_TASK={cpus_per_task} x SLURM_NTASKS={ntasks}'
+    elif cpus_per_task:
+        cpu_cap  = int(cpus_per_task)
+        cpu_src  = f'SLURM_CPUS_PER_TASK={cpus_per_task}'
+    elif job_cpus_m:
+        cpu_cap  = int(job_cpus_m.group(1))
+        cpu_src  = f'SLURM_JOB_CPUS_PER_NODE={job_cpus} -> {cpu_cap}'
+    elif ntasks:
+        cpu_cap  = int(ntasks)
+        cpu_src  = f'SLURM_NTASKS={ntasks}'
+    else:
+        cpu_cap  = os.cpu_count() or 1
+        cpu_src  = 'os.cpu_count() (no SLURM allocation detected)'
+
+    workers        = max(1, min(mem_cap, cpu_cap, n_jobs))
+    projected_used = per_worker * workers
+    msg(f'Memory available   : {available / 1024**3:.2f} GB')
+    msg(f'Est. memory/worker : {per_worker / 1024**3:.2f} GB ({per_worker / 1024**2:.0f} MB)')
+    msg(f'Workers (mem cap)  : {mem_cap}')
+    msg(f'Workers (CPU cap)  : {cpu_cap}  [{cpu_src}]')
+    msg(f'Workers (selected) : {workers}  [min(mem={mem_cap}, cpu={cpu_cap}, jobs={n_jobs})]')
+    msg(f'Projected usage    : {workers} workers x {per_worker / 1024**2:.0f} MB '
+        f'= {projected_used / 1024**3:.2f} GB of {available / 1024**3:.2f} GB available '
+        f'({100.0 * projected_used / available:.0f}%)')
+    return workers
+
+
+def chunk_jobs(jobs, n_chunks):
+    """Round-robin split so any per-channel cost trend (e.g. RFI flagging
+    clustered in frequency) is spread evenly across workers."""
+    n_chunks = max(1, min(n_chunks, len(jobs)))
+    chunks = [[] for _ in range(n_chunks)]
+    for i, job in enumerate(jobs):
+        chunks[i % n_chunks].append(job)
+    return [c for c in chunks if c]
 
 
 # =============================================================================
@@ -235,6 +373,162 @@ def check_position(fname, image, x, y, snr_thresh=5.0):
 
 
 # =============================================================================
+# Per-channel IQUV fitting -- shared parallel worker
+#
+# Used by both the bandpass and pol-angle calibrator per-channel fits. Each
+# job is self-contained (job dict in, result dict out) so it can run in a
+# ProcessPoolExecutor worker, and every estimate-file name carries the
+# calibrator tag and channel number so concurrent workers never share a file.
+# =============================================================================
+
+def build_channel_jobs(chan_I_images, cal_tag, I_xpix, I_ypix, mfs_freq_GHz, mfs_bmaj_asec,
+                       freeze_quv_to_i, compute_pol):
+    """One fit_channel_iquv job per channel Stokes I image, numbered from 1."""
+    return [{'ch_num': n + 1, 'cal_tag': cal_tag,
+             'chan_I': chan_I,
+             'chan_Q': chan_I.replace('-I-image.fits', '-Q-image.fits'),
+             'chan_U': chan_I.replace('-I-image.fits', '-U-image.fits'),
+             'chan_V': chan_I.replace('-I-image.fits', '-V-image.fits'),
+             'I_xpix': I_xpix, 'I_ypix': I_ypix,
+             'mfs_freq_GHz': mfs_freq_GHz, 'mfs_bmaj_asec': mfs_bmaj_asec,
+             'freeze_quv_to_i': freeze_quv_to_i, 'compute_pol': compute_pol}
+            for n, chan_I in enumerate(chan_I_images)]
+
+
+def fit_channel_iquv(job):
+    """
+    Fit Stokes I, Q, U, V for one channel-image group.
+
+    Stokes I is always position-checked (check_position) against the seed
+    (I_xpix, I_ypix) from the MFS fit. Q and U follow the same check_position
+    rule unless `freeze_quv_to_i` is set, in which case they -- like V, which
+    is ALWAYS frozen -- are fit with the position fixed to Stokes I ('xyabp').
+
+    Returns (ch_num, result): result is None if the channel was skipped
+    (missing Stokes image, flagged/anomalous beam) or the fit raised,
+    otherwise a dict of the per-channel values. With `compute_pol`, the
+    result also holds LP_frac, LP_frac_err, LP_EVPA and LP_EVPA_err.
+    """
+    ch_num = job['ch_num']
+    cal_tag = job['cal_tag']
+    chan_I, chan_Q, chan_U, chan_V = job['chan_I'], job['chan_Q'], job['chan_U'], job['chan_V']
+    I_xpix, I_ypix = job['I_xpix'], job['I_ypix']
+
+    missing_chan = [s for s, im in [('Q', chan_Q), ('U', chan_U), ('V', chan_V)]
+                    if not os.path.exists(im)]
+    if missing_chan:
+        msg(f'    Channel {ch_num}: missing Stokes {missing_chan} -- skipping')
+        return ch_num, None
+
+    try:
+        c_freq_GHz = imhead(chan_I, mode='get', hdkey='CRVAL3')['value'] / 1.0e9
+        c_bmaj     = imhead(chan_I, mode='get', hdkey='bmaj')['value']
+        c_bmin     = imhead(chan_I, mode='get', hdkey='bmin')['value']
+        c_bpa      = imhead(chan_I, mode='get', hdkey='bpa')['value']
+
+        # Skip heavily flagged channels (beam >> MFS beam scaled by freq ratio)
+        beam_scaled = job['mfs_freq_GHz'] / c_freq_GHz * job['mfs_bmaj_asec']
+        if c_bmaj > 3.0 * beam_scaled:
+            msg(f'    Channel {ch_num}: BMAJ = {c_bmaj:.2f}" >> 3 x scaled MFS '
+                f'beam = {3.0 * beam_scaled:.2f}" -- likely heavily flagged, skipping')
+            return ch_num, None
+
+        # Stokes I -- check_position
+        est_I = f'estimate_I_{cal_tag}_chan{ch_num}.txt'
+        check_position(est_I, chan_I, I_xpix, I_ypix)
+        cI_imfit = get_imfit_values(est_I, chan_I, I_xpix, I_ypix)
+        c_flux_I = cI_imfit['results']['component0']['peak']['value'] * 1e3
+        c_err_I  = cI_imfit['results']['component0']['peak']['error'] * 1e3
+        cI_xpix  = cI_imfit['results']['component0']['pixelcoords'][0]
+        cI_ypix  = cI_imfit['results']['component0']['pixelcoords'][1]
+        c_rms_I  = get_imstat_values(chan_I, cI_xpix, cI_ypix)[3] * 1e3
+
+        result = {'freq_GHz': c_freq_GHz, 'bmaj_asec': c_bmaj, 'bmin_asec': c_bmin,
+                  'bpa_deg': c_bpa, 'I_flux_mJy': c_flux_I, 'I_err_mJy': c_err_I,
+                  'I_rms_mJy': c_rms_I}
+
+        # Stokes Q, U -- check_position unless frozen to I; Stokes V -- ALWAYS frozen
+        for stokes, im, freeze in [('Q', chan_Q, job['freeze_quv_to_i']),
+                                   ('U', chan_U, job['freeze_quv_to_i']),
+                                   ('V', chan_V, True)]:
+            est_fname = f'estimate_{stokes}_{cal_tag}_chan{ch_num}.txt'
+            if freeze:
+                make_estimate(est_fname, im, I_xpix, I_ypix, 'xyabp')
+            else:
+                check_position(est_fname, im, I_xpix, I_ypix)
+            s_imfit = get_imfit_values(est_fname, im, I_xpix, I_ypix)
+            s_xpix  = s_imfit['results']['component0']['pixelcoords'][0]
+            s_ypix  = s_imfit['results']['component0']['pixelcoords'][1]
+            result[f'{stokes}_flux_mJy'] = s_imfit['results']['component0']['peak']['value'] * 1e3
+            result[f'{stokes}_err_mJy']  = s_imfit['results']['component0']['peak']['error'] * 1e3
+            result[f'{stokes}_rms_mJy']  = get_imstat_values(im, s_xpix, s_ypix)[3] * 1e3
+
+        msg(f'    Channel {ch_num}: freq = {c_freq_GHz:.4f} GHz  '
+            f'I={result["I_flux_mJy"]:.3f}  Q={result["Q_flux_mJy"]:.3f}  '
+            f'U={result["U_flux_mJy"]:.3f}  V={result["V_flux_mJy"]:.3f}  [mJy]')
+
+        if job['compute_pol']:
+            flux_Q, flux_U = result['Q_flux_mJy'], result['U_flux_mJy']
+            rms_Q, rms_U   = result['Q_rms_mJy'], result['U_rms_mJy']
+            flux_P0, rms_P = calculate_P0(np.sqrt(flux_Q**2 + flux_U**2), rms_Q, rms_U)
+            LP_frac        = flux_P0 / c_flux_I * 100.0
+            result['LP_frac']     = LP_frac
+            result['LP_frac_err'] = LP_frac * np.sqrt((c_rms_I / c_flux_I)**2 +
+                                                      (rms_P / max(flux_P0, 1e-10))**2)
+            result['LP_EVPA']     = 0.5 * np.arctan2(flux_U, flux_Q) * 180.0 / np.pi
+            result['LP_EVPA_err'] = (0.5 * np.sqrt(flux_U**2 * rms_Q**2 + flux_Q**2 * rms_U**2) /
+                                     max(flux_U**2 + flux_Q**2, 1e-30) * 180.0 / np.pi)
+            msg(f'      LP={LP_frac:.4f}%  EVPA={result["LP_EVPA"]:.4f} deg')
+
+        return ch_num, result
+
+    except Exception as e:
+        msg(f'    Channel {ch_num} fitting failed: {e}')
+        return ch_num, None
+
+
+def fit_channel_iquv_batch(jobs):
+    """Pool entry point: fits a worker's whole chunk of channels in one call."""
+    return [fit_channel_iquv(job) for job in jobs]
+
+
+def run_channel_pool(jobs):
+    """
+    Fit one scan's channels in a process pool. Returns the non-skipped results
+    as a list of result dicts in channel order.
+    """
+    if not jobs:
+        return []
+
+    max_workers = compute_max_workers([jobs[0]['chan_I']], len(jobs))
+    msg(f'  Channel-fitting pool: {max_workers} worker(s) for {len(jobs)} channel(s)')
+    chan_results = {}
+    with ProcessPoolExecutor(max_workers=max_workers,
+                             mp_context=mp.get_context('spawn')) as chan_pool:
+        futures = [chan_pool.submit(fit_channel_iquv_batch, chunk)
+                   for chunk in chunk_jobs(jobs, max_workers)]
+        for future in as_completed(futures):
+            for ch_num, result in future.result():
+                chan_results[ch_num] = result
+
+    return [chan_results[n] for n in sorted(chan_results) if chan_results[n] is not None]
+
+
+def cleanup_estimate_files():
+    """Remove the imfit estimate and check-position scratch files written for the calibrators."""
+    removed = 0
+    for tag in ('bpcal', 'pacal'):
+        for fpath in glob.glob(f'estimate_*_{tag}*.txt') + glob.glob(f'check_pos_estimate_*_{tag}*.txt'):
+            try:
+                os.remove(fpath)
+                removed += 1
+            except OSError:
+                pass
+    if removed:
+        msg(f'Cleaned up {removed} temporary estimate/check-position file(s).')
+
+
+# =============================================================================
 # Image discovery
 # =============================================================================
 
@@ -349,10 +643,10 @@ def cal_json_path(cal_name, first_prefix):
 
 def _mad_ylim(ax, flux, rms, floor_lo=None):
     """
-    Set y-axis limits using MAD-based 5-sigma outlier rejection.
+    Set y-axis limits using MAD-based PLOT_YLIM_MAD_SIGMA outlier rejection.
 
     The limits are driven by the actual data range (min(flux - rms),
-    max(flux + rms)) of inlier points, with 15% padding.  Symmetry around
+    max(flux + rms)) of inlier points, padded by PLOT_YLIM_PAD.  Symmetry around
     zero is NOT enforced -- if the data run from -2 to 20000, the axis
     will be roughly -2 to 20000, not -20000 to 20000.
 
@@ -370,14 +664,13 @@ def _mad_ylim(ax, flux, rms, floor_lo=None):
     med   = np.nanmedian(flux)
     mad   = np.nanmedian(np.abs(flux - med))
     sigma = 1.4826 * mad
-    inlier = (np.abs(flux - med) <= 5.0 * sigma) if sigma > 0 else np.ones(len(flux), dtype=bool)
+    inlier = (np.abs(flux - med) <= PLOT_YLIM_MAD_SIGMA * sigma) if sigma > 0 else np.ones(len(flux), dtype=bool)
 
     lo = np.nanmin(flux[inlier] - rms[inlier])
     hi = np.nanmax(flux[inlier] + rms[inlier])
 
     if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
-        span = hi - lo
-        pad  = 0.15 * span if span > 0 else 0.5
+        pad  = PLOT_YLIM_PAD * (hi - lo)
         lo   = max(floor_lo, lo - pad) if floor_lo is not None else lo - pad
         ax.set_ylim(lo, hi + pad)
 
@@ -791,77 +1084,20 @@ def get_primary_systematic(bpcal_name, bpcal_pos):
                 msg(f'  Channel I images not found at prefix; '
                     f'using diagnostic_zoom ({len(CHAN_I_images)} found)')
 
-        scan_chan = {
-            'freq_GHz'  : [], 'I_flux_mJy': [], 'Q_flux_mJy': [], 'U_flux_mJy': [],
-            'V_flux_mJy': [], 'I_rms_mJy' : [], 'Q_rms_mJy' : [], 'U_rms_mJy' : [],
-            'V_rms_mJy' : [],
-        }
+        chan_keys = ['freq_GHz', 'I_flux_mJy', 'Q_flux_mJy', 'U_flux_mJy', 'V_flux_mJy',
+                     'I_rms_mJy', 'Q_rms_mJy', 'U_rms_mJy', 'V_rms_mJy']
+        scan_chan = {key: [] for key in chan_keys}
 
         if not CHAN_I_images:
             msg(f'  No per-channel Stokes I images found for this scan -- '
                 f'skipping channel fits')
         else:
-            msg(f'  Found {len(CHAN_I_images)} per-channel I image(s) -- looping')
-
-            for n, ch_I in enumerate(CHAN_I_images):
-
-                ch_Q = ch_I.replace('-I-image.fits', '-Q-image.fits')
-                ch_U = ch_I.replace('-I-image.fits', '-U-image.fits')
-                ch_V = ch_I.replace('-I-image.fits', '-V-image.fits')
-
-                missing_chan = [s for s, im in [('Q', ch_Q), ('U', ch_U), ('V', ch_V)]
-                                if not os.path.exists(im)]
-                if missing_chan:
-                    msg(f'    Channel {n+1}: missing Stokes {missing_chan} -- skipping')
-                    continue
-
-                try:
-                    c_freq_GHz = imhead(ch_I, mode='get', hdkey='CRVAL3')['value'] / 1.0e9
-                    c_bmaj     = imhead(ch_I, mode='get', hdkey='bmaj')['value']
-
-                    # Skip heavily flagged channels (beam >> MFS beam scaled by freq ratio)
-                    beam_scaled = freq_GHz / c_freq_GHz * bmaj
-                    if c_bmaj > 3.0 * beam_scaled:
-                        msg(f'    Channel {n+1}: BMAJ = {c_bmaj:.2f}" >> 3 x scaled MFS '
-                            f'beam = {3.0 * beam_scaled:.2f}" -- likely heavily flagged, '
-                            f'skipping')
-                        continue
-
-                    # Stokes I -- check_position
-                    check_position('estimate_I_bpcal_chan.txt', ch_I, I_xpix, I_ypix)
-                    cI_imfit = get_imfit_values('estimate_I_bpcal_chan.txt', ch_I,
-                                                 I_xpix, I_ypix)
-                    c_flux_I = cI_imfit['results']['component0']['peak']['value'] * 1e3
-                    cI_xpix  = cI_imfit['results']['component0']['pixelcoords'][0]
-                    cI_ypix  = cI_imfit['results']['component0']['pixelcoords'][1]
-                    c_rms_I  = get_imstat_values(ch_I, cI_xpix, cI_ypix)[3] * 1e3
-
-                    # Stokes Q, U, V -- position FROZEN to Stokes I ('xyabp')
-                    c_flux = {'I': c_flux_I}
-                    c_rms  = {'I': c_rms_I}
-                    for stokes, im in [('Q', ch_Q), ('U', ch_U), ('V', ch_V)]:
-                        est_fname = f'estimate_{stokes}_bpcal_chan.txt'
-                        make_estimate(est_fname, im, I_xpix, I_ypix, 'xyabp')
-                        c_imfit = get_imfit_values(est_fname, im, I_xpix, I_ypix)
-                        c_flux[stokes] = c_imfit['results']['component0']['peak']['value'] * 1e3
-                        c_rms[stokes]  = get_imstat_values(im, I_xpix, I_ypix)[3] * 1e3
-
-                    msg(f'    Channel {n+1}/{len(CHAN_I_images)}: freq = {c_freq_GHz:.4f} GHz  '
-                        f'I={c_flux["I"]:.3f}  Q={c_flux["Q"]:.3f}  '
-                        f'U={c_flux["U"]:.3f}  V={c_flux["V"]:.3f}  [mJy]')
-
-                    scan_chan['freq_GHz'  ].append(c_freq_GHz)
-                    scan_chan['I_flux_mJy'].append(c_flux['I'])
-                    scan_chan['Q_flux_mJy'].append(c_flux['Q'])
-                    scan_chan['U_flux_mJy'].append(c_flux['U'])
-                    scan_chan['V_flux_mJy'].append(c_flux['V'])
-                    scan_chan['I_rms_mJy' ].append(c_rms['I'])
-                    scan_chan['Q_rms_mJy' ].append(c_rms['Q'])
-                    scan_chan['U_rms_mJy' ].append(c_rms['U'])
-                    scan_chan['V_rms_mJy' ].append(c_rms['V'])
-
-                except Exception as e:
-                    msg(f'    Channel {n+1} fitting failed: {e}')
+            msg(f'  Found {len(CHAN_I_images)} per-channel I image(s)')
+            jobs = build_channel_jobs(CHAN_I_images, 'bpcal', I_xpix, I_ypix, freq_GHz, bmaj,
+                                      freeze_quv_to_i=True, compute_pol=False)
+            for result in run_channel_pool(jobs):
+                for key in chan_keys:
+                    scan_chan[key].append(result[key])
 
         chan_dict[scan_key] = scan_chan
 
@@ -1136,119 +1372,20 @@ def get_polcal_polarization(pacal_name, pacal_pos, bpcal_sys):
                 plot_cal_spectrum(output_dictionary, pacal_name, scan_key)
                 continue
 
-        msg(f'  Found {len(CHAN_I_images)} per-channel I image(s) -- looping')
+        msg(f'  Found {len(CHAN_I_images)} per-channel I image(s)')
 
-        output_dictionary['CHAN'][scan_key] = {
-            'freq_GHz'    : [], 'bmaj_asec'  : [], 'bmin_asec'   : [], 'bpa_deg'     : [],
-            'I_flux_mJy'  : [], 'Q_flux_mJy' : [], 'U_flux_mJy'  : [], 'V_flux_mJy'  : [],
-            'I_rms_mJy'   : [], 'Q_rms_mJy'  : [], 'U_rms_mJy'   : [], 'V_rms_mJy'   : [],
-            'I_err_mJy'   : [], 'Q_err_mJy'  : [], 'U_err_mJy'   : [], 'V_err_mJy'   : [],
-            'LP_frac'     : [], 'LP_frac_err': [], 'LP_EVPA'      : [], 'LP_EVPA_err' : [],
-        }
+        chan_keys = ['freq_GHz', 'bmaj_asec', 'bmin_asec', 'bpa_deg',
+                     'I_flux_mJy', 'Q_flux_mJy', 'U_flux_mJy', 'V_flux_mJy',
+                     'I_rms_mJy', 'Q_rms_mJy', 'U_rms_mJy', 'V_rms_mJy',
+                     'I_err_mJy', 'Q_err_mJy', 'U_err_mJy', 'V_err_mJy',
+                     'LP_frac', 'LP_frac_err', 'LP_EVPA', 'LP_EVPA_err']
+        cd = output_dictionary['CHAN'][scan_key] = {key: [] for key in chan_keys}
 
-        for n, chan_I in enumerate(CHAN_I_images):
-
-            chan_Q = chan_I.replace('-I-image.fits', '-Q-image.fits')
-            chan_U = chan_I.replace('-I-image.fits', '-U-image.fits')
-            chan_V = chan_I.replace('-I-image.fits', '-V-image.fits')
-
-            missing_chan = [s for s, im in [('Q', chan_Q), ('U', chan_U), ('V', chan_V)]
-                            if not os.path.exists(im)]
-            if missing_chan:
-                msg(f'    Channel {n+1}: missing Stokes {missing_chan} -- skipping')
-                continue
-
-            try:
-                msg('')
-                msg(f'    Channel {n+1}/{len(CHAN_I_images)}: {os.path.basename(chan_I)}')
-
-                c_freq_GHz = imhead(chan_I, mode='get', hdkey='CRVAL3')['value'] / 1.0e9
-                c_bmaj     = imhead(chan_I, mode='get', hdkey='bmaj')['value']
-                c_bmin     = imhead(chan_I, mode='get', hdkey='bmin')['value']
-                c_bpa      = imhead(chan_I, mode='get', hdkey='bpa')['value']
-
-                # Skip heavily flagged channels (beam >> MFS beam scaled by freq ratio)
-                beam_scaled = (output_dictionary['MFS'][scan_key]['freq_GHz'] /
-                               c_freq_GHz * output_dictionary['MFS'][scan_key]['bmaj_asec'])
-                if c_bmaj > 3.0 * beam_scaled:
-                    msg(f'    Skipping: BMAJ = {c_bmaj:.2f}" >> 3 x scaled MFS beam '
-                        f'= {3.0 * beam_scaled:.2f}" -- likely heavily flagged channel')
-                    continue
-
-                # Stokes I -- check_position
-                check_position('estimate_I_chan.txt', chan_I, I_xpix, I_ypix)
-                cI_imfit  = get_imfit_values('estimate_I_chan.txt', chan_I, I_xpix, I_ypix)
-                c_flux_I  = cI_imfit['results']['component0']['peak']['value'] * 1e3
-                c_err_I   = cI_imfit['results']['component0']['peak']['error'] * 1e3
-                cI_xpix   = cI_imfit['results']['component0']['pixelcoords'][0]
-                cI_ypix   = cI_imfit['results']['component0']['pixelcoords'][1]
-                c_rms_I   = get_imstat_values(chan_I, cI_xpix, cI_ypix)[3] * 1e3
-
-                # Stokes Q -- check_position
-                check_position('estimate_Q_chan.txt', chan_Q, I_xpix, I_ypix)
-                cQ_imfit  = get_imfit_values('estimate_Q_chan.txt', chan_Q, I_xpix, I_ypix)
-                c_flux_Q  = cQ_imfit['results']['component0']['peak']['value'] * 1e3
-                c_err_Q   = cQ_imfit['results']['component0']['peak']['error'] * 1e3
-                cQ_xpix   = cQ_imfit['results']['component0']['pixelcoords'][0]
-                cQ_ypix   = cQ_imfit['results']['component0']['pixelcoords'][1]
-                c_rms_Q   = get_imstat_values(chan_Q, cQ_xpix, cQ_ypix)[3] * 1e3
-
-                # Stokes U -- check_position
-                check_position('estimate_U_chan.txt', chan_U, I_xpix, I_ypix)
-                cU_imfit  = get_imfit_values('estimate_U_chan.txt', chan_U, I_xpix, I_ypix)
-                c_flux_U  = cU_imfit['results']['component0']['peak']['value'] * 1e3
-                c_err_U   = cU_imfit['results']['component0']['peak']['error'] * 1e3
-                cU_xpix   = cU_imfit['results']['component0']['pixelcoords'][0]
-                cU_ypix   = cU_imfit['results']['component0']['pixelcoords'][1]
-                c_rms_U   = get_imstat_values(chan_U, cU_xpix, cU_ypix)[3] * 1e3
-
-                # Stokes V -- FROZEN to Stokes I position ('xyabp')
-                make_estimate('estimate_V_chan.txt', chan_V, I_xpix, I_ypix, 'xyabp')
-                cV_imfit  = get_imfit_values('estimate_V_chan.txt', chan_V, I_xpix, I_ypix)
-                c_flux_V  = cV_imfit['results']['component0']['peak']['value'] * 1e3
-                c_err_V   = cV_imfit['results']['component0']['peak']['error'] * 1e3
-                c_rms_V   = get_imstat_values(chan_V, I_xpix, I_ypix)[3] * 1e3
-
-                # Derived polarization quantities
-                c_flux_P           = np.sqrt(c_flux_Q**2 + c_flux_U**2)
-                c_flux_P0, c_rms_P = calculate_P0(c_flux_P, c_rms_Q, c_rms_U)
-                c_LP_frac          = c_flux_P0 / c_flux_I * 100.0
-                c_LP_frac_err      = c_LP_frac * np.sqrt(
-                    (c_rms_I / c_flux_I)**2 +
-                    (c_rms_P / max(c_flux_P0, 1e-10))**2)
-                c_LP_EVPA          = 0.5 * np.arctan2(c_flux_U, c_flux_Q) * 180.0 / np.pi
-                c_LP_EVPA_err      = (0.5 * np.sqrt(c_flux_U**2 * c_rms_Q**2 +
-                                                     c_flux_Q**2 * c_rms_U**2) /
-                                      max(c_flux_U**2 + c_flux_Q**2, 1e-30) * 180.0 / np.pi)
-
-                msg(f'      I={c_flux_I:.3f}  Q={c_flux_Q:.3f}  '
-                    f'U={c_flux_U:.3f}  V={c_flux_V:.3f}  [mJy]  '
-                    f'LP={c_LP_frac:.4f}%  EVPA={c_LP_EVPA:.4f} deg')
-
-                cd = output_dictionary['CHAN'][scan_key]
-                cd['freq_GHz'   ].append(c_freq_GHz)
-                cd['bmaj_asec'  ].append(c_bmaj)
-                cd['bmin_asec'  ].append(c_bmin)
-                cd['bpa_deg'    ].append(c_bpa)
-                cd['I_flux_mJy' ].append(c_flux_I)
-                cd['Q_flux_mJy' ].append(c_flux_Q)
-                cd['U_flux_mJy' ].append(c_flux_U)
-                cd['V_flux_mJy' ].append(c_flux_V)
-                cd['I_rms_mJy'  ].append(c_rms_I)
-                cd['Q_rms_mJy'  ].append(c_rms_Q)
-                cd['U_rms_mJy'  ].append(c_rms_U)
-                cd['V_rms_mJy'  ].append(c_rms_V)
-                cd['I_err_mJy'  ].append(c_err_I)
-                cd['Q_err_mJy'  ].append(c_err_Q)
-                cd['U_err_mJy'  ].append(c_err_U)
-                cd['V_err_mJy'  ].append(c_err_V)
-                cd['LP_frac'    ].append(c_LP_frac)
-                cd['LP_frac_err'].append(c_LP_frac_err)
-                cd['LP_EVPA'    ].append(c_LP_EVPA)
-                cd['LP_EVPA_err'].append(c_LP_EVPA_err)
-
-            except Exception as e:
-                msg(f'    Channel {n+1} fitting failed: {e}')
+        jobs = build_channel_jobs(CHAN_I_images, 'pacal', I_xpix, I_ypix, freq_GHz, bmaj,
+                                  freeze_quv_to_i=False, compute_pol=True)
+        for result in run_channel_pool(jobs):
+            for key in chan_keys:
+                cd[key].append(result[key])
 
         # Per-scan IQUV spectrum plot (after channel data are collected for this scan)
         plot_cal_spectrum(output_dictionary, pacal_name, scan_key)
@@ -1523,6 +1660,7 @@ def main():
     msg(f'    PACAL_RESIDUAL_VFRAC = {systematics["PACAL_RESIDUAL_VFRAC"]:.6f}'
         + ('' if ran_pacal else '  [not measured -- pacal skipped]'))
     msg(f'{"="*70}')
+    cleanup_estimate_files()
     msg('RMSYNTH_01B_systematics.py complete.')
 
 
