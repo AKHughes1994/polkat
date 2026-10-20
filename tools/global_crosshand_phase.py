@@ -229,12 +229,12 @@ os.makedirs(RESULTS, exist_ok=True)
 # -----------------------------------------------------------------------
 #  Which fields does this run on?
 #
-#  If you don't pass --pacal-name, we use every unique field name in
-#  project_info.json except the primary: your target(s), the secondaries,
-#  and the polarization-angle calibrator. Solving Xf across all of them
-#  (not just the polarization-angle calibrator) gives the solve more S/N
-#  to work with. Pass --pacal-name explicitly if you want to restrict it
-#  to specific field(s) instead.
+#  If you don't pass --pacal-name, we use the secondaries and the
+#  polarization-angle calibrator from project_info.json; the primary and the
+#  targets are never included. Solving Xf across the calibrators (not just
+#  the polarization-angle calibrator) gives the solve more S/N to work with.
+#  Pass --pacal-name explicitly if you want to restrict it to specific
+#  field(s) instead.
 #
 #  Each target's K/Gp/G calibration comes from its secondary, per
 #  target_cal_map in project_info.json. Secondaries and the
@@ -259,13 +259,13 @@ if CAL_1GC_REPLACE_SECONDARY_WITH_PRIMARY:
     pcal_names     = [p for p in pcal_names if p not in CAL_1GC_BAD_SECONDARIES]
 
 # ======================= DEFAULT FIELDS INCLUDED IN THE Xf SOLVE =======================
-#   targets (target_names)  +  secondaries (pcal_names)  +  polarization-angle
-#   calibrator (polang_name).  The primary is never included.
+#   secondaries (pcal_names)  +  polarization-angle calibrator (polang_name).
+#   The primary and the targets are never included.
 # =======================================================================================
 if pacal_name == '':
-    msg('pacal_name is empty — using the default fields (targets + secondaries + polang cal).')
+    msg('pacal_name is empty — using the default fields (secondaries + polang cal).')
 
-    _default_fields = list(target_names) + list(pcal_names)
+    _default_fields = list(pcal_names)
     _polang_name    = str(project_info.get('polang_name', ''))
     if _polang_name:
         _pre_list = [f.strip() for f in PRE_FIELDS.split(',')]
@@ -1988,6 +1988,8 @@ if project_info.get('polang_name', ''):
     _pn = str(project_info['polang_name'])
     gainfield_groups.setdefault(_pn, []).append(_pn)
 for _t in target_names:
+    if _t not in _tmp_fields:
+        continue
     _sec = target_to_secondary.get(_t, '')
     if _sec:
         gainfield_groups.setdefault(_sec, []).append(_t)
