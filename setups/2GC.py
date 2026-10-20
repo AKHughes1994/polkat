@@ -72,9 +72,6 @@ def main():
     # Set this flag to True to enable batch submission (4 at a time), False for no batching
     BATCH_FIELD_SUBMISSION = False
 
-    # Set this flag to True to force all jobs to use 8 cores (useful for debugging/testing)
-    FORCE_CORES_8 = True
-
     # Set to a directory path to use a single shared temp directory, or '' to use per-field temp directories
     OVERRIDE_TEMP_DIR = '/mnt/scratchssd'
 
@@ -418,7 +415,6 @@ def main():
             step['slurm_config'] = cfg.SLURM_WSCLEAN
             step['pbs_config'] = cfg.PBS_WSCLEAN
             absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
-            cores = '8' if FORCE_CORES_8 else step['glam_config']['CPUS']
             syscall = ''
             prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
             # Adjust parameters based on field type
@@ -444,7 +440,6 @@ def main():
                     weight=weight_blind,
                     imsize = imsize_blind,
                     maxchan = maxchan_blind,
-                    cores = cores,
                     absmem = absmem)
             for call in imcall: 
                 syscall += prefix + call + '\n\n'
@@ -487,7 +482,6 @@ def main():
         step['slurm_config'] = cfg.SLURM_WSCLEAN
         step['pbs_config'] = cfg.PBS_WSCLEAN
         absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
-        cores = '8' if FORCE_CORES_8 else step['glam_config']['CPUS']
         syscall = ''
         prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
         imsize_dmask = CALIBRATOR_IMSIZE if not is_target else cfg.WSC_IMSIZE
@@ -514,7 +508,6 @@ def main():
                 weight=weight_dmask,
                 imsize = imsize_dmask,
                 maxchan = maxchan_dmask,
-                cores = cores,
                 absmem = absmem)
         for call in imcall: 
             syscall += prefix + call + '\n\n'
@@ -549,7 +542,6 @@ def main():
         step['slurm_config'] = cfg.SLURM_PREDICT
         step['pbs_config'] = cfg.PBS_WSCLEAN
         absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
-        cores = '8' if FORCE_CORES_8 else step['glam_config']['CPUS']
         prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
         syscall = prefix + 'python3 '+TOOLS+'/fix_nan_models.py ' + data_img_prefix + '\n\n'
         if cfg.MOD_MODEL_SELFCAL and cfg.WSC_POL != 'I':
@@ -567,7 +559,6 @@ def main():
                                      f'--spatial {mask}\n\n')
         syscall += prefix + gen.generate_syscall_predict(msname = myms,
                 imgname = data_img_prefix,
-                cores = cores,
                 absmem = absmem,
                 tempdir = temp_dir,
                 chanout = chanout_dmask)
@@ -598,7 +589,6 @@ def main():
             else:
                 step['comment'] = 'Run Quartical full 2x2 complex self-calibration on {}'.format(fieldname)
             step['glam_config'] = cfg.GLAM_COREHEAVY
-            cores = '8' if FORCE_CORES_8 else step['glam_config']['CPUS']
             syscall = CONTAINER_RUNNER + QUARTICAL_CONTAINER+' ' if USE_SINGULARITY else ''
             extra_args = f'output.gain_directory={gain_outdir_2GC} output.log_directory={log_outdir_2GC}'
             if not is_target and not cfg.CAL_1GC_APPLYPARANG:
@@ -638,7 +628,6 @@ def main():
             step['slurm_config'] = cfg.SLURM_WSCLEAN
             step['pbs_config'] = cfg.PBS_WSCLEAN
             absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
-            cores = '8' if FORCE_CORES_8 else step['glam_config']['CPUS']
             syscall = ''
             prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
             imcall = gen.generate_syscall_wsclean(mslist = [myms],
@@ -650,7 +639,6 @@ def main():
                     tukeytaper=tukeytaper,
                     minuvl = minuvl,
                     maxuvl = maxuvl,
-                    cores = cores,
                     nomodel=True,
                     sourcelist = False,
                     qu_automask_scale = 1.0,
@@ -723,7 +711,6 @@ def main():
                 step['slurm_config'] = cfg.SLURM_PREDICT
                 step['pbs_config'] = cfg.PBS_WSCLEAN
                 absmem = gen.absmem_helper(step, INFRASTRUCTURE, cfg.WSC_ABSMEM)
-                cores = '8' if FORCE_CORES_8 else step['glam_config']['CPUS']
                 py_pfx  = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
                 wsc_pfx = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' '  if USE_SINGULARITY else ''
                 syscall  = py_pfx  + 'python3 ' + TOOLS + '/fix_nan_models.py ' + inter_img_prefix + '\n\n'
@@ -739,7 +726,6 @@ def main():
                 syscall +=           '--colname DIR1_DATA ' + stage2_ms + '\n\n'
                 syscall += wsc_pfx + gen.generate_syscall_predict(msname = stage2_ms,
                         imgname  = dir_img_prefix,
-                        cores    = cores,
                         absmem   = absmem,
                         tempdir  = temp_dir,
                         chanout  = chanout_inter) + '\n\n'
@@ -747,7 +733,6 @@ def main():
                 syscall +=           '--fromcol MODEL_DATA --tocol DIR1_DATA ' + stage2_ms + '\n\n'
                 syscall += wsc_pfx + gen.generate_syscall_predict(msname = stage2_ms,
                         imgname  = inter_img_prefix,
-                        cores    = cores,
                         absmem   = absmem,
                         tempdir  = temp_dir,
                         chanout  = chanout_inter)
@@ -761,7 +746,6 @@ def main():
                 step['dependency'] = n - 1
                 step['id'] = 'CL2GC'+code
                 step['glam_config'] = cfg.GLAM_COREHEAVY
-                cores = '8' if FORCE_CORES_8 else step['glam_config']['CPUS']
                 syscall = CONTAINER_RUNNER + QUARTICAL_CONTAINER+' ' if USE_SINGULARITY else ''
                 extra_args = (f'output.gain_directory={gain_outdir_stage2} output.log_directory={log_outdir_stage2}'
                               f' input_model.recipe={dd_recipe} output.subtract_directions={dd_subtract}')
@@ -793,7 +777,6 @@ def main():
                 step['slurm_config'] = cfg.SLURM_PREDICT
                 step['pbs_config'] = cfg.PBS_WSCLEAN
                 absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
-                cores = '8' if FORCE_CORES_8 else step['glam_config']['CPUS']
                 prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
                 syscall = prefix + 'python3 '+TOOLS+'/fix_nan_models.py ' + inter_img_prefix + '\n\n'
                 if cfg.MOD_MODEL_SELFCAL and cfg.WSC_POL != 'I':
@@ -804,7 +787,6 @@ def main():
                                          f'--spatial {spatial_arg}\n\n')
                 syscall += prefix + gen.generate_syscall_predict(msname = stage2_ms,
                         imgname = inter_img_prefix,
-                        cores = cores,
                         absmem = absmem,
                         tempdir = temp_dir,
                         chanout = chanout_inter)
@@ -830,7 +812,6 @@ def main():
                 else:
                     step['comment'] = 'Run Quartical phase-only self-calibration (stage 2) on {}'.format(fieldname)
                     step['glam_config'] = cfg.GLAM_COREHEAVY
-                    cores = '8' if FORCE_CORES_8 else step['glam_config']['CPUS']
                     syscall = CONTAINER_RUNNER + QUARTICAL_CONTAINER+' ' if USE_SINGULARITY else ''
                     extra_args = f'output.gain_directory={gain_outdir_stage2} output.log_directory={log_outdir_stage2}'
                     if not cfg.CAL_1GC_APPLYPARANG:
@@ -861,7 +842,6 @@ def main():
         step['slurm_config'] = cfg.SLURM_WSCLEAN
         step['pbs_config'] = cfg.PBS_WSCLEAN
         absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
-        cores = '8' if FORCE_CORES_8 else step['glam_config']['CPUS']
         syscall = ''
         prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
         imsize_pcal  = cfg.WSC_IMSIZE if is_target else CALIBRATOR_IMSIZE
@@ -887,7 +867,6 @@ def main():
                 weight = weight_pcal,
                 imsize = imsize_pcal,
                 maxchan = maxchan_pcal,
-                cores = cores,
                 absmem = absmem)
         for call in imcall: 
             syscall += prefix + call + '\n\n'
@@ -925,7 +904,6 @@ def main():
         step['slurm_config'] = cfg.SLURM_WSCLEAN
         step['pbs_config'] = cfg.PBS_WSCLEAN
         absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
-        cores = '8' if FORCE_CORES_8 else step['glam_config']['CPUS']
         syscall = ''
         prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
         imcall = gen.generate_syscall_wsclean(mslist = [myms],
@@ -943,7 +921,6 @@ def main():
                 weight = weight_pcal,
                 imsize = imsize_pcal,
                 maxchan = maxchan_pcal,
-                cores = cores,
                 absmem = absmem)
         for call in imcall:
             syscall += prefix + call + '\n\n'
@@ -996,14 +973,12 @@ def main():
             step['slurm_config'] = cfg.SLURM_PREDICT
             step['pbs_config'] = cfg.PBS_WSCLEAN
             absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
-            cores = '8' if FORCE_CORES_8 else step['glam_config']['CPUS']
             wsc_prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
             py_prefix = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
             casa_prefix = cfg.CASA_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
             calls = [wsc_prefix + 'python3 '+TOOLS+'/fix_nan_models.py ' + pcal_img_prefix,
                      wsc_prefix + gen.generate_syscall_predict(msname = myms,
                          imgname = pcal_img_prefix,
-                         cores = cores,
                          absmem = absmem,
                          tempdir = temp_dir,
                          chanout = chanout_pcal),
