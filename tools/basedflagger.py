@@ -19,13 +19,16 @@ import datashader.transfer_functions as tf
 import pandas as pd
 import dask
 from daskms import xds_from_ms, xds_from_table
-from datetime import datetime
+from datetime import datetime, timedelta
+import json
 import logging
 import argparse
 import psutil
 from statistics import NormalDist
 import re
 import sys
+import shutil
+import atexit
 
 # Correlations the phase pass is allowed to run on. Cross-hand phase carries
 # the polarisation position angle, which sweeps with parallactic angle over a
@@ -75,7 +78,7 @@ def parse_arguments():
                              'flag: a baseline broadened by factor b is caught when '
                              'b > sigma_threshold/z(X), for z the normal quantile. '
                              'The resulting sensitivity is reported in the run log')
-    parser.add_argument('--point-sigma-threshold', type=float, default=10.0,
+    parser.add_argument('--point-sigma-threshold', type=float, default=7.0,
                         help='Stricter sigma threshold for individual points. A baseline '
                              'is flagged outright the moment >= --point-outlier-min-count '
                              'points cross this, independent of --outlier-fraction-threshold '
@@ -96,8 +99,36 @@ def parse_arguments():
                              'own (equally shifted) median. 0 disables this entirely')
     parser.add_argument('--scan-window-sigma', type=float, default=5.0,
                         help='Sigma threshold for --scan-window-count')
+    parser.add_argument('--band-reference', type=str, default='poly',
+                        choices=['none', 'poly'],
+                        help="'poly' runs a statistics-only pass over every chunk first and "
+                             'fits a smooth polynomial across the band to each '
+                             "(correlation, scan)'s amplitude centre and MAD (in log space, "
+                             'iteratively dropping chunks that sit above the fit). In the '
+                             "flagging pass, a scan whose own MAD or centre in a chunk is "
+                             'inflated relative to that fit -- broadband RFI filling most of '
+                             'a chunk raises both, which otherwise lifts the threshold with '
+                             'it -- is tested against the fitted values instead. Amplitude '
+                             'passes only; the phase pass is unaffected')
+    parser.add_argument('--band-poly-degree', type=int, default=3,
+                        help='Polynomial degree for --band-reference poly')
+    parser.add_argument('--band-clip-sigma', type=float, default=3.0,
+                        help='Chunks lying more than this (MAD-scaled) sigma above the band '
+                             'fit are dropped from it, iteratively, for --band-reference poly')
+    parser.add_argument('--band-mad-cap', type=float, default=1.5,
+                        help="A scan's own MAD in a chunk above this factor times the band "
+                             'fit marks it contaminated (--band-reference poly)')
+    parser.add_argument('--band-centre-sigma', type=float, default=5.0,
+                        help="A scan's own centre in a chunk more than this many fitted-MAD "
+                             'sigma above the band fit marks it contaminated '
+                             '(--band-reference poly)')
     parser.add_argument('--log-dir', type=str, default='LOGS/',
                         help='Directory for the run log')
+    parser.add_argument('--cache-dir', type=str, default='.',
+                        help='Directory under which the temporary per-chunk data cache is '
+                             'written (float32 amplitudes, plus phases for --phase; '
+                             'removed when the run ends). Needs roughly '
+                             'n_baselines x n_rows x n_channels x 4 bytes per pass')
     parser.add_argument('--correlation-products', type=str, default='XX,YY,XY,YX',
                         help='Correlation products to process (comma-separated or list)')
     parser.add_argument('--phase', action='store_true',
@@ -118,6 +149,13 @@ def parse_arguments():
                              'degenerates to the population median when the MAD is zero)')
     parser.add_argument('--antenna-flag-cap', type=int, default=3,
                         help='Maximum number of antennas to flag globally in each scan')
+    parser.add_argument('--time-chunk', type=float, default=300.0,
+                        help='Targets only: flag in time windows of this many seconds '
+                             'instead of whole scans (0 = whole scans). '
+                             'Not used on calibrators (runs with --flag-fields).')
+    parser.add_argument('--protect-antenna', type=str, default='auto',
+                        help="Antenna that is never flagged as a whole, normally the reference "
+                             "antenna. 'auto' = first ref_ant in project_info.json, 'none' = off.")
     parser.add_argument('--num-chunks', type=int, default=None,
                         help='Number of chunks to process (None = all chunks)')
     parser.add_argument('--no-printing', action='store_true',
@@ -326,13 +364,14 @@ def log(message=""):
     else:
         logging.info(message)
     
-    # Conditionally print to console
+    # Conditionally print to console. Flushed every line: piped into a SLURM
+    # log, stdout is otherwise block-buffered and output arrives late.
     if ENABLE_PRINTING:
         if message == "":
-            print()
+            print(flush=True)
         else:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            print(f"[{timestamp}] {message}")
+            print(f"[{timestamp}] {message}", flush=True)
 
 
 def broadening_sensitivity(sigma_threshold, outlier_fraction, two_tailed):
@@ -553,6 +592,457 @@ def local_scan_reference(scan_centers, scan_mads, ensemble_mad, window_count,
         if hit:
             replacements[scan_id] = local_mean
 
+    return replacements
+
+
+class ChunkCache:
+    """
+    The field's amplitudes (and phases, for the phase pass), read from the MS
+    once and laid out on disk by channel chunk, so every pass over a chunk
+    reads only that chunk. Flagged samples are NaN. Weights (one per row) and
+    scan numbers are held in memory.
+    """
+
+    def __init__(self, cache_dir, chunk_starts, chunk_size, n_chan, corr_names,
+                 memmaps, weights, scans, times, rows_per_bl, unflagged):
+        self.cache_dir = cache_dir
+        self.chunk_index = {s: k for k, s in enumerate(chunk_starts)}
+        self.chunk_width = {s: min(s + chunk_size, n_chan) - s for s in chunk_starts}
+        self.corr_slot = {name: j for j, name in enumerate(corr_names)}
+        self.memmaps = memmaps
+        self.weights = weights
+        self.rows_per_bl = rows_per_bl
+        self.unflagged = unflagged
+        self.scan_arrays = [scans[i, :rows_per_bl[i]] for i in range(len(rows_per_bl))]
+        self.time_arrays = [times[i, :rows_per_bl[i]] for i in range(len(rows_per_bl))]
+
+    def has_data(self, start_chan):
+        return self.unflagged[self.chunk_index[start_chan]] > 0
+
+    def pass_arrays(self, corr_name, quantity, start_chan):
+        """
+        Per-baseline (row, chan) value arrays for one pass over one chunk, and
+        the matching weights broadcast across the channel axis.
+        """
+        k = self.chunk_index[start_chan]
+        w = self.chunk_width[start_chan]
+        j = self.corr_slot[corr_name]
+        mm = self.memmaps[(corr_name, quantity)]
+        values, weights = [], []
+        for i, rows in enumerate(self.rows_per_bl):
+            values.append(np.asarray(mm[k, i, :rows, :w]))
+            weights.append(np.broadcast_to(self.weights[i, :rows, j][:, None], (rows, w)))
+        return values, weights
+
+    def cleanup(self):
+        self.memmaps = {}
+        shutil.rmtree(self.cache_dir, ignore_errors=True)
+
+
+def build_chunk_cache(ms_file, field_id, data_column, baseline_info, correlations,
+                      phase_corr_names, chunk_starts, chunk_size, n_chan, cache_dir,
+                      memory_budget_bytes):
+    """
+    Read the field once, in contiguous row blocks (the MS's own row order, so
+    each storage tile is read once rather than once per baseline), sort the
+    rows into baselines, and write each pass's values into per-chunk
+    on-disk arrays. Within a baseline, rows keep the MS's time order.
+
+    Returns
+    -------
+    ChunkCache
+    """
+    ds_all = xds_from_ms(
+        ms_file,
+        columns=[data_column, "FLAG", "WEIGHT", "ANTENNA1", "ANTENNA2", "SCAN_NUMBER", "TIME"],
+        taql_where=f"FIELD_ID=={field_id}",
+        group_cols=["DATA_DESC_ID"],
+    )
+    if len(ds_all) != 1:
+        raise RuntimeError(f"Expected one spectral window for this field, found {len(ds_all)}")
+    ds = ds_all[0].rename({data_column: "DATA"})
+
+    n_bl = len(baseline_info)
+    ant1, ant2 = dask.compute(ds.ANTENNA1.data, ds.ANTENNA2.data)
+    n_ant = int(max(ant1.max(), ant2.max(), max(max(b[0], b[1]) for b in baseline_info))) + 1
+    lookup = np.full((n_ant, n_ant), -1, dtype=np.int64)
+    for i, (a1, a2, _, _, _) in enumerate(baseline_info):
+        lookup[a1, a2] = i
+    row_bl = lookup[ant1, ant2]
+    rows_per_bl = np.bincount(row_bl[row_bl >= 0], minlength=n_bl)
+    max_rows = int(rows_per_bl.max())
+
+    lo = min(chunk_starts)
+    hi = min(max(chunk_starts) + chunk_size, n_chan)
+    n_chunks = len(chunk_starts)
+    corr_names = [name for name, _ in correlations]
+    corr_ms_idx = [idx for _, idx in correlations]
+    quantities = [(name, 'amplitude') for name in corr_names]
+    quantities += [(name, 'phase') for name in corr_names if name in phase_corr_names]
+
+    need_bytes = len(quantities) * n_chunks * n_bl * max_rows * chunk_size * 4
+    os.makedirs(cache_dir, exist_ok=True)
+    free_bytes = shutil.disk_usage(cache_dir).free
+    log(f"Chunk cache: {len(quantities)} pass(es) x {n_chunks} chunk(s), "
+        f"{need_bytes / 1024**3:.2f} GB on disk in {cache_dir} "
+        f"({free_bytes / 1024**3:.1f} GB free)")
+    if need_bytes > 0.9 * free_bytes:
+        raise RuntimeError(f"Not enough disk space for the chunk cache in {cache_dir}: "
+                           f"need {need_bytes / 1024**3:.2f} GB, "
+                           f"{free_bytes / 1024**3:.1f} GB free (use --cache-dir)")
+
+    memmaps = {
+        q: np.memmap(os.path.join(cache_dir, f"{q[0]}_{q[1]}.f32"), dtype=np.float32,
+                     mode='w+', shape=(n_chunks, n_bl, max_rows, chunk_size))
+        for q in quantities}
+    weights = np.full((n_bl, max_rows, len(correlations)), np.nan, dtype=np.float32)
+    scans = np.zeros((n_bl, max_rows), dtype=np.int64)
+    times = np.zeros((n_bl, max_rows), dtype=np.float64)
+    unflagged = np.zeros(n_chunks, dtype=np.int64)
+    counters = np.zeros(n_bl, dtype=np.int64)
+
+    # Several working copies of a row block are alive at once (complex data,
+    # flags, one float32 pass), so the budget is divided generously.
+    n_corr_ms = ds.dims['corr']
+    bytes_per_row = (hi - lo) * n_corr_ms * (8 + 1) * 3
+    row_block = int(np.clip(memory_budget_bytes / bytes_per_row, 500, 200000))
+    n_rows = len(row_bl)
+    n_blocks = (n_rows + row_block - 1) // row_block
+    log(f"Reading {n_rows:,} rows, channels {lo}-{hi - 1}, in {n_blocks} block(s) "
+        f"of up to {row_block:,} rows")
+
+    t_start = datetime.now()
+    for b, r0 in enumerate(range(0, n_rows, row_block)):
+        r1 = min(r0 + row_block, n_rows)
+        blk_bl = row_bl[r0:r1]
+        keep = blk_bl >= 0
+        if not np.any(keep):
+            continue
+
+        sub = ds.isel(row=slice(r0, r1))
+        data, flag, wt, scan, time = dask.compute(sub.DATA.data[:, lo:hi, :],
+                                                  sub.FLAG.data[:, lo:hi, :],
+                                                  sub.WEIGHT.data, sub.SCAN_NUMBER.data,
+                                                  sub.TIME.data)
+        data, flag, wt, scan, time, blk_bl = (data[keep], flag[keep], wt[keep], scan[keep],
+                                              time[keep], blk_bl[keep])
+
+        # Position of each row within its baseline: rows already placed for
+        # that baseline, plus its rank among this block's rows of the same
+        # baseline (the stable sort keeps them in MS order).
+        order = np.argsort(blk_bl, kind='stable')
+        sorted_bl = blk_bl[order]
+        rank = np.empty_like(order)
+        rank[order] = np.arange(len(order)) - np.searchsorted(sorted_bl, sorted_bl, side='left')
+        row_pos = counters[blk_bl] + rank
+        counters += np.bincount(blk_bl, minlength=n_bl)
+
+        scans[blk_bl, row_pos] = scan
+        times[blk_bl, row_pos] = time
+        weights[blk_bl, row_pos, :] = wt[:, corr_ms_idx]
+
+        for (name, quantity), mm in memmaps.items():
+            ms_idx = corr_ms_idx[corr_names.index(name)]
+            vis = data[:, :, ms_idx]
+            values = (np.abs(vis) if quantity == 'amplitude'
+                      else np.arctan2(vis.imag, vis.real)).astype(np.float32)
+            values[flag[:, :, ms_idx]] = np.nan
+            for k, s in enumerate(chunk_starts):
+                e = min(s + chunk_size, n_chan)
+                mm[k][blk_bl, row_pos, :e - s] = values[:, s - lo:e - lo]
+
+        sel_flag = flag[:, :, corr_ms_idx]
+        for k, s in enumerate(chunk_starts):
+            e = min(s + chunk_size, n_chan)
+            unflagged[k] += int((~sel_flag[:, s - lo:e - lo, :]).sum())
+
+        elapsed = (datetime.now() - t_start).total_seconds()
+        log(f"  Block {b + 1}/{n_blocks} read ({r1:,}/{n_rows:,} rows, {elapsed / 60:.1f} min)")
+
+    for mm in memmaps.values():
+        mm.flush()
+
+    return ChunkCache(cache_dir, chunk_starts, chunk_size, n_chan, corr_names,
+                      memmaps, weights, scans, times, rows_per_bl, unflagged)
+
+
+def flatten_valid(value_arrays, weight_arrays, *row_arrays):
+    """
+    Flatten per-baseline (row, chan) value and weight arrays into 1-D arrays
+    of the samples where both are finite, alongside each sample's baseline
+    index and its value in each per-row array (scan number, time window).
+
+    Returns
+    -------
+    tuple of np.ndarray
+        (baseline_idx, values, weights, *row values); all empty if nothing is valid.
+    """
+    bl_list, val_list, wt_list = [], [], []
+    row_lists = [[] for _ in row_arrays]
+    for i, (val_arr, wt_arr) in enumerate(zip(value_arrays, weight_arrays)):
+        val_flat = val_arr.flatten()
+        wt_flat = wt_arr.flatten()
+        valid = np.isfinite(val_flat) & np.isfinite(wt_flat)
+        if not np.any(valid):
+            continue
+
+        # (row, chan) flattens row-major, so repeating each row's value
+        # n_chan times lines the row axis up exactly.
+        n_chan_this = val_arr.shape[1] if val_arr.ndim > 1 else 1
+        for row_list, arrays in zip(row_lists, row_arrays):
+            row_list.append(np.repeat(arrays[i], n_chan_this)[valid])
+
+        bl_list.append(np.full(valid.sum(), i, dtype=np.int32))
+        val_list.append(val_flat[valid])
+        wt_list.append(wt_flat[valid])
+
+    if not val_list:
+        empty = np.array([])
+        return (np.array([], dtype=np.int32), empty, empty) + tuple(empty for _ in row_arrays)
+    return ((np.concatenate(bl_list), np.concatenate(val_list), np.concatenate(wt_list))
+            + tuple(np.concatenate(row_list) for row_list in row_lists))
+
+
+def casa_time(mjd_seconds):
+    """MS TIME (MJD seconds, UTC) in flagdata's timerange format."""
+    t = datetime(1858, 11, 17) + timedelta(seconds=float(mjd_seconds))
+    return t.strftime('%Y/%m/%d/%H:%M:%S.') + f'{t.microsecond // 1000:03d}'
+
+
+def time_windows(scan_arrays, time_arrays, time_chunk):
+    """
+    Split every scan into equal time windows of roughly `time_chunk` seconds.
+
+    A scan is cut into the whole number of windows closest to `time_chunk`
+    long, so a 12-minute scan becomes two 6-minute windows rather than 5 + 5 + 2.
+    Window edges fall between integrations, so each row is in exactly one window.
+
+    Returns
+    -------
+    window_arrays : list of np.ndarray
+        Window number of every row, per baseline (all 0 when time_chunk <= 0).
+    window_ranges : dict
+        {(scan, window): flagdata timerange}; empty when time_chunk <= 0.
+    """
+    window_arrays = [np.zeros(len(s), dtype=np.int64) for s in scan_arrays]
+    if time_chunk <= 0 or not any(len(s) for s in scan_arrays):
+        return window_arrays, {}
+
+    scans = np.concatenate(scan_arrays)
+    times = np.concatenate(time_arrays)
+    unique_times = np.unique(times)
+    dt = float(np.median(np.diff(unique_times))) if len(unique_times) > 1 else 0.0
+
+    edges = {}  # {scan: window edge times}
+    for scan in np.unique(scans):
+        t = times[scans == scan]
+        start, length = t.min() - dt / 2, t.max() - t.min() + dt
+        n = max(1, int(round(length / time_chunk)))
+        steps = np.arange(n + 1) * length / n
+        edges[int(scan)] = start + (np.round(steps / dt) * dt if dt > 0 else steps)
+
+    for windows, scan_arr, time_arr in zip(window_arrays, scan_arrays, time_arrays):
+        for scan, e in edges.items():
+            in_scan = scan_arr == scan
+            windows[in_scan] = np.clip(np.searchsorted(e, time_arr[in_scan], side='right') - 1,
+                                       0, len(e) - 2)
+
+    window_ranges = {(scan, k): f"{casa_time(e[k])}~{casa_time(e[k + 1])}"
+                     for scan, e in edges.items() for k in range(len(e) - 1)}
+    return window_arrays, window_ranges
+
+
+def resolve_protected_antenna(value, antenna_names):
+    """
+    Name of the antenna that is never flagged as a whole, or None.
+
+    'auto' takes the first antenna of ref_ant in ./project_info.json (an index
+    or a name); 'none' turns protection off.
+    """
+    if value == 'none':
+        return None
+    if value == 'auto':
+        try:
+            with open('project_info.json') as f:
+                value = str(json.load(f)['ref_ant']).split(',')[0].strip()
+        except (OSError, KeyError, ValueError):
+            return None
+    return antenna_names[int(value)] if value.isdigit() else value
+
+
+def compute_scan_stats(values, weights, scans, circular=False):
+    """
+    Per-scan weighted centre and weighted MAD about that centre.
+
+    With `circular` the values are angles: the centre is the median offset
+    from a provisional mean direction, folded back into (-pi, pi], and the
+    deviations are wrapped the same way.
+
+    Returns
+    -------
+    tuple of dict
+        ({scan: centre}, {scan: mad})
+    """
+    scan_centers = {}
+    scan_mads = {}
+    for scan_id in np.unique(scans):
+        in_scan = scans == scan_id
+        if circular:
+            provisional = circular_weighted_mean(values[in_scan], weights[in_scan])
+            offset = weighted_median(wrap_angle(values[in_scan] - provisional),
+                                     weights[in_scan])
+            centre = float(wrap_angle(provisional + offset))
+            deviations = np.abs(wrap_angle(values[in_scan] - centre))
+        else:
+            centre = weighted_median(values[in_scan], weights[in_scan])
+            deviations = np.abs(values[in_scan] - centre)
+        scan_centers[scan_id] = centre
+        scan_mads[scan_id] = weighted_median(deviations, weights[in_scan])
+    return scan_centers, scan_mads
+
+
+def robust_poly_fit(x, y, degree, clip_sigma, max_iter=10):
+    """
+    Polynomial fit of y(x) that iteratively drops points lying more than
+    `clip_sigma` (MAD-scaled) ABOVE the current fit. The clipping is
+    one-sided because contamination (RFI) only ever pushes the statistics
+    being fitted up; a genuinely low point is kept.
+
+    The degree is reduced when there are too few points to constrain it.
+
+    Returns
+    -------
+    tuple or None
+        (np.polynomial.Polynomial, used_mask), or None with fewer than 3 points.
+    """
+    if len(x) < 3:
+        return None
+    mask = np.ones(len(x), dtype=bool)
+    poly = None
+    for _ in range(max_iter):
+        deg = min(degree, int(mask.sum()) - 2)
+        if deg < 0:
+            break
+        poly = np.polynomial.Polynomial.fit(x[mask], y[mask], deg)
+        residuals = y - poly(x)
+        res_centre = np.median(residuals[mask])
+        res_mad = np.median(np.abs(residuals[mask] - res_centre))
+        if not res_mad > 0:
+            break
+        new_mask = (residuals - res_centre) <= clip_sigma * 1.4826 * res_mad
+        if np.array_equal(new_mask, mask) or new_mask.sum() < 3:
+            break
+        mask = new_mask
+    if poly is None:
+        return None
+    return poly, mask
+
+
+def collect_band_statistics(cache, chunks_to_process, correlations):
+    """
+    Statistics-only pass over every chunk: the per-scan amplitude centre and
+    MAD for each correlation, computed exactly as the flagging pass computes
+    them. No flags are decided here.
+
+    Returns
+    -------
+    dict
+        {corr_name: {scan: {start_chan: (centre, mad)}}}
+    """
+    band_stats = {corr_name: {} for corr_name, _ in correlations}
+    for start_chan in chunks_to_process:
+        if not cache.has_data(start_chan):
+            continue
+        for corr_name, _ in correlations:
+            value_arrays, weight_arrays = cache.pass_arrays(corr_name, 'amplitude', start_chan)
+            _, values, weights, scans = flatten_valid(value_arrays, weight_arrays,
+                                                      cache.scan_arrays)
+            if values.size == 0:
+                continue
+            scan_centers, scan_mads = compute_scan_stats(values, weights, scans)
+            for scan_id in scan_centers:
+                band_stats[corr_name].setdefault(scan_id, {})[start_chan] = (
+                    scan_centers[scan_id], scan_mads[scan_id])
+    return band_stats
+
+
+def fit_band_reference(band_stats, chunk_freqs, degree, clip_sigma):
+    """
+    For each (correlation, scan), fit log(centre) and log(MAD) against chunk
+    frequency with robust_poly_fit, and evaluate both fits at every chunk.
+
+    Returns
+    -------
+    dict
+        {corr_name: {scan: {start_chan: (fitted_centre, fitted_mad)}}}; a
+        (correlation, scan) whose fit could not be made is absent.
+    """
+    band_ref = {}
+    all_starts = sorted(chunk_freqs)
+    all_x = np.array([chunk_freqs[s] for s in all_starts])
+
+    for corr_name, per_scan in band_stats.items():
+        for scan_id, per_chunk in sorted(per_scan.items()):
+            starts = [s for s in sorted(per_chunk)
+                      if all(np.isfinite(v) and v > 0 for v in per_chunk[s])]
+            if len(starts) < 3:
+                log(f"  {corr_name} scan {int(scan_id)}: only {len(starts)} usable chunk(s) "
+                    f"- no band fit")
+                continue
+            x = np.array([chunk_freqs[s] for s in starts])
+            log_centre = np.log([per_chunk[s][0] for s in starts])
+            log_mad = np.log([per_chunk[s][1] for s in starts])
+
+            centre_fit = robust_poly_fit(x, log_centre, degree, clip_sigma)
+            mad_fit = robust_poly_fit(x, log_mad, degree, clip_sigma)
+            if centre_fit is None or mad_fit is None:
+                log(f"  {corr_name} scan {int(scan_id)}: band fit failed")
+                continue
+
+            centre_poly, centre_used = centre_fit
+            mad_poly, mad_used = mad_fit
+            fitted_centre = np.exp(centre_poly(all_x))
+            fitted_mad = np.exp(mad_poly(all_x))
+            band_ref.setdefault(corr_name, {})[scan_id] = {
+                s: (float(c), float(m)) for s, c, m in zip(all_starts, fitted_centre, fitted_mad)}
+
+            dropped = sorted(set(np.array(starts)[~centre_used]) | set(np.array(starts)[~mad_used]))
+            log(f"  {corr_name} scan {int(scan_id)}: centre fit on {centre_used.sum()}/{len(starts)}, "
+                f"MAD fit on {mad_used.sum()}/{len(starts)} chunk(s); dropped chunk start "
+                f"channel(s): {', '.join(str(int(s)) for s in dropped) or 'none'}")
+
+    return band_ref
+
+
+def apply_band_reference(scan_centers, scan_mads, chunk_ref, mad_cap, centre_sigma):
+    """
+    Compare each scan's own centre and MAD in this chunk with the band fit.
+    A scan is contaminated when its MAD exceeds `mad_cap` times the fitted
+    MAD, or its centre lies more than `centre_sigma` fitted-MAD sigma above
+    the fitted centre. Only an excess counts: RFI only adds power.
+
+    Returns
+    -------
+    dict
+        {scan: (fitted_centre, fitted_mad, reason)} for each contaminated
+        scan, whose statistics are then replaced by the fitted values.
+    """
+    replacements = {}
+    for scan_id, centre in scan_centers.items():
+        ref = chunk_ref.get(scan_id)
+        if ref is None:
+            continue
+        fit_centre, fit_mad = ref
+        own_mad = scan_mads.get(scan_id, np.nan)
+
+        reasons = []
+        if np.isfinite(own_mad) and own_mad > mad_cap * fit_mad:
+            reasons.append(f"MAD {own_mad:.4f} > {mad_cap}x fit {fit_mad:.4f}")
+        if np.isfinite(centre) and centre - fit_centre > centre_sigma * 1.4826 * fit_mad:
+            reasons.append(f"centre {centre:.4f} > fit {fit_centre:.4f} + "
+                           f"{centre_sigma}sigma")
+        if reasons:
+            replacements[scan_id] = (fit_centre, fit_mad, '; '.join(reasons))
     return replacements
 
 
@@ -1061,6 +1551,13 @@ def main():
             f"{args.scan_window_sigma}σ off")
     else:
         log(f"  Scan-window centre correction: DISABLED")
+    if args.band_reference == 'poly':
+        log(f"  Band reference: degree-{args.band_poly_degree} polynomial across the band "
+            f"(clip {args.band_clip_sigma}σ above fit); a scan in a chunk is tested against "
+            f"the fit if its MAD > {args.band_mad_cap}x fit or its centre > fit + "
+            f"{args.band_centre_sigma}σ (amplitude only)")
+    else:
+        log(f"  Band reference: DISABLED")
     log("")
 
     log("ANTENNA FLAGGING:")
@@ -1094,7 +1591,12 @@ def main():
     
     # Load antenna names
     antenna_names = load_antenna_names(args.ms_file)
-    
+
+    # The reference antenna is never flagged as a whole (its baselines still can be)
+    protected_antenna = resolve_protected_antenna(args.protect_antenna, antenna_names)
+    log(f"Protected antenna (never flagged as a whole): {protected_antenna or 'none'}")
+    protected_hits = []  # where it would have been flagged, for the warning at the end
+
     # Load channel frequencies
     chan_freq = load_chan_freq(args.ms_file)
     
@@ -1314,10 +1816,25 @@ def main():
     baseline_info.sort(key=lambda x: (x[0], x[1]))
     log(f"Processed {len(baseline_info)} baselines")
 
-    # Per-row scan numbers, computed once: SCAN_NUMBER has no channel axis, so it
-    # is identical for every chunk and every correlation.
-    log("Resolving per-row scan numbers...")
-    scan_arrays = dask.compute(*[ds.SCAN_NUMBER.data for _, _, _, _, ds in baseline_info])
+    # Read the field once into the per-chunk cache; every pass below reads
+    # from it. Removed at exit (an abnormal kill can leave it behind).
+    log("")
+    log("="*60)
+    log("BUILDING CHUNK CACHE")
+    log("="*60)
+    cache_dir = os.path.join(args.cache_dir,
+                             f'basedflagger_cache_{run_tag}{args.output_suffix}')
+    cache = build_chunk_cache(
+        args.ms_file, field_id, args.data_column, baseline_info, correlations,
+        PHASE_CORRELATIONS if args.phase else (), chunks_to_process,
+        args.channel_group_size, n_chan, cache_dir,
+        0.25 * resources['available_memory_gb'] * 1024**3)
+    atexit.register(cache.cleanup)
+    log("="*60)
+
+    # Per-row scan numbers, in the cache's row order: SCAN_NUMBER has no
+    # channel axis, so it is identical for every chunk and every correlation.
+    scan_arrays = cache.scan_arrays
     all_scans = np.unique(np.concatenate([s for s in scan_arrays if s.size]))
     log(f"Found {len(all_scans)} scan(s) for this field: "
         f"{', '.join(str(int(s)) for s in all_scans)}")
@@ -1335,6 +1852,44 @@ def main():
         for scan in sorted(extra_scans):
             log(f"  {scan} -> {scan_selection(extra_scans[scan]) or 'none'}")
 
+    # Targets are flagged in time windows of about --time-chunk seconds.
+    # Calibrators keep whole scans, since their flags are copied onto the
+    # target scans around them.
+    time_chunk = 0 if flag_fields else args.time_chunk
+    window_arrays, window_ranges = time_windows(scan_arrays, cache.time_arrays, time_chunk)
+    all_windows = [tuple(int(v) for v in sw) for sw in np.unique(
+        np.stack([np.concatenate(scan_arrays), np.concatenate(window_arrays)], axis=1), axis=0)]
+    if window_ranges:
+        log(f"Flagging in time windows of about {time_chunk:.0f} s: "
+            f"{len(all_windows)} window(s) over {len(all_scans)} scan(s)")
+    else:
+        log("Flagging whole scans" + (" (calibrator: flags are copied to other fields)"
+                                      if flag_fields else ""))
+
+    # The protected antenna's baselines, and the rows of each newly covered
+    # by a flag in each channel chunk, for its before/after report at the end
+    protected_bls = {i for i, (a1, a2, _, _, _) in enumerate(baseline_info)
+                     if protected_antenna in (antenna_names[a1], antenna_names[a2])}
+    protected_new_rows = {}  # {(start_chan, bl_idx): bool array over that baseline's rows}
+
+    def mark_protected(start_chans, bl_idx, scan, window):
+        """Record rows of a protected-antenna baseline covered by a new flag."""
+        rows = (scan_arrays[bl_idx] == scan) & (window_arrays[bl_idx] == window)
+        for start_chan in start_chans:
+            mask = protected_new_rows.setdefault(
+                (start_chan, bl_idx), np.zeros(len(scan_arrays[bl_idx]), dtype=bool))
+            mask |= rows
+
+    def flag_selection(scan, window):
+        """flagdata selection for a flag: the scan (or its time window) plus any propagated scans."""
+        if window_ranges:
+            return f"scan='{scan}' timerange='{window_ranges[(scan, window)]}'"
+        return f"scan='{scan_selection([scan] + extra_scans.get(scan, []))}'"
+
+    def window_label(scan, window):
+        """Scan, plus the window number when flagging in time windows."""
+        return f"{scan}" + (f"_WIN{window}" if window_ranges else "")
+
     # The scan-window reference compares a scan against its neighbours in time,
     # so a single-scan field has nothing to compare against. The rest of the
     # detection still works on one scan: its centre and MAD are simply that
@@ -1344,6 +1899,59 @@ def main():
             f"2 scans to build a local reference; this field has {len(all_scans)}. "
             f"Scan-window check disabled for this run.")
         args.scan_window_count = 0
+
+    # Band reference: a statistics-only pass over every chunk, then a smooth
+    # fit across frequency per (correlation, scan). The flagging pass below
+    # then knows the band-wide shape when it reaches each chunk.
+    band_ref = None
+    band_empty_chunks = {s for s in chunks_to_process if not cache.has_data(s)}
+    if args.band_reference == 'poly':
+        if len(chunks_to_process) < args.band_poly_degree + 3:
+            log(f"WARNING: --band-reference poly needs at least {args.band_poly_degree + 3} "
+                f"chunks to fit a degree-{args.band_poly_degree} polynomial; "
+                f"{len(chunks_to_process)} to process. Band reference disabled for this run.")
+        else:
+            log("")
+            log("="*60)
+            log("BAND STATISTICS PASS")
+            log("="*60)
+            band_stats = collect_band_statistics(cache, chunks_to_process, correlations)
+            chunk_freqs = {
+                s: float(np.mean(chan_freq[s:min(s + args.channel_group_size, n_chan)])) / 1e9
+                for s in chunks_to_process}
+            log("")
+            log("Band fits (log centre and log MAD vs frequency):")
+            band_ref = fit_band_reference(band_stats, chunk_freqs,
+                                          args.band_poly_degree, args.band_clip_sigma)
+
+            # Preview of what the flagging pass will do with the fit:
+            # which chunks have at least one scan tested against it.
+            chunk_numbers = {s: i + 1 for i, s in enumerate(chunks_to_process)}
+            log("")
+            log("BAND REFERENCE SUMMARY (chunks where >=1 scan will be tested "
+                "against the band fit):")
+            for corr_name, _ in correlations:
+                per_scan_ref = band_ref.get(corr_name, {})
+                hit_chunks = {}
+                for start in chunks_to_process:
+                    own_centres = {}
+                    own_mads = {}
+                    for scan_id, per_chunk in band_stats.get(corr_name, {}).items():
+                        if start in per_chunk:
+                            own_centres[scan_id], own_mads[scan_id] = per_chunk[start]
+                    chunk_ref = {scan_id: ref[start] for scan_id, ref in per_scan_ref.items()
+                                 if start in ref}
+                    replaced = apply_band_reference(own_centres, own_mads, chunk_ref,
+                                                    args.band_mad_cap, args.band_centre_sigma)
+                    if replaced:
+                        hit_chunks[start] = sorted(int(s) for s in replaced)
+                n_with_data = len(chunks_to_process) - len(band_empty_chunks)
+                log(f"  {corr_name}: {len(hit_chunks)}/{n_with_data} chunk(s) with data")
+                for start, scans_hit in sorted(hit_chunks.items()):
+                    log(f"    chunk {chunk_numbers[start]} ({chunk_freqs[start]:.4f} GHz): "
+                        f"scan(s) {', '.join(str(s) for s in scans_hit)}")
+            log(f"Fully flagged chunks found: {len(band_empty_chunks)}")
+            log("="*60)
 
     # Process each chunk
     for chunk_idx, start_chan in enumerate(chunks_to_process):
@@ -1368,123 +1976,39 @@ def main():
             memory_error_stop = True
             break
         
-        # PRELIMINARY CHECK: Is this chunk fully flagged?
-        # Check first correlation across all baselines to save time
-        log("Checking if chunk is fully flagged...")
-        chunk_flag_check_tasks = []
-        for _, _, _, _, ds in baseline_info:
-            # Just check first correlation (0) as representative
-            flag_slice = ds.FLAG[:, start_chan:end_chan, 0]
-            chunk_flag_check_tasks.append(flag_slice.data)
-        
-        # Compute flag checks
-        chunk_flags_computed = dask.compute(*chunk_flag_check_tasks)
-        
-        # Check if all data in chunk is flagged
-        total_unflagged = sum((~flag_arr).sum() for flag_arr in chunk_flags_computed)
-        
-        if total_unflagged == 0:
+        # PRELIMINARY CHECK: Is this chunk fully flagged? Counted, over every
+        # selected correlation, when the cache was built.
+        if start_chan in band_empty_chunks:
             log("")
-            log(f"WARNING: Chunk {chunk_num} is fully flagged (checked correlation 0) - skipping all correlations")
+            log(f"WARNING: Chunk {chunk_num} is fully flagged - skipping all correlations")
             continue
-        
-        log(f"Chunk has {total_unflagged:,} unflagged data points - proceeding")
-        
+        log(f"Chunk has {cache.unflagged[cache.chunk_index[start_chan]]:,} unflagged "
+            f"data points - proceeding")
+
         # Track flagged (baseline, scan) pairs across all correlations for this
         # chunk. {(bl_idx, scan): {trigger_str, ...}} -- a dict so the flag file
         # /log can still say which criterion(a) (FRACTION / SEVERE) caught each
         # one, even though membership is unioned across every correlation.
         chunk_flagged_baseline_scans = {}
-        
-        # =================================================================
-        # STEP 1: Build tasks for ALL correlations (lazy, no computation yet)
-        # =================================================================
-        log("")
-        log(f"Preparing data extraction for {len(correlations)} correlation(s)...")
-        
-        all_correlation_tasks = []  # List of (corr_name, corr_idx, quantity, tasks)
+
         baseline_names = [x[2] for x in baseline_info]  # Same for all correlations
         ant1_names = [x[3] for x in baseline_info]
 
+        # Amplitude on every correlation, phase on the parallel hands with --phase
+        chunk_passes = []
         for corr_name, corr_idx in correlations:
-            amp_tasks = []
-            phase_tasks = []
-            do_phase = args.phase and corr_name in PHASE_CORRELATIONS
+            chunk_passes.append((corr_name, corr_idx, 'amplitude'))
+            if args.phase and corr_name in PHASE_CORRELATIONS:
+                chunk_passes.append((corr_name, corr_idx, 'phase'))
 
-            # Extract amplitude and weight data in sorted order (LAZY)
-            for i, (a1, a2, bl_name, ant1_name, ds) in enumerate(baseline_info):
-                # Slice and compute amplitude (still lazy until compute)
-                vis_slice = ds.DATA[:, start_chan:end_chan, corr_idx]
-                flag_slice = ds.FLAG[:, start_chan:end_chan, corr_idx]
-                weight_slice = ds.WEIGHT[:, corr_idx]  # Weight for this correlation, shape: (row,)
-            
-                # Compute amplitude and apply flags
-                amp = abs(vis_slice)
-                amp_flagged = amp.where(~flag_slice, other=np.nan)
-            
-                # Broadcast weight to match amplitude shape
-                weight_broadcasted, _ = dask.array.broadcast_arrays(weight_slice.data[:, None], amp.data)
-                weight_flagged = amp.copy(data=weight_broadcasted)
-                weight_flagged = weight_flagged.where(~flag_slice, other=np.nan)
-            
-                amp_tasks.append(amp_flagged.data)
-                amp_tasks.append(weight_flagged.data)  # Append weight right after corresponding amplitude
-
-                if do_phase:
-                    # arctan2 over the real/imag parts keeps this lazy; the same
-                    # flags and weights as the amplitude pass apply.
-                    phase = amp.copy(data=dask.array.arctan2(vis_slice.data.imag,
-                                                             vis_slice.data.real))
-                    phase_flagged = phase.where(~flag_slice, other=np.nan)
-                    phase_tasks.append(phase_flagged.data)
-                    phase_tasks.append(weight_flagged.data)
-
-            all_correlation_tasks.append((corr_name, corr_idx, 'amplitude', amp_tasks))
-            if do_phase:
-                all_correlation_tasks.append((corr_name, corr_idx, 'phase', phase_tasks))
-        
-        # =================================================================
-        # STEP 2: Single compute for ALL correlations
-        # =================================================================
-        log(f"Computing {len(all_correlation_tasks)} pass(es) over {len(baseline_info)} "
-            f"baselines × {len(correlations)} correlation(s)...")
-        
-        # Flatten all tasks into one list
-        flat_tasks = []
-        for _, _, _, tasks in all_correlation_tasks:
-            flat_tasks.extend(tasks)
-        
-        # Single dask.compute() for all correlations
-        all_computed_data = dask.compute(*flat_tasks)
-        
-        # Check memory after compute (large memory spike)
-        try:
-            check_memory_critical()
-        except MemoryError as e:
-            log(str(e))
-            log("Stopping processing to prevent system crash")
-            memory_error_stop = True
-            break
-
-        # =================================================================
-        # STEP 3: Parse results by correlation and analyze sequentially
-        # =================================================================
-        result_idx = 0
-        n_tasks_per_corr = len(baseline_info) * 2  # value + weight per baseline
-
-        for corr_name, corr_idx, quantity, _ in all_correlation_tasks:
+        for corr_name, corr_idx, quantity in chunk_passes:
             is_phase = quantity == 'phase'
             pass_label = f'{corr_name} {quantity}'
             log("")
             log(f"Analyzing correlation: {corr_name} (index {corr_idx}), {quantity}")
 
-            # Extract this pass's data from computed results
-            computed_data = all_computed_data[result_idx:result_idx + n_tasks_per_corr]
-            result_idx += n_tasks_per_corr
-
-            # Separate values and weights from interleaved results
-            amp_arrays = [computed_data[i*2] for i in range(len(baseline_info))]
-            weight_arrays = [computed_data[i*2 + 1] for i in range(len(baseline_info))]
+            # This pass's per-baseline values and weights, from the cache
+            amp_arrays, weight_arrays = cache.pass_arrays(corr_name, quantity, start_chan)
 
             # SECONDARY CHECK: if no valid data for this pass, skip
             total_valid = sum(np.isfinite(amp).sum() for amp in amp_arrays)
@@ -1496,45 +2020,17 @@ def main():
             # Flatten data for analysis (used for outlier detection and optional plotting)
             log("Preparing data for analysis...")
             
-            # Collect data in lists (faster than building many DataFrames)
-            baseline_idx_list = []
-            amplitude_list = []
-            weight_list = []
-            ant1_list = []
-            scan_list = []
-
-            for i, (amp_arr, weight_arr, bl_name, ant1_name) in enumerate(zip(amp_arrays, weight_arrays, baseline_names, ant1_names)):
-                # Flatten and filter valid data
-                amp_flat = amp_arr.flatten()
-                weight_flat = weight_arr.flatten()
-                valid_mask = np.isfinite(amp_flat) & np.isfinite(weight_flat)
-
-                if not np.any(valid_mask):
-                    continue
-
-                n_points = valid_mask.sum()
-
-                # amp_arr is (row, chan) and flattens row-major, so repeating each
-                # row's scan number n_chan times lines the scan axis up exactly.
-                n_chan_this = amp_arr.shape[1] if amp_arr.ndim > 1 else 1
-                scan_flat = np.repeat(scan_arrays[i], n_chan_this)
-
-                # Append to lists (fast)
-                baseline_idx_list.append(np.full(n_points, i, dtype=np.int32))
-                amplitude_list.append(amp_flat[valid_mask])
-                weight_list.append(weight_flat[valid_mask])
-                ant1_list.append(np.full(n_points, ant1_name, dtype=object))
-                scan_list.append(scan_flat[valid_mask])
-
-            # Concatenate numpy arrays (fast) then build single DataFrame (fast).
-            # 'value' holds whichever quantity this pass tests -- amplitude, or
-            # phase in radians.
+            # Build a single DataFrame. 'value' holds whichever quantity this
+            # pass tests -- amplitude, or phase in radians.
+            bl_idx_flat, values_flat, weights_flat, scans_flat, windows_flat = flatten_valid(
+                amp_arrays, weight_arrays, scan_arrays, window_arrays)
             df = pd.DataFrame({
-                'baseline_idx': np.concatenate(baseline_idx_list),
-                'value': np.concatenate(amplitude_list),
-                'weight': np.concatenate(weight_list),
-                'ant1': np.concatenate(ant1_list),
-                'scan': np.concatenate(scan_list),
+                'baseline_idx': bl_idx_flat,
+                'value': values_flat,
+                'weight': weights_flat,
+                'ant1': np.asarray(ant1_names, dtype=object)[bl_idx_flat],
+                'scan': scans_flat,
+                'window': windows_flat,
             })
             log(f"Total data points: {len(df):,}")
     
@@ -1563,24 +2059,26 @@ def main():
             weight_values = df['weight'].values
             scan_values = df['scan'].values
 
-            scan_centers = {}
-            scan_mads = {}
-            for scan_id in np.unique(scan_values):
-                in_scan = scan_values == scan_id
-                if is_phase:
-                    # Robust centre for angles: the median offset from a
-                    # provisional mean direction, folded back into (-pi, pi].
-                    provisional = circular_weighted_mean(amp_values[in_scan],
-                                                         weight_values[in_scan])
-                    offset = weighted_median(wrap_angle(amp_values[in_scan] - provisional),
-                                             weight_values[in_scan])
-                    centre = float(wrap_angle(provisional + offset))
-                    deviations = np.abs(wrap_angle(amp_values[in_scan] - centre))
-                else:
-                    centre = weighted_median(amp_values[in_scan], weight_values[in_scan])
-                    deviations = np.abs(amp_values[in_scan] - centre)
-                scan_centers[scan_id] = centre
-                scan_mads[scan_id] = weighted_median(deviations, weight_values[in_scan])
+            raw_scan_centers, raw_scan_mads = compute_scan_stats(
+                amp_values, weight_values, scan_values, circular=is_phase)
+
+            # A scan whose statistics in this chunk are inflated relative to
+            # the band fit (RFI filling most of the chunk raises both centre
+            # and MAD, lifting the threshold with them) is tested against the
+            # fitted values instead.
+            scan_centers = dict(raw_scan_centers)
+            scan_mads = dict(raw_scan_mads)
+            band_replacements = {}
+            if band_ref is not None and not is_phase:
+                chunk_ref = {scan_id: per_chunk[start_chan]
+                             for scan_id, per_chunk in band_ref.get(corr_name, {}).items()
+                             if start_chan in per_chunk}
+                band_replacements = apply_band_reference(
+                    scan_centers, scan_mads, chunk_ref,
+                    args.band_mad_cap, args.band_centre_sigma)
+                for scan_id, (fit_centre, fit_mad, _) in band_replacements.items():
+                    scan_centers[scan_id] = fit_centre
+                    scan_mads[scan_id] = fit_mad
 
             finite_mads = [m for m in scan_mads.values() if np.isfinite(m) and m > 0]
             ensemble_mad = float(np.median(finite_mads)) if finite_mads else np.nan
@@ -1609,9 +2107,14 @@ def main():
             log(f"{quantity.capitalize()} statistics:")
             log(f"  Scans in chunk: {len(scan_centers)}")
             log(f"  Per-scan weighted medians: "
-                f"{', '.join(f'{int(s)}:{c:.4f}' for s, c in sorted(scan_centers.items()))}")
+                f"{', '.join(f'{int(s)}:{c:.4f}' for s, c in sorted(raw_scan_centers.items()))}")
             log(f"  Per-scan weighted MADs: "
-                f"{', '.join(f'{int(s)}:{m:.4f}' for s, m in sorted(scan_mads.items()))}")
+                f"{', '.join(f'{int(s)}:{m:.4f}' for s, m in sorted(raw_scan_mads.items()))}")
+            if band_replacements:
+                log(f"  Scan statistics replaced with band fit (inflated relative to the band):")
+                for scan_id, (fit_centre, fit_mad, reason) in sorted(band_replacements.items()):
+                    log(f"    Scan {int(scan_id)}: centre {fit_centre:.4f}, MAD {fit_mad:.4f} "
+                        f"({reason})")
             log(f"  Median of per-scan centres: {median_amp:.4f}{in_degrees(median_amp)}")
             log(f"  Ensemble MAD (median of per-scan weighted MADs): "
                 f"{ensemble_mad:.4f}{in_degrees(ensemble_mad)}")
@@ -1752,8 +2255,10 @@ def main():
             # Outlier statistics per (baseline, scan): a scan sweeping through
             # a polarised calibrator's cross-hand null, or simply carrying its
             # own noise level, shouldn't have its fate decided by every other
-            # scan on the same baseline.
-            bl_scan_stats = df.groupby(['baseline_idx', 'scan']).agg({
+            # scan on the same baseline. On a target each scan is further split
+            # into its time windows, so a bad few minutes only flags those
+            # minutes.
+            bl_scan_stats = df.groupby(['baseline_idx', 'scan', 'window']).agg({
                 'is_outlier': ['sum', 'count'],
                 'is_severe_outlier': ['sum'],
             })
@@ -1784,8 +2289,9 @@ def main():
             # Track flagged (baseline, scan) pairs for this correlation,
             # remembering why so the flag file and logs can say which
             # criterion caught each one.
-            for (bl_idx, scan), row in bad_baseline_scans.iterrows():
-                chunk_flagged_baseline_scans.setdefault((bl_idx, scan), set()).add(row['trigger'])
+            for (bl_idx, scan, window), row in bad_baseline_scans.iterrows():
+                chunk_flagged_baseline_scans.setdefault((bl_idx, int(scan), int(window)),
+                                                        set()).add(row['trigger'])
 
             if len(bad_baseline_scans) > 0:
                 n_severe_only = (bad_baseline_scans['trigger'] == f'{trigger_prefix}SEVERE').sum()
@@ -1821,37 +2327,43 @@ def main():
         log("")
         log(f"Analyzing antenna-level flagging for chunk {chunk_num}...")
 
-        # Antenna flagging is decided scan by scan: an antenna is flagged in a
-        # scan when more than --antenna-flag-threshold of its baselines failed
-        # in that scan, and the flag covers that scan only.
-        flagged_bls_by_scan = {}  # {scan: {bl_idx, ...}}
-        for bl_idx, scan in chunk_flagged_baseline_scans:
-            flagged_bls_by_scan.setdefault(int(scan), set()).add(bl_idx)
+        # Antenna flagging is decided scan by scan (window by window on a
+        # target): an antenna is flagged when more than --antenna-flag-threshold
+        # of its baselines failed there, and the flag covers only that scan
+        # (or window). The protected antenna is never flagged.
+        flagged_bls_by_window = {}  # {(scan, window): {bl_idx, ...}}
+        for bl_idx, scan, window in chunk_flagged_baseline_scans:
+            flagged_bls_by_window.setdefault((scan, window), set()).add(bl_idx)
 
-        flagged_antennas = []  # [(ant_name, scan, fraction, flagged, total)]
-        for scan in (int(s) for s in all_scans):
-            scan_flagged_bls = flagged_bls_by_scan.get(scan, set())
+        flagged_antennas = []  # [(ant_name, scan, window, fraction, flagged, total)]
+        for scan, window in all_windows:
+            window_flagged_bls = flagged_bls_by_window.get((scan, window), set())
 
             # Count how many baselines each antenna participates in (total and
-            # flagged in this scan)
+            # flagged in this scan or window)
             antenna_stats = {}  # {ant_name: {'total': N, 'flagged': M}}
             for bl_idx, (a1, a2, bl_name, ant1_name, ds) in enumerate(baseline_info):
                 for ant in (antenna_names[a1], antenna_names[a2]):
                     stats = antenna_stats.setdefault(ant, {'total': 0, 'flagged': 0})
                     stats['total'] += 1
-                    if bl_idx in scan_flagged_bls:
+                    if bl_idx in window_flagged_bls:
                         stats['flagged'] += 1
 
             for ant_name, stats in antenna_stats.items():
                 if stats['total'] > 0:
                     fraction = stats['flagged'] / stats['total']
                     if fraction > args.antenna_flag_threshold:
-                        flagged_antennas.append((ant_name, scan, fraction, stats['flagged'], stats['total']))
+                        if ant_name == protected_antenna:
+                            protected_hits.append(f"chunk {chunk_num}, scan {window_label(scan, window)}: "
+                                                  f"{fraction:.0%} of its baselines bad")
+                        else:
+                            flagged_antennas.append((ant_name, scan, window, fraction,
+                                                     stats['flagged'], stats['total']))
 
-                # Global statistics are kept per antenna per scan, in
-                # baseline counts summed over chunks
+                # Global statistics are kept per antenna per scan (per window
+                # on a target), in baseline counts summed over chunks
                 ant_global = global_antenna_stats.setdefault(ant_name, {'scans': {}, 'chunks': []})
-                scan_global = ant_global['scans'].setdefault(scan, {'total': 0, 'flagged': 0})
+                scan_global = ant_global['scans'].setdefault((scan, window), {'total': 0, 'flagged': 0})
                 scan_global['total'] += stats['total']
                 scan_global['flagged'] += stats['flagged']
                 if stats['flagged'] > 0 and chunk_num not in ant_global['chunks']:
@@ -1860,70 +2372,73 @@ def main():
         if len(flagged_antennas) > 0:
             log("")
             log(f"Antenna-scans exceeding {args.antenna_flag_threshold*100:.0f}% threshold:")
-            for ant_name, scan, frac, flagged, total in sorted(flagged_antennas, key=lambda x: (x[1], -x[2])):
-                log(f"  {ant_name} scan {scan}: {frac:.2%} ({flagged}/{total} baselines flagged) "
-                    f"- FLAGGING ANTENNA IN THIS SCAN")
+            for ant_name, scan, window, frac, flagged, total in sorted(
+                    flagged_antennas, key=lambda x: (x[1], x[2], -x[3])):
+                log(f"  {ant_name} scan {window_label(scan, window)}: {frac:.2%} "
+                    f"({flagged}/{total} baselines flagged) - FLAGGING ANTENNA HERE")
         else:
             log("No antenna-scans exceed the antenna flagging threshold")
-        
+
         # Write flags to file (baseline-scans + antennas)
         if len(chunk_flagged_baseline_scans) > 0 or len(flagged_antennas) > 0:
             log("")
             log(f"Writing flags to {flag_file_path}...")
 
-            # Prepare baseline-scan flags (sorted by ANTENNA1, ANTENNA2, scan)
+            # Prepare baseline-scan flags (sorted by ANTENNA1, ANTENNA2, scan, window)
             bad_baseline_scan_data = []
-            for (bl_idx, scan), triggers in chunk_flagged_baseline_scans.items():
+            for (bl_idx, scan, window), triggers in chunk_flagged_baseline_scans.items():
                 a1, a2, bl_name, _, _ = baseline_info[bl_idx]
                 trigger_str = '+'.join(sorted(triggers))
-                bad_baseline_scan_data.append((a1, a2, bl_idx, bl_name, int(scan), trigger_str))
-            bad_baseline_scan_data.sort(key=lambda x: (x[0], x[1], x[4]))
+                bad_baseline_scan_data.append((a1, a2, bl_idx, bl_name, scan, window, trigger_str))
+            bad_baseline_scan_data.sort(key=lambda x: (x[0], x[1], x[4], x[5]))
 
-            # Each line flags one scan on one baseline, plus the scans that
-            # scan propagates to, across all correlations
+            # Each line flags one scan (or window) on one baseline, plus the
+            # scans it propagates to, across all correlations
             with open(flag_file_path, 'a') as f:
-                for base_num, (a1, a2, bl_idx, bl_name, scan, trigger_str) in enumerate(bad_baseline_scan_data):
-                    reason = f"BASED_FLAGGER_CHUNK_{chunk_num}_BASE{base_num}_SCAN{scan}_{trigger_str}"
-                    scan_sel = scan_selection([scan] + extra_scans.get(scan, []))
+                for base_num, (a1, a2, bl_idx, bl_name, scan, window, trigger_str) in enumerate(bad_baseline_scan_data):
+                    reason = (f"BASED_FLAGGER_CHUNK_{chunk_num}_BASE{base_num}_"
+                              f"SCAN{window_label(scan, window)}_{trigger_str}")
                     flag_line = (f"mode='manual' antenna='{bl_name}' spw='0:{start_chan}~{end_chan-1}' "
-                                 f"scan='{scan_sel}' reason='{reason}'\n")
+                                 f"{flag_selection(scan, window)} reason='{reason}'\n")
                     f.write(flag_line)
 
-            # Antenna flags cover that antenna's baselines in the one scan it
-            # failed, plus the scans that scan propagates to
+            # Antenna flags cover that antenna's baselines in the one scan (or
+            # window) it failed, plus the scans that scan propagates to
             with open(flag_file_path, 'a') as f:
-                for ant_idx, (ant_name, scan, frac, flagged, total) in enumerate(flagged_antennas):
-                    reason = f"BASED_FLAGGER_CHUNK_{chunk_num}_ANT{ant_idx}_SCAN{scan}"
-                    scan_sel = scan_selection([scan] + extra_scans.get(scan, []))
+                for ant_idx, (ant_name, scan, window, frac, flagged, total) in enumerate(flagged_antennas):
+                    reason = f"BASED_FLAGGER_CHUNK_{chunk_num}_ANT{ant_idx}_SCAN{window_label(scan, window)}"
                     flag_line = (f"mode='manual' antenna='{ant_name}' spw='0:{start_chan}~{end_chan-1}' "
-                                 f"scan='{scan_sel}' reason='{reason}'\n")
+                                 f"{flag_selection(scan, window)} reason='{reason}'\n")
                     f.write(flag_line)
 
             # Calculate new flags for this chunk: the rows of every
-            # (baseline, scan) covered by a baseline-scan flag or by an
-            # antenna-scan flag, each counted once.
+            # (baseline, scan, window) covered by a baseline flag or by an
+            # antenna flag, each counted once.
             n_freq_in_chunk = end_chan - start_chan
             n_corr_flagged = len(correlations)
 
-            flagged_ants_by_scan = {}  # {scan: {ant_name, ...}}
-            for ant_name, scan, _, _, _ in flagged_antennas:
-                flagged_ants_by_scan.setdefault(scan, set()).add(ant_name)
+            flagged_ants_by_window = {}  # {(scan, window): {ant_name, ...}}
+            for ant_name, scan, window, _, _, _ in flagged_antennas:
+                flagged_ants_by_window.setdefault((scan, window), set()).add(ant_name)
 
-            covered_baseline_scans = {(bl_idx, int(scan)) for bl_idx, scan in chunk_flagged_baseline_scans}
-            for scan, ant_names in flagged_ants_by_scan.items():
+            covered_baseline_scans = set(chunk_flagged_baseline_scans)
+            for (scan, window), ant_names in flagged_ants_by_window.items():
                 for bl_idx, (a1, a2, _, _, _) in enumerate(baseline_info):
                     if antenna_names[a1] in ant_names or antenna_names[a2] in ant_names:
-                        covered_baseline_scans.add((bl_idx, scan))
+                        covered_baseline_scans.add((bl_idx, scan, window))
 
             flagged_rows = sum(
-                int(np.sum(scan_arrays[bl_idx] == scan))
-                for (bl_idx, scan) in covered_baseline_scans
+                int(np.sum((scan_arrays[bl_idx] == scan) & (window_arrays[bl_idx] == window)))
+                for (bl_idx, scan, window) in covered_baseline_scans
             )
+            for bl_idx, scan, window in covered_baseline_scans:
+                if bl_idx in protected_bls:
+                    mark_protected([start_chan], bl_idx, scan, window)
 
             chunk_new_flags = flagged_rows * n_freq_in_chunk * n_corr_flagged
 
             cumulative_new_flags += chunk_new_flags
-            n_distinct_bl_flagged = len({bl_idx for bl_idx, _ in covered_baseline_scans})
+            n_distinct_bl_flagged = len({key[0] for key in covered_baseline_scans})
             log(f"New flags this chunk: {chunk_new_flags:,} "
                 f"({len(chunk_flagged_baseline_scans)} baseline-scan flag(s), "
                 f"{n_distinct_bl_flagged} distinct baseline(s))")
@@ -1940,19 +2455,20 @@ def main():
     log("GLOBAL ANTENNA FLAGGING (ALL CHUNKS)")
     log("="*60)
     
-    # Antenna statistics summed over all chunks, scan by scan: an antenna is
-    # flagged across the band in a scan it fails, and in that scan only
-    global_scans = sorted({scan for stats in global_antenna_stats.values() for scan in stats['scans']})
+    # Antenna statistics summed over all chunks, scan by scan (window by window
+    # on a target): an antenna is flagged across the band in a scan or window
+    # it fails, and in that one only. The cap applies to each scan or window.
+    global_scans = sorted({key for stats in global_antenna_stats.values() for key in stats['scans']})
 
-    capped_flagged = []  # [(ant_name, scan, frac, flagged, total, methods)]
+    capped_flagged = []  # [(ant_name, scan, window, frac, flagged, total, methods)]
 
     if len(global_scans) == 0:
         log("No antenna statistics available")
 
-    for scan in global_scans:
+    for scan, window in global_scans:
         antenna_fractions = []
         for ant_name, stats in global_antenna_stats.items():
-            scan_stats = stats['scans'].get(scan)
+            scan_stats = stats['scans'].get((scan, window))
             if scan_stats and scan_stats['total'] > 0:
                 fraction = scan_stats['flagged'] / scan_stats['total']
                 antenna_fractions.append((ant_name, fraction, scan_stats['flagged'], scan_stats['total']))
@@ -1960,7 +2476,7 @@ def main():
             continue
 
         log("")
-        log(f"--- Scan {scan}: analyzing {len(antenna_fractions)} antennas ---")
+        log(f"--- Scan {window_label(scan, window)}: analyzing {len(antenna_fractions)} antennas ---")
         log("")
 
         # METHOD 1: Absolute threshold
@@ -2018,7 +2534,14 @@ def main():
                 flagged_dict[ant_name]['methods'].append(method)
             else:
                 flagged_dict[ant_name] = {'frac': frac, 'flagged': flagged, 'total': total, 'methods': [method]}
-        
+
+        # The protected antenna is never flagged, and doesn't use up a place under the cap
+        if protected_antenna in flagged_dict:
+            info = flagged_dict.pop(protected_antenna)
+            log(f"Not flagging protected antenna {protected_antenna} ({info['frac']:.2%} of its baselines bad)")
+            protected_hits.append(f"global pass, scan {window_label(scan, window)}: "
+                                  f"{info['frac']:.0%} of its baselines bad")
+
         # Sort by flagging fraction
         combined_flagged = sorted(
             [(ant, info['frac'], info['flagged'], info['total'], info['methods']) 
@@ -2055,28 +2578,27 @@ def main():
             else:
                 log("No antennas meet flagging criteria")
         
-        # Write this scan's global antenna flags to file: that scan plus the
-        # scans it propagates to
+        # Write this scan's (or window's) global antenna flags to file, plus
+        # the scans it propagates to
         if len(scan_capped) > 0 and len(chunks_to_process) > 0:
             min_chan = min(chunks_to_process)
             max_chan = max(chunks_to_process) + args.channel_group_size
             max_chan = min(max_chan, n_chan)  # Don't exceed total channels
-            scan_sel = scan_selection([scan] + extra_scans.get(scan, []))
 
             log("")
-            log(f"Writing {len(scan_capped)} global antenna flag(s) for scan {scan}, "
-                f"channels {min_chan}~{max_chan-1}...")
+            log(f"Writing {len(scan_capped)} global antenna flag(s) for scan "
+                f"{window_label(scan, window)}, channels {min_chan}~{max_chan-1}...")
 
             with open(flag_file_path, 'a') as f:
                 for ant_idx, (ant_name, frac, flagged, total, methods) in enumerate(scan_capped):
-                    reason = f"BASED_FLAGGER_GLOBAL_ANT{ant_idx}_SCAN{scan}"
+                    reason = f"BASED_FLAGGER_GLOBAL_ANT{ant_idx}_SCAN{window_label(scan, window)}"
                     flag_line = (f"mode='manual' antenna='{ant_name}' spw='0:{min_chan}~{max_chan-1}' "
-                                 f"scan='{scan_sel}' reason='{reason}'\n")
+                                 f"{flag_selection(scan, window)} reason='{reason}'\n")
                     f.write(flag_line)
 
             log(f"✓ Wrote {len(scan_capped)} global antenna flags to {flag_file_path}")
 
-        capped_flagged += [(ant_name, scan, frac, flagged, total, methods)
+        capped_flagged += [(ant_name, scan, window, frac, flagged, total, methods)
                            for ant_name, frac, flagged, total, methods in scan_capped]
     
     # Print top 5 antennas with highest flagging fraction across all chunks
@@ -2110,12 +2632,24 @@ def main():
     if capped_flagged and chunks_to_process:
         span_chan = min(max(chunks_to_process) + args.channel_group_size, n_chan) \
                     - min(chunks_to_process)
-        for ant_name, scan, _, _, _, _ in capped_flagged:
-            ant_scan_rows = sum(int(np.sum(scan_arrays[bl_idx] == scan))
-                                for bl_idx, (a1, a2, _, _, _) in enumerate(baseline_info)
-                                if antenna_names[a1] == ant_name
-                                or antenna_names[a2] == ant_name)
+        for ant_name, scan, window, _, _, _, _ in capped_flagged:
+            ant_bls = [bl_idx for bl_idx, (a1, a2, _, _, _) in enumerate(baseline_info)
+                       if ant_name in (antenna_names[a1], antenna_names[a2])]
+            ant_scan_rows = sum(int(np.sum((scan_arrays[bl_idx] == scan)
+                                           & (window_arrays[bl_idx] == window)))
+                                for bl_idx in ant_bls)
             cumulative_new_flags += ant_scan_rows * span_chan * len(correlations)
+            # A global antenna flag spans every processed chunk
+            for bl_idx in protected_bls.intersection(ant_bls):
+                mark_protected(chunks_to_process, bl_idx, scan, window)
+
+    # The protected antenna met the antenna-flagging criteria but was kept
+    if protected_hits:
+        log("")
+        log(f"WARNING: protected antenna {protected_antenna} would have been flagged "
+            f"{len(protected_hits)} time(s) but was kept (its baselines can still be flagged):")
+        for hit in protected_hits:
+            log(f"  {hit}")
 
     # =================================================================
     # FINAL SUMMARY
@@ -2135,6 +2669,30 @@ def main():
         "basedflagger only writes the flag commands. It covers this field only: flags "
         "passed on to the --flag-fields fields are not counted. The true before/after is reported by the flagdata "
         "mode='summary' pair around the apply in 1GC_05_casa_refcal.py.")
+    log("")
+
+    # Protected antenna: how much of its baselines' data was flagged before this
+    # run, and would be after this run's flags (estimated, like the summary)
+    if protected_antenna is None:
+        log("PROTECTED ANTENNA: none")
+    else:
+        total = before = after = 0
+        for start_chan in chunks_to_process:
+            k, w = cache.chunk_index[start_chan], cache.chunk_width[start_chan]
+            for bl_idx in protected_bls:
+                rows = cache.rows_per_bl[bl_idx]
+                new = protected_new_rows.get((start_chan, bl_idx), np.zeros(rows, dtype=bool))
+                for corr_name, _ in correlations:
+                    flagged = ~np.isfinite(cache.memmaps[(corr_name, 'amplitude')][k, bl_idx, :rows, :w])
+                    total += flagged.size
+                    before += int(flagged.sum())
+                    after += int((flagged | new[:, None]).sum())
+        before_frac = before / total if total else 0.0
+        after_frac = after / total if total else 0.0
+        log(f"PROTECTED ANTENNA {protected_antenna} ({len(protected_bls)} baselines): flagged "
+            f"{before_frac:.4%} before -> {after_frac:.4%} after "
+            f"(+{after_frac - before_frac:.4%}; never flagged as a whole, "
+            f"{len(protected_hits)} time(s) it would have been)")
     log("")
 
 

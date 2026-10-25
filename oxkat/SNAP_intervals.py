@@ -278,7 +278,12 @@ def main():
     nint_arr = []
     for scan_n, ints in enumerate(int_arr):
         int0 = int(np.sum(int_arr[:scan_n]))
-        if cfg.SNAP_INTEND:
+        if intbin >= ints:
+            # Bin as long as the scan or longer: image the whole scan as one interval
+            int1 = int0 + ints
+            nint = 1
+            msg(f'Scan {scan_n:04d}: SNAP_INTBIN ({intbin}) >= its {ints} integration(s) -- imaging the whole scan')
+        elif cfg.SNAP_INTEND:
             int1 = ints - ints % intbin + int0
             nint = int((int1 - int0) / intbin)
         else:
