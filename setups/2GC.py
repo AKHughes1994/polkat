@@ -1002,7 +1002,7 @@ def main():
             step['id'] = 'MASKF'+code
             step['glam_config'] = cfg.GLAM_SMALL
             syscall  = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
-            syscall += gen.generate_syscall_breizorro(restoredimage = f"{fulluv_blind_prefix}-MFS-image.fits", outfile = fulluv_mask, thresh=cfg.BREIZORRO_THRESH, boxsize=cfg.BREIZORRO_SMALLBOX)[0]
+            syscall += gen.generate_syscall_breizorro(restoredimage = f"{fulluv_blind_prefix}-MFS-image.fits", outfile = fulluv_mask, thresh=7.0, boxsize=cfg.BREIZORRO_SMALLBOX)[0]
             # Delete the temporary blind image, keeping any masks
             syscall += f'\n\nfind {img_dir} -type f -name "{os.path.basename(fulluv_blind_prefix)}*" ! -name "*.mask.fits" -delete\n'
             step['syscall'] = syscall
