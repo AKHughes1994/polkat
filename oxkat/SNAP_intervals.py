@@ -396,6 +396,7 @@ def main():
 
         wsclean_failed = False
         for syscall in imcall:
+            msg(f'Running: {syscall}')
             result = subprocess.run([syscall], shell=True)
             if result.returncode != 0:
                 msg(f'ERROR: wsclean exited with code {result.returncode} for scan {scan_n:04d} '
