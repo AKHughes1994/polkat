@@ -253,6 +253,10 @@ GLAM_COREHEAVY = {
 # Set False to keep secondaries in every stage too.
 CAL_SKIP_CALS = True
 
+# Secondaries that are always split/imaged/extracted, even when CAL_SKIP_CALS
+# is True. They are still treated as secondaries (calibrator imaging settings).
+CAL_ALWAYS_PROCESS = ['J1331+3030', 'J0521+1638']
+
 # ------------------------------------------------------------------------
 #
 # 1GC settings
@@ -272,6 +276,8 @@ PRE_FIELDS = ''  # Comma-separated list of fields to select from raw MS
 PRE_SCANS = ''                       # Comma-separated list of scans to select from raw MS
 PRE_NCHANS = 1024                    # Integer number of channels for working MS
 PRE_TIMEBIN = '8s'                   # Integration time for working MS
+PRE_MIN_GOOD_WEIGHT_FRAC = 0.3       # Fraction of the primary's WEIGHT_SPECTRUM (and WEIGHT) values that
+                                     # must be positive; below it the working MS's weights are reinitialised
 
 
 
@@ -346,6 +352,14 @@ CAL_1GC_REF_POOL = ['m060','m061','m059','m058', 'm048', 'm062', 'm063']
 CAL_1GC_REFANT_SNR_SELECT = True     # After cal flagging, solve per-scan delay S/N on the primary
                                      # and replace CAL_1GC_REF_POOL with the 7 antennas with the
                                      # highest average S/N (m060 still pinned to front if present)
+
+# K (delay) table check after every K gaincal in 1GC_05 (tools/fix_delay_table.py)
+CAL_1GC_KFIX_FLAG_FRAC = 0.8         # Rewrite a field's K solutions with delays from the baselines to
+                                     # the leading refant when at least this fraction is flagged
+                                     # (the original table is kept as <ktab>_bad_<field>)
+CAL_1GC_KFIX_DIAGNOSTIC = True       # Re-solve and plot the delays against CASA's for every K solve,
+                                     # even when the table is not rewritten
+CAL_1GC_KFIX_MINSNR = 3.0            # Delay-spectrum S/N below which a re-solved delay is flagged
 
 # Field selection, IDs only at present. (Use tools/ms_info.py.)
 CAL_1GC_PRIMARY = 'auto'             # Primary calibrator field ID
@@ -657,10 +671,10 @@ WSC_SPLITPOL = True
 WSC_JOINPOLARIZATIONS = False
 
 # --- Masking: blind image (stage 0 — mask generation only) ---
-WSC_AUTOMASK_BLIND      = 5.0   # Auto-mask threshold (sigma) for blind image
+WSC_AUTOMASK_BLIND      = 10.0   # Auto-mask threshold (sigma) for blind image
 WSC_AUTOTHRESHOLD_BLIND = 1.0   # Auto-threshold (sigma) at which CLEAN stops for blind image
 WSC_THRESHOLD_BLIND     = False  # Absolute flux threshold for blind image; False = use auto-threshold
-WSC_LOCALRMS_BLIND      = 0.5    # Local RMS map for masking in the blind image; local-rms strength
+WSC_LOCALRMS_BLIND      = 0.75    # Local RMS map for masking in the blind image; local-rms strength
 
 # --- Masking: first self-calibration pass (two-stage workflow only) ---
 # Restricts cleaning to high-significance pixels before any amplitude self-calibration.
@@ -831,17 +845,17 @@ MAKEMASK_THRESH = 6.0
 MAKEMASK_BOXSIZE = 500
 MAKEMASK_SMALLBOX = 50
 MAKEMASK_ISLANDSIZE = 30000
-MAKEMASK_DILATION = 3
-
+MAKEMASK_DILATION = 1
 # ------------------------------------------------------------------------
 #
 # BREIZORRO defaults
 #
 
-BREIZORRO_THRESH = 6.0
-BREIZORRO_BOXSIZE = 50
+BREIZORRO_THRESH = 5.0
+BREIZORRO_BOXSIZE = 250
+BREIZORRO_SMALLBOX = 50
 BREIZORRO_FILLHOLES = True
-BREIZORRO_DILATION = 3
+BREIZORRO_DILATION = 1
 
 # ------------------------------------------------------------------------
 #

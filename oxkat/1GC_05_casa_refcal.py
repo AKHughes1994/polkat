@@ -17,6 +17,7 @@ print = functools.partial(print, flush=True)
 
 exec(open('oxkat/config.py').read())
 exec(open('oxkat/casa_read_project_info.py').read())
+exec(open(f'{TOOLS}/fix_delay_table.py').read())
 
 if PRE_FIELDS != '':
     targets = user_targets
@@ -389,6 +390,8 @@ gaincal(vis=myms,
     gaintype='K',
     solint='inf')
 
+fix_delay_table(myms, ktab0, bpcal_name, ref_ant, uvrange=primary_uvrange_use)
+
 
 # ------- Gp0 (primary; apply K0) -- Type G, phase-only
 
@@ -595,6 +598,8 @@ gaincal(vis=myms,
     gaintype='K',
     solint='inf')
 
+fix_delay_table(myms, ktab, bpcal_name, ref_ant, uvrange=primary_uvrange_use)
+
 
 # -------- Gp (primary; apply K) -- Type G, phase-only
 
@@ -761,6 +766,12 @@ if pacal_name != '':
         interp=['linear', 'linear', 'linear', 'linear'],
         append=True)
 
+    fix_delay_table(myms, ktab0, pacal_name, ref_ant,
+        gaintable=[bptab, dftab, gptab0, gtab0],
+        gainfield=[bpcal_name, bpcal_name, pacal_name, pacal_name],
+        interp=['linear', 'linear', 'linear', 'linear'],
+        uvrange=myuvrange)
+
 # ----- Loop over secondaries
 
 for i in range(0,len(pcal_names)):
@@ -820,6 +831,12 @@ for i in range(0,len(pcal_names)):
         gainfield=[bpcal_name, bpcal_name, pcal, pcal],
         interp=['linear', 'linear', 'linear', 'linear'],
         append=True)
+
+    fix_delay_table(myms, ktab0, pcal, ref_ant,
+        gaintable=[bptab, dftab, gptab0, gtab0],
+        gainfield=[bpcal_name, bpcal_name, pcal, pcal],
+        interp=['linear', 'linear', 'linear', 'linear'],
+        uvrange=myuvrange)
 
 if pacal_name != '':
     # -------- Applycal (polcal; B, Df from primary, K0, Gp0, G0 from polcal) and Flag
@@ -1022,7 +1039,13 @@ if pacal_name != '':
         interp=['linear', 'linear', 'linear', 'linear'],
         append=True)
 
-            
+    fix_delay_table(myms, ktab, pacal_name, ref_ant,
+        gaintable=[bptab, dftab, gptab, gtab],
+        gainfield=[bpcal_name, bpcal_name, pacal_name, pacal_name],
+        interp=['linear', 'linear', 'linear', 'linear'],
+        uvrange=myuvrange)
+
+
 for i in range(0,len(pcal_names)):
 
     pcal = pcal_names[i]
@@ -1080,6 +1103,12 @@ for i in range(0,len(pcal_names)):
         gainfield=[bpcal_name, bpcal_name, pcal, pcal],
         interp=['linear', 'linear', 'linear', 'linear'],
         append=True)
+
+    fix_delay_table(myms, ktab, pcal, ref_ant,
+        gaintable=[bptab, dftab, gptab, gtab],
+        gainfield=[bpcal_name, bpcal_name, pcal, pcal],
+        interp=['linear', 'linear', 'linear', 'linear'],
+        uvrange=myuvrange)
 
 # ----- Diagnostic: solve cross-hand delay (KCROSS) per secondary. This table is never
 # added to cross_table/applycal -- it has no effect on the pipeline -- it's only saved

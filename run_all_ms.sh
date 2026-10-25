@@ -36,6 +36,15 @@
 # so every MS runs again. It asks twice (the second time "ARE YOU ABSOLUTELY
 # SURE") and only deletes once you have also accepted the run plan.
 #
+# RESUME_2GC=true (slurm only) picks up an MS whose last failure was at 2GC
+# and whose working directory survived: sacct says which 2GC jobs did not
+# complete, only those sources are resubmitted, each from its first failed
+# job (tools/resume_2gc.py), and RMSYNTH then runs as normal. The working
+# directories of these MSs are kept when the run starts.
+#
+# DRY_RUN=true prints the plan, including what each resumed MS would
+# resubmit, and exits without asking, deleting or submitting anything.
+#
 # ------------------------------------------------------------------ #
 # What a run actually does, step by step (for readers who don't know bash):
 #
@@ -65,7 +74,9 @@
 #           stage that was in the failures file, and moves on to the next
 #           MS -- one bad MS never blocks the others.
 #   5. When an MS finishes, checks the tracking file again: if RMSYNTH's last step
-#      added this obsid, that MS is counted as passed. If not, it's counted as
+#      added this obsid, that MS is counted as passed and its working_dir/<obsid>
+#      (left with only leftovers once RMSYNTH has archived its products) is
+#      deleted. If not, it's counted as
 #      failed -- unless STAGES was deliberately shortened to stop before
 #      RMSYNTH (e.g. for a quick test) and every stage that did run actually
 #      succeeded, in which case it's counted as PARTIAL, not failed.
@@ -89,6 +100,8 @@ START_AT=''         # obsid or MS name: start the run at this MS, skipping every
 BATCH=4             # slurm only: how many MSs run at once; a free slot is refilled as soon as an MS finishes. Ignored (1) on 'node'
 SETTLE=600          # seconds: an MS with any file modified in the last SETTLE seconds is treated as still transferring and not started
 RESTART=false       # true: DELETE the tracking, failures and interesting files, the archive and residual-MS directories' contents and this script's logs, so every MS runs again. Asks twice before anything is deleted
+RESUME_2GC=false    # true (slurm only): an MS whose last failure was at 2GC, and whose working directory is still there, resubmits only the 2GC jobs that did not complete (each source from its first failed job) and then runs RMSYNTH, instead of starting again from scratch
+DRY_RUN=false       # true: print the plan (and, with RESUME_2GC, which sources and jobs each resumed MS would resubmit) and exit, without asking, deleting, or submitting anything
 
 # Refuse to start unless every input above has actually been filled in.
 REQUIRED=(INFRA MS_DIR TRACKING PIPELINE WORK)
@@ -117,6 +130,11 @@ case $INFRA in
   node)       MODE=node ;;
   *)          echo "INFRA must be 'idia', 'hippo', or 'node' (got: '$INFRA')" >&2; exit 1 ;;
 esac
+
+[[ $RESUME_2GC == true || $RESUME_2GC == false ]] || { echo "RESUME_2GC must be 'true' or 'false' (got: '$RESUME_2GC')" >&2; exit 1; }
+[[ $DRY_RUN == true || $DRY_RUN == false ]] || { echo "DRY_RUN must be 'true' or 'false' (got: '$DRY_RUN')" >&2; exit 1; }
+# Resuming looks up the failed jobs with sacct, so it needs slurm
+[[ $RESUME_2GC == true && $MODE != slurm ]] && { echo "RESUME_2GC needs INFRA 'idia' or 'hippo' (got: '$INFRA')" >&2; exit 1; }
 
 [[ $BATCH =~ ^[1-9][0-9]*$ ]] || { echo "BATCH must be a positive integer (got: '$BATCH')" >&2; exit 1; }
 # Batching is only for slurm (INFRA 'idia' or 'hippo'); node mode runs one MS at a time
@@ -190,7 +208,7 @@ if [[ -z $CFG_ARCHIVE_DIR ]]; then
   echo "You need to specify RMSYNTH_ARCHIVE_DIR in $CONFIG -- without it, each MS's" >&2
   echo "finished products are never moved out of working_dir, so clear_work() deletes" >&2
   echo "them when the next MS starts." >&2
-  exit 1cd 
+  exit 1
 fi
 
 # Collects the msinfo log of every MS skipped after 0_GET_INFO for having no
@@ -246,6 +264,54 @@ record_failure() {
     [[ -f $FAILED_FILE ]] || echo '# obsid | ms_name | failed_utc | stage | reason' > "$FAILED_FILE"
     echo "$id | $msname | $(date -u '+%Y-%m-%dT%H:%M:%S') | $stage | $reason" >> "$FAILED_FILE"
   ) 9>> "$FAILED_FILE.lock"
+}
+
+# Stage recorded by the last line for obsid $1 in FAILED_FILE (empty if none).
+last_failed_stage() {
+  [[ -f $FAILED_FILE ]] || return 0
+  awk -F'|' -v id="$1" '
+    /^#/ { next }
+    { gsub(/[ \t]/, "", $1); if ($1 == id) { s = $4; gsub(/^[ \t]+|[ \t]+$/, "", s) } }
+    END { print s }' "$FAILED_FILE"
+}
+
+# Index of 2GC in STAGES; its job IDs are saved as stage<index>.jobids.
+for GC2_INDEX in "${!STAGES[@]}"; do
+  [[ ${STAGES[GC2_INDEX]} == setups/2GC.py\|* ]] && break
+done
+
+# True if obsid $1 resumes at 2GC: RESUME_2GC is on, its last failure was at
+# 2GC, and its working directory and submitted 2GC job IDs are still there.
+can_resume() {
+  [[ -z $(resume_blocker "$1") ]]
+}
+
+# Why obsid $1 cannot resume at 2GC (empty if it can).
+resume_blocker() {
+  local stage
+  if [[ $RESUME_2GC != true ]]; then
+    echo "RESUME_2GC is false"
+  elif [[ $WIPE_PENDING == true ]]; then
+    echo "RESTART is true"
+  elif [[ ! -d $WORK/$1 ]]; then
+    echo "no working directory $WORK/$1"
+  elif [[ -z $(gc2_jobid_files "$1") ]]; then
+    echo "no 2GC job IDs in $STATE/$1 (2GC_submitted.jobids or stage$GC2_INDEX.jobids)"
+  else
+    stage=$(last_failed_stage "$1")
+    [[ $stage == 2GC ]] || echo "last failure in $FAILED_FILE is '${stage:-none recorded}', not 2GC"
+  fi
+}
+
+# The file of every 2GC job ID obsid $1 has submitted (all attempts), or for a
+# run from before that file was kept, the IDs of its last 2GC submission.
+gc2_jobid_files() {
+  local state=$STATE/$1
+  if [[ -f $state/2GC_submitted.jobids ]]; then
+    echo "$state/2GC_submitted.jobids"
+  elif [[ -f $state/stage$GC2_INDEX.jobids ]]; then
+    echo "$state/stage$GC2_INDEX.jobids"
+  fi
 }
 
 # Number of science targets in ./project_info.json: target_names that are also
@@ -369,8 +435,11 @@ if [[ $RESTART == true ]]; then
   echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
   echo
 
-  confirm "Delete all of the above?" || { echo "Aborted, nothing was deleted"; exit 0; }
-  confirm "ARE YOU ABSOLUTELY SURE? This cannot be undone." || { echo "Aborted, nothing was deleted"; exit 0; }
+  # A dry run only shows what would be deleted
+  if [[ $DRY_RUN == false ]]; then
+    confirm "Delete all of the above?" || { echo "Aborted, nothing was deleted"; exit 0; }
+    confirm "ARE YOU ABSOLUTELY SURE? This cannot be undone." || { echo "Aborted, nothing was deleted"; exit 0; }
+  fi
   WIPE_PENDING=true
 fi
 
@@ -419,6 +488,7 @@ scan_ms() {
   TODO=()
   DONE=()
   BUSY=()
+  RESUMABLE=()   # the part of TODO that resumes at 2GC (RESUME_2GC)
   START_MS=
   local ms id reached=false
   [[ -n $START_AT ]] || reached=true
@@ -440,6 +510,7 @@ scan_ms() {
       BUSY+=("$ms")
     else
       TODO+=("$ms")
+      can_resume "$id" && RESUMABLE+=("$ms")
     fi
   done
 }
@@ -480,7 +551,7 @@ echo " SUMMARY"
 echo "=================================================================="
 echo "  Infrastructure : $INFRA ($MODE)"
 echo "  Pipeline       : $PIPELINE"
-echo "  Working dir    : $WORK (emptied at the start; each MS runs in $WORK/<obsid>)"
+echo "  Working dir    : $WORK (emptied at the start, except MSs resuming at 2GC; each MS runs in $WORK/<obsid>)"
 if [[ $BATCH -gt 1 ]]; then
   echo "  Batch size     : up to $BATCH MSs at once (a free slot is refilled as soon as an MS finishes)"
 else
@@ -539,14 +610,39 @@ if [[ ${#TODO[@]} -gt 0 ]]; then
   echo
   echo "  To run, in this order:"
   for ms in "${TODO[@]}"; do
-    echo "    $(obsid "$ms")  ${ms##*/}"
+    if can_resume "$(obsid "$ms")"; then
+      echo "    $(obsid "$ms")  ${ms##*/}  (resume at 2GC: failed jobs only, then RMSYNTH)"
+    else
+      echo "    $(obsid "$ms")  ${ms##*/}"
+    fi
   done
+fi
+if [[ $RESUME_2GC == true ]]; then
+  echo "  RESUME_2GC is true: ${#RESUMABLE[@]} MS(s) resume at 2GC (kept in $WORK)"
+  # Every other working directory is deleted at the start; say why each one does not resume
+  while IFS= read -r -d '' dir; do
+    blocker=$(resume_blocker "${dir##*/}")
+    [[ -n $blocker ]] && echo "    ${dir##*/}: not resuming, WILL BE DELETED at the start -- $blocker"
+  done < <(find "$WORK" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
 fi
 echo "=================================================================="
 echo
 
 if [[ ${#TODO[@]} -eq 0 && ${#BUSY[@]} -eq 0 ]]; then
   echo "Nothing to do"
+  exit 0
+fi
+
+# Dry run: show what each resumed MS would resubmit, then stop before anything is changed
+if [[ $DRY_RUN == true ]]; then
+  for ms in "${TODO[@]}"; do
+    id=$(obsid "$ms")
+    can_resume "$id" || continue
+    echo "  $id would resubmit:"
+    ( cd "$WORK/$id" && python3 "$PIPELINE/tools/resume_2gc.py" --dry-run $(gc2_jobid_files "$id") 2>&1 ) | sed 's/^/    /'
+  done
+  echo
+  echo "DRY_RUN is true: nothing was deleted, submitted or run"
   exit 0
 fi
 
@@ -666,44 +762,78 @@ clear_work() {
     rm -rf -- "$WORK/$id"
     mkdir -p "$WORK/$id"
   else
-    find "$WORK" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+    # Everything goes except the working directories of MSs resuming at 2GC
+    local dir
+    while IFS= read -r -d '' dir; do
+      if can_resume "${dir##*/}"; then
+        log "keeping $dir (resumes at 2GC)"
+      else
+        rm -rf -- "$dir"
+      fi
+    done < <(find "$WORK" -mindepth 1 -maxdepth 1 -print0)
   fi
 }
 
 # Runs every stage for one MS inside WORK/<obsid>; returns non-zero at the first
 # stage that fails. Runs in a background subshell, so its cd stays its own.
 run_ms() {
-  local ms=$1 i setup subs stage
+  local ms=$1 i setup subs stage start=0 resume=false failed
   local id=$(obsid "$ms")
   local state="$STATE/$id"
-  # Wipe any state left over from a previous attempt at this obsid first, so
-  # there's only ever one set of logs per MS -- a stale log from a stage that
-  # isn't even reached this time (e.g. it now fails earlier) never lingers.
-  rm -rf -- "$state"
-  mkdir -p "$state"
-  clear_work "$id"
-  cp -a "$PIPELINE/." "$WORK/$id/"
-  ln -s "$(cd -- "$(dirname -- "$ms")" && pwd)/${ms##*/}" "$WORK/$id/${ms##*/}"
+  if can_resume "$id"; then
+    # Keep the working directory and logs and pick up at 2GC. A run from
+    # before every 2GC submission was recorded starts the record from its
+    # last one.
+    resume=true
+    start=$GC2_INDEX
+    [[ -f $state/2GC_submitted.jobids ]] || cp -- "$state/stage$GC2_INDEX.jobids" "$state/2GC_submitted.jobids"
+    log "  resuming at 2GC in $WORK/$id"
+  else
+    # Wipe any state left over from a previous attempt at this obsid first, so
+    # there's only ever one set of logs per MS -- a stale log from a stage that
+    # isn't even reached this time (e.g. it now fails earlier) never lingers.
+    rm -rf -- "$state"
+    mkdir -p "$state"
+    clear_work "$id"
+    cp -a "$PIPELINE/." "$WORK/$id/"
+    ln -s "$(cd -- "$(dirname -- "$ms")" && pwd)/${ms##*/}" "$WORK/$id/${ms##*/}"
+  fi
   cd "$WORK/$id" || return 1
 
-  for ((i=0; i<${#STAGES[@]}; i++)); do
+  for ((i=start; i<${#STAGES[@]}; i++)); do
     setup=${STAGES[i]%%|*}
     subs=${STAGES[i]##*|}
     stage=${setup#setups/}
     stage=${stage%.py}
     log "  stage $i: $setup"
-    python3 "$setup" "$INFRA" > "$state/setup_stage$i.log" 2>&1 || {
-      log "  $setup failed (see $state/setup_stage$i.log)"
-      record_failure "$id" "${ms##*/}" "$stage" "setup script failed, see $state/setup_stage$i.log"
-      return 1
-    }
+    if [[ $resume == true && $i -eq $GC2_INDEX ]]; then
+      # Resubmit only the 2GC jobs that did not complete, reusing their slurm scripts
+      subs=submit_2GC_resume.sh
+      rm -f -- "./$subs"
+      python3 "$PIPELINE/tools/resume_2gc.py" "$state/2GC_submitted.jobids" > "$state/resume_stage$i.log" 2>&1 || {
+        log "  could not resume 2GC (see $state/resume_stage$i.log)"
+        record_failure "$id" "${ms##*/}" "$stage" "resume failed, see $state/resume_stage$i.log"
+        return 1
+      }
+      sed 's/^/    /' "$state/resume_stage$i.log"
+    else
+      python3 "$setup" "$INFRA" > "$state/setup_stage$i.log" 2>&1 || {
+        log "  $setup failed (see $state/setup_stage$i.log)"
+        record_failure "$id" "${ms##*/}" "$stage" "setup script failed, see $state/setup_stage$i.log"
+        return 1
+      }
+    fi
     [[ -f ./$subs ]] || {
       log "  $subs not generated"
       record_failure "$id" "${ms##*/}" "$stage" "$subs not generated"
       return 1
     }
     if [[ $MODE == slurm ]]; then
-      run_stage_slurm "$subs" "$state/stage$i.jobids" || {
+      failed=0
+      run_stage_slurm "$subs" "$state/stage$i.jobids" || failed=1
+      # Every 2GC submission's job IDs are kept, so a later resume sees all attempts
+      [[ $i -eq $GC2_INDEX ]] && cat -- "$state/stage$i.jobids" >> "$state/2GC_submitted.jobids"
+      [[ $failed -eq 0 ]] || {
         log "  stage $i failed"
         record_failure "$id" "${ms##*/}" "$stage" "job(s) did not complete"
         return 1
@@ -795,6 +925,8 @@ finish_ms() {
   elif in_tracking "$id"; then
     log "=== $id complete ==="
     PASSED+=("$id")
+    # RMSYNTH has moved its products to the archive, so only leftovers remain
+    rm -rf -- "${WORK:?}/$id" && log "  removed $WORK/$id"
   elif [[ $ran_ok -eq 0 && $STAGES_INCLUDE_RMSYNTH == false ]]; then
     log "=== $id stopped after the configured stage(s) -- STAGES doesn't include RMSYNTH, so it was never going to reach TRACKING. Not a failure. ==="
     PARTIAL+=("$id  ${ms##*/}")

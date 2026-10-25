@@ -111,6 +111,7 @@ if CAL_1GC_REFANT_SNR_SELECT:
 
     print(f'Solving per-scan delay S/N on the primary ({bpcal_name}) for refant ranking...')
     exec(open(f'{TOOLS}/antenna_delay_snr.py').read())
+    refant_snr_ranking = rank_antennas(myms, bpcal_name, Path(GAINPLOTS))
 
     top_names = [name for name, snr in refant_snr_ranking[:7]]
     if 'm060' in top_names and top_names[0] != 'm060':

@@ -146,6 +146,65 @@ mstransform(vis = master_ms,
 flagmanager(vis = opms, mode = 'save', versionname = 'observatory')
 clearcal(vis = opms, addmodel = True)
 
+
+# ------- Weight check
+#
+# Some MSs come out of mstransform with most of WEIGHT_SPECTRUM zero or
+# negative. The primary's weights are checked: a weight is good if it is
+# positive. If too little of WEIGHT_SPECTRUM is good but WEIGHT is fine,
+# WEIGHT_SPECTRUM is rebuilt from WEIGHT; if WEIGHT is bad too, both are
+# rebuilt from the channel width and integration time.
+
+def good_weight_fractions(ms, field, chunk = 2000):
+    """
+    Positive, zero and negative fractions of WEIGHT and WEIGHT_SPECTRUM over
+    every sample of one field, read in chunks of rows.
+
+    Returns
+    -------
+    dict of {str: (float, float, float)}
+        Column name to its (positive, zero, negative) fractions.
+    """
+    tb.open(ms+'/FIELD')
+    fid = list(tb.getcol('NAME')).index(field)  # mstransform may have renumbered the fields
+    tb.close()
+
+    counts = {col: np.zeros(4) for col in ('WEIGHT', 'WEIGHT_SPECTRUM')}  # positive, zero, negative, total
+    tb.open(ms)
+    t = tb.query(f'FIELD_ID == {fid}')
+    for start in range(0, t.nrows(), chunk):
+        n = min(chunk, t.nrows() - start)
+        for col, c in counts.items():
+            w = t.getcol(col, start, n)
+            c += [np.sum(w > 0), np.sum(w == 0), np.sum(w < 0), w.size]
+    t.close()
+    tb.close()
+    return {col: tuple(c[:3] / max(c[3], 1)) for col, c in counts.items()}
+
+def report_weights(ms, label):
+    """Print the primary's weight fractions; return the good (positive) fraction of each column."""
+    fractions = good_weight_fractions(ms, bpcal_name)
+    print(f'\nWeights of the primary {bpcal_name} ({label}):')
+    for col, (pos, zero, neg) in fractions.items():
+        print(f'  {col:15s}  positive {pos:.2%}  zero {zero:.2%}  negative {neg:.2%}')
+    return fractions['WEIGHT_SPECTRUM'][0], fractions['WEIGHT'][0]
+
+good_wtsp, good_wt = report_weights(opms, 'after mstransform')
+if good_wtsp < PRE_MIN_GOOD_WEIGHT_FRAC:
+    if good_wt >= PRE_MIN_GOOD_WEIGHT_FRAC:
+        print(f'\nOnly {good_wtsp:.1%} of WEIGHT_SPECTRUM is positive but WEIGHT is good ({good_wt:.1%}) '
+              f'-- reinitialising WEIGHT_SPECTRUM from WEIGHT\n')
+        initweights(vis = opms, wtmode = 'weight', dowtsp = True)
+    else:
+        print(f'\n!!! WARNING: the weights in this MS look broken: only {good_wtsp:.1%} of WEIGHT_SPECTRUM and '
+              f'{good_wt:.1%} of WEIGHT are positive (need {PRE_MIN_GOOD_WEIGHT_FRAC:.0%}). Reinitialising '
+              f'both from channel width and integration time (wtmode nyq) -- check this MS !!!\n')
+        initweights(vis = opms, wtmode = 'nyq', dowtsp = True)
+    report_weights(opms, 'after initweights')
+else:
+    print(f'\nWeights look good: {good_wtsp:.1%} of WEIGHT_SPECTRUM and {good_wt:.1%} of WEIGHT are positive '
+          f'(need {PRE_MIN_GOOD_WEIGHT_FRAC:.0%}) -- leaving them as they are\n')
+
 # Get  names and field IDs for sources that are 
 tb.open(opms+'/FIELD')
 names = tb.getcol('NAME')

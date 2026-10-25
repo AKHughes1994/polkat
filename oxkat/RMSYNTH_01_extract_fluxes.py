@@ -1,8 +1,8 @@
 # andrew.hughes@physics.ox.ac.uk
 # fraser.cowie@physics.ox.ac.uk
 
-# Modular-CASA version: imfit/imstat/imhead/table are plain imports from
-# casatasks/casatools rather than casashell-injected globals, so this runs
+# Modular-CASA version: imfit/imstat/imhead are plain imports from
+# casatasks rather than casashell-injected globals, so this runs
 # under a normal `python-pycasa` interpreter (not `casa -c`) as long as that
 # interpreter has casatasks/casatools installed. This also means astropy is
 # available, so estimate_memory_per_worker_bytes reads FITS headers directly
@@ -34,8 +34,6 @@ from oxkat import config as cfg
 from oxkat import generate_jobs as gen
 
 from casatasks import imfit, imstat, imhead
-from casatools import table
-tb = table()
 
 
 # =============================================================================
@@ -266,14 +264,17 @@ def chunk_jobs(jobs, n_chunks):
     return [c for c in chunks if c]
 
 
-def get_source_from_ms(myms, source_name):
+def get_source_from_image(image_dir, source_name, target_names):
     """
-    Query MS to find source by name and return position and intent.
+    Find the source's phase centre and intent without opening the MS.
+    The position is CRVAL1/CRVAL2 of a Stokes I image in image_dir: WSClean
+    centres every image on the phase centre, and zoom cutouts keep CRVAL.
     For per-scan sources (e.g., "J1744-5144_scan2"), strips the scan suffix
-    to match the base field name in the MS.
+    to get the base field name. The intent is 'TARGET' for a field in
+    target_names (project_info.json) and 'CALIBRATOR' otherwise.
     """
-    msg(f"Querying MS for source: {source_name}")
-    
+    msg(f"Reading phase centre from images for source: {source_name}")
+
     # Strip scan suffix if present (e.g., "J1744-5144_scan2" -> "J1744-5144")
     base_field_name = source_name
     scan_number = None
@@ -282,55 +283,25 @@ def get_source_from_ms(myms, source_name):
         base_field_name = scan_match.group(1)
         scan_number = scan_match.group(2)
         msg(f"  Detected per-scan source: base={base_field_name}, scan={scan_number}")
-    
-    # Query FIELD table for source
-    tb.open(myms + '/FIELD')
-    field_names = tb.getcol('NAME')
-    field_dirs = tb.getcol('PHASE_DIR')
-    tb.close()
-    
-    # Find matching source (case-insensitive, using base field name)
-    source_idx = None
-    for i, fname in enumerate(field_names):
-        if fname.lower() == base_field_name.lower():
-            source_idx = i
-            break
 
-    if source_idx is None:
-        msg(f"ERROR: Source '{base_field_name}' not found in MS FIELD table")
-        msg(f"  Available fields: {', '.join(field_names)}")
+    images = sorted(glob.glob(f'{image_dir}/*-I-image*.fits'))
+    if not images:
+        msg(f"ERROR: No Stokes I images in {image_dir} to read the phase centre from")
         return {'name': source_name, 'ra_deg': None, 'dec_deg': None, 'intent': None, 'found': False}
-    
-    # Get position (convert radians to degrees)
-    # PHASE_DIR shape is (2, 1, num_fields) where [0]=RA, [1]=DEC
-    ra_rad = field_dirs[0][0][source_idx]
-    dec_rad = field_dirs[1][0][source_idx]
-    ra_deg = np.degrees(ra_rad)
-    dec_deg = np.degrees(dec_rad)
-    
-    # Get intent from STATE table via main table
-    tb.open(myms)
-    field_col = tb.getcol('FIELD_ID')
-    state_col = tb.getcol('STATE_ID')
-    tb.close()
-    
-    # Find scans with this field
-    field_mask = field_col == source_idx
-    field_states = np.unique(state_col[field_mask])
-    
-    # Get intent from STATE table
-    tb.open(myms + '/STATE')
-    obs_modes = tb.getcol('OBS_MODE')
-    tb.close()
-    
-    intent = obs_modes[field_states[0]] if len(field_states) > 0 else 'UNKNOWN'
-    
-    msg(f"Found source: {field_names[source_idx]}")
+
+    header = fits.getheader(images[0])
+    ra_deg = float(header['CRVAL1']) % 360.0
+    dec_deg = float(header['CRVAL2'])
+
+    is_target = any(t.lower() == base_field_name.lower() for t in target_names)
+    intent = 'TARGET' if is_target else 'CALIBRATOR'
+
+    msg(f"Found source: {base_field_name} (header of {o.basename(images[0])})")
     msg(f"  Position: RA={ra_deg:.6f} deg, Dec={dec_deg:.6f} deg")
     msg(f"  Intent: {intent}")
-    
+
     return {
-        'name': field_names[source_idx],
+        'name': base_field_name,
         'ra_deg': ra_deg,
         'dec_deg': dec_deg,
         'intent': intent,
@@ -2640,8 +2611,8 @@ def main():
         project_info = json.load(f)
     myms = project_info['working_ms']
     
-    # Query MS for source information using field_name (not full source_name)
-    source_info = get_source_from_ms(myms, field_name)
+    # Phase centre from the image headers and intent from project_info, using field_name (not full source_name)
+    source_info = get_source_from_image(image_dir, field_name, project_info['target_names'])
     
     # Manually use incase you accidentally deleted 1024ch like my dumbass:
     # source_info = {
@@ -2695,7 +2666,7 @@ def main():
         position_file = cfg.DATA + '/positions/XRB_pos_list.txt'
         ra_deg, dec_deg = read_position_file(position_file, field_name)
         if ra_deg is None:
-            msg("WARNING: Position not found in file, using MS position")
+            msg("WARNING: Position not found in file, using phase centre")
             ra_deg = source_info['ra_deg']
             dec_deg = source_info['dec_deg']
         else:
@@ -2704,13 +2675,13 @@ def main():
             dec_ms = source_info['dec_deg']
             delta_ra_arcsec = (ra_deg - ra_ms) * 3600.0
             delta_dec_arcsec = (dec_deg - dec_ms) * 3600.0
-            msg(f"Position difference (file - MS):")
+            msg(f"Position difference (file - phase centre):")
             msg(f"  Delta RA:  {delta_ra_arcsec:+.2f} arcsec")
             msg(f"  Delta Dec: {delta_dec_arcsec:+.2f} arcsec")
             source_info['ra_deg'] = ra_deg
             source_info['dec_deg'] = dec_deg
     else:
-        msg("Source is NOT a target - using MS position")
+        msg("Source is NOT a target - using phase centre")
         ra_deg = source_info['ra_deg']
         dec_deg = source_info['dec_deg']
     

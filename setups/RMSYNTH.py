@@ -150,11 +150,12 @@ def main():
                 'is_secondary': True
             })
 
-    # Skip secondary calibrators -- targets, the primary, and the polarization-angle
-    # calibrator are always processed regardless of this flag.
+    # Skip secondary calibrators -- targets, the primary, the polarization-angle
+    # calibrator, and CAL_ALWAYS_PROCESS secondaries are always processed.
     if cfg.CAL_SKIP_CALS:
-        n_cals = len([f for f in field_list if f['is_secondary']])
-        field_list = [f for f in field_list if not f['is_secondary']]
+        skipped = [f for f in field_list if f['is_secondary'] and f['name'].split('_scan')[0] not in cfg.CAL_ALWAYS_PROCESS]
+        n_cals = len(skipped)
+        field_list = [f for f in field_list if f not in skipped]
         print(gen.col('RMSYNTH Cals')+f'CAL_SKIP_CALS is True -- skipping {n_cals} secondary field/scan(s)')
 
     # ------------------------------------------------------------------------------
@@ -265,7 +266,7 @@ def main():
     # Create one extraction job per field (all with no dependencies)
     for field in field_list:
         fieldname = field['name']
-        field_code = str(field['name'])[-3:]  # Last 3 digits of field ID
+        field_code = gen.get_target_code(field['name'])  # Shell-safe last 3 characters of the field name
         
         step = {}
         step['step'] = step_i

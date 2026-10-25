@@ -8,7 +8,7 @@
 #
 # The fields are those 2GC.py processes: the targets, the primary calibrator and
 # the polarization angle calibrator per scan, and the secondary calibrators per
-# scan (not when CAL_SKIP_CALS is set), restricted to working_names when
+# scan (when CAL_SKIP_CALS is set, only those in CAL_ALWAYS_PROCESS), restricted to working_names when
 # PRE_FIELDS is set. They come from project_info.json, never from what is on
 # disk, so a field whose stage failed silently is still expected.
 #
@@ -49,10 +49,11 @@ def fields(project_info):
         if not filtered or pacal_name in allowed:
             per_scan(pacal_name, project_info['polang_ms'])
 
-    if not cfg.CAL_SKIP_CALS:
-        for name, ms_list in zip(project_info['secondary_names'], project_info['secondary_ms']):
-            if not filtered or name in allowed:
-                per_scan(name, ms_list)
+    for name, ms_list in zip(project_info['secondary_names'], project_info['secondary_ms']):
+        if cfg.CAL_SKIP_CALS and name not in cfg.CAL_ALWAYS_PROCESS:
+            continue
+        if not filtered or name in allowed:
+            per_scan(name, ms_list)
 
     return out
 

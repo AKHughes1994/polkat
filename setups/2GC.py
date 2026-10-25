@@ -251,11 +251,12 @@ def main():
                 'is_secondary': True
             })
 
-    # Skip secondary calibrator imaging/self-calibration -- targets, the primary, and the
-    # polarization-angle calibrator are always processed regardless of this flag.
+    # Skip secondary calibrator imaging/self-calibration -- targets, the primary, the
+    # polarization-angle calibrator, and CAL_ALWAYS_PROCESS secondaries are always processed.
     if CAL_2GC_SKIP_CALS:
-        n_cals = len([f for f in field_list if f['is_secondary']])
-        field_list = [f for f in field_list if not f['is_secondary']]
+        skipped = [f for f in field_list if f['is_secondary'] and f['name'].split('_scan')[0] not in cfg.CAL_ALWAYS_PROCESS]
+        n_cals = len(skipped)
+        field_list = [f for f in field_list if f not in skipped]
         print(gen.col('2GC Cals')+f'CAL_2GC_SKIP_CALS is True -- skipping {n_cals} secondary field/scan(s)')
 
     # Determine if the blind/datamask images are going to be tapered
@@ -618,6 +619,60 @@ def main():
             chanout_inter = cfg.WSC_DMASK_CHANNELSOUT
             weight_inter = cfg.WSC_WEIGHT
 
+            # Temporary masked Stokes I image of CORRECTED_DATA, used only to make the final mask
+            step = {}
+            step['step'] = n
+            step['comment'] = 'Run wsclean, masked Stokes I deconvolution of the CORRECTED_DATA (stage 1 phase selfcal) for {}'.format(fieldname)
+            step['dependency'] = n - 1
+            step['id'] = 'WSPMI'+code
+            step['glam_config'] = cfg.GLAM_WSC_SOURCE
+            step['slurm_config'] = cfg.SLURM_WSCLEAN
+            step['pbs_config'] = cfg.PBS_WSCLEAN
+            absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
+            syscall = ''
+            prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
+            imcall = gen.generate_syscall_wsclean(mslist = [myms],
+                    tempdir = temp_dir,
+                    imgname = final_img_prefix,
+                    datacol = 'CORRECTED_DATA',
+                    mask = mask,
+                    chanout = chanout_inter,
+                    nomodel = True,
+                    sourcelist = False,
+                    pol = 'I',
+                    localrms = cfg.WSC_INTER_LOCALRMS,
+                    automask = cfg.WSC_INTER_AUTOMASK,
+                    autothreshold = cfg.WSC_INTER_AUTOTHRESHOLD,
+                    tukeytaper = tukeytaper,
+                    minuvl = minuvl,
+                    maxuvl = maxuvl,
+                    weight = weight_inter,
+                    imsize = imsize_inter,
+                    maxchan = maxchan_inter,
+                    absmem = absmem)
+            for call in imcall:
+                syscall += prefix + call + '\n\n'
+            step['syscall'] = syscall
+            step['grouping'] = None
+            steps.append(step)
+            n += 1
+
+            # Final mask: breizorro on the finalmask image
+            finalmask = f"{final_img_prefix}-MFS-image.mask.fits"
+            step = {}
+            step['step'] = n
+            step['comment'] = 'Make final cleaning mask for ' + fieldname
+            step['dependency'] = n - 1
+            step['id'] = 'MASKP'+code
+            step['glam_config'] = cfg.GLAM_SMALL
+            syscall  = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
+            syscall += gen.generate_syscall_breizorro(restoredimage = f"{final_img_prefix}-MFS-image.fits", outfile = finalmask, thresh=cfg.BREIZORRO_THRESH)[0]
+            # Delete the temporary finalmask image, keeping any masks
+            syscall += f'\n\nfind {img_dir} -type f -name "{os.path.basename(final_img_prefix)}*" ! -name "*.mask.fits" -delete\n'
+            step['syscall'] = syscall
+            steps.append(step)
+            n += 1
+
             # WSCMI: image CORRECTED_DATA of original MS after phase selfcal
             step = {}
             step['step'] = n
@@ -634,7 +689,7 @@ def main():
                     tempdir = temp_dir,
                     imgname = inter_img_prefix,
                     datacol = 'CORRECTED_DATA',
-                    mask = mask,
+                    mask = finalmask,
                     chanout = chanout_inter,
                     tukeytaper=tukeytaper,
                     minuvl = minuvl,
@@ -895,40 +950,98 @@ def main():
             steps.append(step)
             n += 1
 
-        step = {}
-        step['step'] = n
-        step['comment'] = f'Run wsclean, full UV range (no tukey taper / minuv-l cut), 16-channel Stokes I deconvolution of the CORRECTED_DATA (self-calibrated) for {fieldname}'
-        step['dependency'] = n - 1
-        step['id'] = 'WSFUV'+code
-        step['glam_config'] = cfg.GLAM_WSC_SOURCE if is_target else cfg.GLAM_WSC_CAL
-        step['slurm_config'] = cfg.SLURM_WSCLEAN
-        step['pbs_config'] = cfg.PBS_WSCLEAN
-        absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
-        syscall = ''
-        prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
-        imcall = gen.generate_syscall_wsclean(mslist = [myms],
-                tempdir = temp_dir,
-                imgname = fulluv_img_prefix,
-                datacol = 'CORRECTED_DATA',
-                mask = finalmask,
-                chanout = 16,
-                nomodel = True,
-                sourcelist = False,
-                pol = 'I',
-                tukeytaper = False,
-                minuvl = '0',
-                maxuvl = '',
-                weight = weight_pcal,
-                imsize = imsize_pcal,
-                maxchan = maxchan_pcal,
-                absmem = absmem)
-        for call in imcall:
-            syscall += prefix + call + '\n\n'
-            if ENABLE_CLEANUP:
-                syscall += f'rm -f {fulluv_img_prefix}*dirty*\n'
-        step['syscall'] = syscall
-        steps.append(step)
-        n += 1
+        # Full UV imaging (targets only)
+        if is_target:
+            # Temporary blind Stokes I full UV image, used only to make the full UV mask
+            fulluv_blind_prefix = img_dir+f'/img_{myms}_fulluvblind'
+            step = {}
+            step['step'] = n
+            step['comment'] = f'Shallow blind wsclean, full UV range, Stokes I of the CORRECTED_DATA for {fieldname}'
+            step['dependency'] = n - 1
+            step['id'] = 'WSFBL'+code
+            step['glam_config'] = cfg.GLAM_MEDIUM
+            step['slurm_config'] = cfg.SLURM_WSCLEAN
+            step['pbs_config'] = cfg.PBS_WSCLEAN
+            absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
+            syscall = ''
+            prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
+            imcall = gen.generate_syscall_wsclean(mslist = [myms],
+                    tempdir = temp_dir,
+                    imgname = fulluv_blind_prefix,
+                    datacol = 'CORRECTED_DATA',
+                    chanout = cfg.WSC_BLIND_CHANNELSOUT,
+                    nomodel = True,
+                    sourcelist = False,
+                    pol = 'I',
+                    intervalsout = False,
+                    mfweight = True,
+                    localrms = cfg.WSC_LOCALRMS_BLIND,
+                    automask = cfg.WSC_AUTOMASK_BLIND,
+                    autothreshold = cfg.WSC_AUTOTHRESHOLD_BLIND,
+                    tukeytaper = False,
+                    minuvl = '0',
+                    maxuvl = '',
+                    weight = weight_pcal,
+                    imsize = imsize_pcal,
+                    maxchan = maxchan_pcal,
+                    absmem = absmem)
+            for call in imcall:
+                syscall += prefix + call + '\n\n'
+            step['syscall'] = syscall
+            step['grouping'] = None
+            steps.append(step)
+            n += 1
+
+            # Full UV mask: breizorro on the blind image with the small box size
+            fulluv_mask = f"{fulluv_blind_prefix}-MFS-image.mask.fits"
+            step = {}
+            step['step'] = n
+            step['comment'] = 'Make small-box cleaning mask for full UV image of ' + fieldname
+            step['dependency'] = n - 1
+            step['id'] = 'MASKF'+code
+            step['glam_config'] = cfg.GLAM_SMALL
+            syscall  = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
+            syscall += gen.generate_syscall_breizorro(restoredimage = f"{fulluv_blind_prefix}-MFS-image.fits", outfile = fulluv_mask, thresh=cfg.BREIZORRO_THRESH, boxsize=cfg.BREIZORRO_SMALLBOX)[0]
+            # Delete the temporary blind image, keeping any masks
+            syscall += f'\n\nfind {img_dir} -type f -name "{os.path.basename(fulluv_blind_prefix)}*" ! -name "*.mask.fits" -delete\n'
+            step['syscall'] = syscall
+            steps.append(step)
+            n += 1
+
+            step = {}
+            step['step'] = n
+            step['comment'] = f'Run wsclean, full UV range (no tukey taper / minuv-l cut), 16-channel Stokes I deconvolution of the CORRECTED_DATA (self-calibrated) for {fieldname}'
+            step['dependency'] = n - 1
+            step['id'] = 'WSFUV'+code
+            step['glam_config'] = cfg.GLAM_WSC_SOURCE
+            step['slurm_config'] = cfg.SLURM_WSCLEAN
+            step['pbs_config'] = cfg.PBS_WSCLEAN
+            absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
+            syscall = ''
+            prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
+            imcall = gen.generate_syscall_wsclean(mslist = [myms],
+                    tempdir = temp_dir,
+                    imgname = fulluv_img_prefix,
+                    datacol = 'CORRECTED_DATA',
+                    mask = fulluv_mask,
+                    chanout = 16,
+                    nomodel = True,
+                    sourcelist = False,
+                    pol = 'I',
+                    tukeytaper = False,
+                    minuvl = '0',
+                    maxuvl = '',
+                    weight = weight_pcal,
+                    imsize = imsize_pcal,
+                    maxchan = maxchan_pcal,
+                    absmem = absmem)
+            for call in imcall:
+                syscall += prefix + call + '\n\n'
+                if ENABLE_CLEANUP:
+                    syscall += f'rm -f {fulluv_img_prefix}*dirty*\n'
+            step['syscall'] = syscall
+            steps.append(step)
+            n += 1
 
         if cfg.WSC_POL != 'I':
             step = {}

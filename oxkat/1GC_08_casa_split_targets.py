@@ -68,7 +68,7 @@ if not os.path.exists(RESULTS):
     os.makedirs(RESULTS)
 
 if CAL_SKIP_CALS:
-    print('CAL_SKIP_CALS is True -- skipping secondary calibrator splitting (primary and polarization-angle calibrator still split)')
+    print('CAL_SKIP_CALS is True -- skipping secondary calibrator splitting (primary, polarization-angle calibrator, and CAL_ALWAYS_PROCESS still split)')
 
 # Split target fields (integrated over all scans)
 for target in target_names:
@@ -161,7 +161,7 @@ for opms in primary_ms:
 # Split secondary calibrator fields (per scan)
 for i, pcal in enumerate(pcal_names):
 
-    if CAL_SKIP_CALS:
+    if CAL_SKIP_CALS and pcal not in CAL_ALWAYS_PROCESS:
         continue
 
     # pcal_ms[i] is a list of MS files for each scan of this secondary
