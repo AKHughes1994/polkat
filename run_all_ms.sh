@@ -95,9 +95,9 @@ TRACKING='/mnt/scratchhdd/tkat_reprocessing/tracking/mahrez_tracking.txt'   # tr
 PIPELINE='/mnt/scratchhdd/tkat_reprocessing/polkat_tkat_reprocessing'   # pipeline directory to run, e.g. 'polkat_tkat_reprocessing'
 WORK='/mnt/scratchhdd/tkat_reprocessing/working_dir'       # scratch working directory, emptied at the start; each MS runs in WORK/<obsid>, rebuilt for every MS -- must be dedicated to this script, not shared with anything else
 POLL=300            # slurm queue poll interval in seconds; also how often the main loop wakes
-FIRST_N=5           # run only the first N MSs that are not already in the tracking file (debugging); 0 = no limit
+FIRST_N=1          # run only the first N MSs that are not already in the tracking file (debugging); 0 = no limit
 START_AT=''         # obsid or MS name: start the run at this MS, skipping every MS before it in the sorted list. With FIRST_N=1, only this MS runs. Must not already be in the tracking file. '' = no start MS
-BATCH=4             # slurm only: how many MSs run at once; a free slot is refilled as soon as an MS finishes. Ignored (1) on 'node'
+BATCH=2             # slurm only: how many MSs run at once; a free slot is refilled as soon as an MS finishes. Ignored (1) on 'node'
 SETTLE=600          # seconds: an MS with any file modified in the last SETTLE seconds is treated as still transferring and not started
 RESTART=false       # true: DELETE the tracking, failures and interesting files, the archive and residual-MS directories' contents and this script's logs, so every MS runs again. Asks twice before anything is deleted
 RESUME_2GC=false    # true (slurm only): an MS whose last failure was at 2GC, and whose working directory is still there, resubmits only the 2GC jobs that did not complete (each source from its first failed job) and then runs RMSYNTH, instead of starting again from scratch
