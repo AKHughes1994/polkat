@@ -70,7 +70,8 @@ def main():
     times = maintab.getcol('TIME')
     t0 = times[0]
     t1 = times[-1]
-    length = round((t1 - t0),0)
+    # TIME is the integration midpoint, so the track spans one integration more than t1 - t0
+    length = round((t1 - t0 + meanexp),0)
 
     start_time = Time(t0/86400.0,format='mjd').iso
     end_time = Time(t1/86400.0,format='mjd').iso
@@ -91,8 +92,8 @@ def main():
     scans = numpy.unique(maintab.getcol('SCAN_NUMBER'))
     for sc in scans:
             subtab = maintab.query(query='SCAN_NUMBER=='+str(sc))
-            st0 = subtab.getcol('TIME')[0]
-            st1 = subtab.getcol('TIME')[-1]
+            # One integration per distinct timestamp
+            nint = len(numpy.unique(subtab.getcol('TIME')))
             sfield = numpy.unique(subtab.getcol('FIELD_ID'))[0]
             if 'STATE_ID' in subtab.colnames():
                 ii = numpy.unique(subtab.getcol('STATE_ID'))
@@ -102,8 +103,7 @@ def main():
                     sintent = 'None'
             else:
                 sintent = 'None'
-            st = round((st1-st0),0)
-            nint = int(st/meanexp)
+            st = round(nint*meanexp,0)
             scanlist.append((sc,sfield,st,nint,sintent))
 
     field_integrations = []

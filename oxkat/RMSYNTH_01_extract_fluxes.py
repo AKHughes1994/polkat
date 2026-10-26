@@ -1233,8 +1233,10 @@ def ms_timing(src_name):
     try:
         tb.open(ms_path)
         times = tb.getcol('TIME')
+        exposures = tb.getcol('EXPOSURE')
         if field_id is not None:
-            times = times[tb.getcol('FIELD_ID') == field_id]
+            keep = tb.getcol('FIELD_ID') == field_id
+            times, exposures = times[keep], exposures[keep]
         tb.close()
     except Exception as e:
         msg(f'  [timing] failed to read MS ({e}) -- will use image header fallback')
@@ -1243,10 +1245,13 @@ def ms_timing(src_name):
         msg('  [timing] no timestamps found -- will use image header fallback')
         return None
 
+    # TIME is the integration midpoint, so the span runs half an integration
+    # beyond the first and last timestamps
     t_start, t_end = float(times.min()), float(times.max())
     ctr_mjd = (t_start + t_end) / 2.0 / 86400.0
-    msg(f'  [timing] MS: centre = {ctr_mjd:.8f} MJD, span = {t_end - t_start:.0f} s')
-    return ctr_mjd, t_end - t_start
+    span_s = t_end - t_start + float(np.median(exposures))
+    msg(f'  [timing] MS: centre = {ctr_mjd:.8f} MJD, span = {span_s:.0f} s')
+    return ctr_mjd, span_s
 
 
 def record(store, values, k=None, n_epochs=None):
@@ -1398,7 +1403,8 @@ def extract_polarization_properties(src_name, src_im_identifier, src_im_suffix, 
         hdr_mjd = np.array([_iso_to_mjd(imhead(stokes_scan['mfs'][p]['I'], mode='get', hdkey='DATE-OBS')
                                         .replace('/', '-', 2).replace('/', 'T')) for p in prefix_arr])
         step_s = float(np.median(np.diff(hdr_mjd))) * 86400.0
-        span_s = float(hdr_mjd[-1] - hdr_mjd[0]) * 86400.0
+        # DATE-OBS is each interval's start, so the last interval adds one step
+        span_s = float(hdr_mjd[-1] - hdr_mjd[0]) * 86400.0 + step_s
         timing = [(mjd + step_s / 2.0 / 86400.0, span_s) for mjd in hdr_mjd]
         msg(f'  [timing] time-resolved ({n_epochs} prefixes): '
             f'median step = {step_s:.1f} s, total span = {span_s:.1f} s')
