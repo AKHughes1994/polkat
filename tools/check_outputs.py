@@ -12,8 +12,10 @@
 # PRE_FIELDS is set. They come from project_info.json, never from what is on
 # disk, so a field whose stage failed silently is still expected.
 #
-# 2GC: every field has IMAGES/<field>/ with a final MFS image (*pcalmask-MFS-*image.fits)
-# and, unless RMSYNTH_RESIDUAL_MS_DIR is blank, every target also has its residual MS there.
+# 2GC: every field has IMAGES/<field>/ with a final MFS image (*pcalmask-MFS-*image.fits),
+# one per polarisation in WSC_POL when that has more than one (*pcalmask-MFS-I-image.fits,
+# *pcalmask-MFS-Q-image.fits, ...), and, unless RMSYNTH_RESIDUAL_MS_DIR is blank, every
+# target also has its residual MS there.
 # Each missing output is printed, and the exit status is 1 if any is missing.
 
 import glob
@@ -72,8 +74,12 @@ def check_2gc(project_info):
         img_dir = o.join(cfg.IMAGES, name.replace(' ', '_'))
         if not o.isdir(img_dir) or not os.listdir(img_dir):
             problems.append(f'{name}: {img_dir} is missing or empty')
-        elif not glob.glob(o.join(img_dir, '*pcalmask-MFS-*image.fits')):
-            problems.append(f'{name}: no final MFS image (*pcalmask-MFS-*image.fits) in {img_dir}')
+        else:
+            pols = list(cfg.WSC_POL) if len(cfg.WSC_POL) > 1 else ['*']
+            for pol in pols:
+                pattern = '*pcalmask-MFS-*image.fits' if pol == '*' else f'*pcalmask-MFS-{pol}-image.fits'
+                if not glob.glob(o.join(img_dir, pattern)):
+                    problems.append(f'{name}: no final MFS image ({pattern}) in {img_dir}')
 
         if is_target and cfg.RMSYNTH_RESIDUAL_MS_DIR != '' and not o.isdir(residual_ms(ms)):
             problems.append(f'{name}: no residual MS {residual_ms(ms)}')

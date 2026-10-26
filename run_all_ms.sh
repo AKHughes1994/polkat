@@ -807,7 +807,15 @@ run_ms() {
     stage=${stage%.py}
     log "  stage $i: $setup"
     if [[ $resume == true && $i -eq $GC2_INDEX ]]; then
-      # Resubmit only the 2GC jobs that did not complete, reusing their slurm scripts
+      # Rerun the 2GC setup first: it recreates the per-source temp directories
+      # (each source's CLEAN job deletes its own) and rewrites the slurm scripts,
+      # with the same job names, so sacct still matches them. Then resubmit only
+      # the sources with a failed job, each from that job onwards.
+      python3 "$setup" "$INFRA" > "$state/setup_stage$i.log" 2>&1 || {
+        log "  $setup failed (see $state/setup_stage$i.log)"
+        record_failure "$id" "${ms##*/}" "$stage" "setup script failed, see $state/setup_stage$i.log"
+        return 1
+      }
       subs=submit_2GC_resume.sh
       rm -f -- "./$subs"
       python3 "$PIPELINE/tools/resume_2gc.py" "$state/2GC_submitted.jobids" > "$state/resume_stage$i.log" 2>&1 || {
