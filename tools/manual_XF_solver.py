@@ -98,6 +98,13 @@ if PRE_FIELDS != '':
     pcal_names = user_pcals
     target_cal_map = user_cal_map
 
+# Same secondary-to-primary mapping as 1GC_05_casa_refcal.py. This script is
+# exec'd inside 1GC_05's namespace, so without it the re-read above would undo
+# the mapping for the applycal that follows there. In amplitude-only mode
+# target_cal_map is left as read; 1GC_05's target_amp_cal_map is untouched.
+if CAL_1GC_REPLACE_SECONDARY_WITH_PRIMARY and not CAL_1GC_REPLACE_SECONDARY_AMP_ONLY:
+    target_cal_map = [bpcal_name if c in CAL_1GC_BAD_SECONDARIES else c for c in target_cal_map]
+
 
 # ============================================================================
 # SETTINGS

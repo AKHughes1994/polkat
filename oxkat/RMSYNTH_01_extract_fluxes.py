@@ -61,6 +61,7 @@ SPEC_PLOT_SNR_THRESH  = cfg.RMSYN_SPEC_PLOT_SNR_THRESH   # MFS S/N needed for a 
 SPEC_INDEX_SNR_THRESH = cfg.RMSYN_SPEC_INDEX_SNR_THRESH  # MFS S/N needed for a spectral index fit
 SPEC_INDEX_MAD_CLIP   = cfg.RMSYN_SPEC_INDEX_MAD_CLIP    # Stokes I outlier clip (robust sigma)
 MAX_I_DRIFT_PIX       = cfg.RMSYN_MAX_I_DRIFT_PIX        # max MFS Stokes I drift from the input position (False = off)
+MIN_BEAM_PIX          = cfg.RMSYN_MIN_BEAM_PIX           # min MFS BMAJ/BMIN (pixels) in every Stokes image, else the epoch is skipped
 USE_RESIDUAL_RMS      = cfg.RMSYN_USE_RESIDUAL_RMS       # measure noise on the matching residual image
 
 # Plot y ranges cover points within this many robust sigmas of the median
@@ -484,14 +485,20 @@ def check_position(fname, image, xpix, ypix, snr_thresh=None, P_image=False,
 def check_fit_offset_and_refix(imfit_result, image, ref_xpix, ref_ypix, bmaj,
                                src_name, stokes_label, tag=''):
     """
-    If any fitted component lies more than 1/3 beam from its reference
-    position (normally Stokes I), refit the whole image with every position
-    fixed to the reference. Returns (imfit_result, refitted).
+    If the fit did not converge, returned fewer components than reference
+    positions, or any fitted component lies more than 1/3 beam from its
+    reference position (normally Stokes I), refit the whole image with every
+    position fixed to the reference. Returns (imfit_result, refitted).
     """
     cell_arcsec = np.degrees(abs(imhead(image, mode='get', hdkey='CDELT2')['value'])) * 3600.0
     threshold_arcsec = bmaj / 3.0
 
     exceeded = False
+    n_found = len(comp_keys(imfit_result))
+    if not np.all(imfit_result.get('converged', True)) or n_found < len(ref_xpix):
+        exceeded = True
+        msg(f'  WARNING: Stokes {stokes_label} fit did not converge ({n_found} of {len(ref_xpix)} '
+            f'component(s) returned) -- refitting with fixed positions')
     for z, component in enumerate(comp_keys(imfit_result)):
         x, y = imfit_result['results'][component]['pixelcoords'][:2]
         offset_pix = np.hypot(x - ref_xpix[z], y - ref_ypix[z])
@@ -1134,7 +1141,7 @@ def fit_channel_group(job):
 
     Returns (chan_idx, result). result holds freq_GHz, the beam and
     'components' (component_results per component); it is None when the
-    channel's beam is over 3x the scaled MFS beam (heavily flagged) or a fit
+    channel's beam is more than 5x above or below the scaled MFS beam or a fit
     fails.
     """
     chan_idx, images, components = job['chan_idx'], job['CHAN_images'], job['components']
@@ -1147,8 +1154,10 @@ def fit_channel_group(job):
         bpa      = imhead(images[0], mode='get', hdkey='bpa')['value']
         freq_GHz = imhead(images[0], mode='get', hdkey='CRVAL3')['value'] / 1.0e9
 
-        if bmaj > 3.0 * job['mfs_freq_ghz'] / freq_GHz * job['mfs_bmaj_asec']:
-            msg(f'Skipping channel {chan_idx}: beam over 3x the scaled MFS beam (likely heavily flagged)')
+        scaled_bmaj = job['mfs_freq_ghz'] / freq_GHz * job['mfs_bmaj_asec']
+        if not (scaled_bmaj / 5.0 <= bmaj <= 5.0 * scaled_bmaj):
+            msg(f'Skipping channel {chan_idx}: beam {bmaj:.2f}" is more than 5x off the scaled MFS beam '
+                f'{scaled_bmaj:.2f}" (likely heavily flagged)')
             return chan_idx, None
 
         common = dict(bmaj=bmaj, src_name=src_name, tag=tag, manual_rms_region=rms_region)
@@ -1224,8 +1233,10 @@ def ms_timing(src_name):
     try:
         tb.open(ms_path)
         times = tb.getcol('TIME')
+        exposures = tb.getcol('EXPOSURE')
         if field_id is not None:
-            times = times[tb.getcol('FIELD_ID') == field_id]
+            keep = tb.getcol('FIELD_ID') == field_id
+            times, exposures = times[keep], exposures[keep]
         tb.close()
     except Exception as e:
         msg(f'  [timing] failed to read MS ({e}) -- will use image header fallback')
@@ -1234,10 +1245,13 @@ def ms_timing(src_name):
         msg('  [timing] no timestamps found -- will use image header fallback')
         return None
 
+    # TIME is the integration midpoint, so the span runs half an integration
+    # beyond the first and last timestamps
     t_start, t_end = float(times.min()), float(times.max())
     ctr_mjd = (t_start + t_end) / 2.0 / 86400.0
-    msg(f'  [timing] MS: centre = {ctr_mjd:.8f} MJD, span = {t_end - t_start:.0f} s')
-    return ctr_mjd, t_end - t_start
+    span_s = t_end - t_start + float(np.median(exposures))
+    msg(f'  [timing] MS: centre = {ctr_mjd:.8f} MJD, span = {span_s:.0f} s')
+    return ctr_mjd, span_s
 
 
 def record(store, values, k=None, n_epochs=None):
@@ -1389,12 +1403,37 @@ def extract_polarization_properties(src_name, src_im_identifier, src_im_suffix, 
         hdr_mjd = np.array([_iso_to_mjd(imhead(stokes_scan['mfs'][p]['I'], mode='get', hdkey='DATE-OBS')
                                         .replace('/', '-', 2).replace('/', 'T')) for p in prefix_arr])
         step_s = float(np.median(np.diff(hdr_mjd))) * 86400.0
-        span_s = float(hdr_mjd[-1] - hdr_mjd[0]) * 86400.0
+        # DATE-OBS is each interval's start, so the last interval adds one step
+        span_s = float(hdr_mjd[-1] - hdr_mjd[0]) * 86400.0 + step_s
         timing = [(mjd + step_s / 2.0 / 86400.0, span_s) for mjd in hdr_mjd]
         msg(f'  [timing] time-resolved ({n_epochs} prefixes): '
             f'median step = {step_s:.1f} s, total span = {span_s:.1f} s')
     else:
         timing = [ms_timing(src_name)]
+
+    # Skip every epoch where the BMAJ or BMIN of any MFS Stokes image spans
+    # fewer than MIN_BEAM_PIX pixels (or is not finite)
+    good = []
+    for k, prefix in enumerate(prefix_arr):
+        for s in ('I' if only_intensity else 'IPQUV'):
+            image = stokes_scan['mfs'][prefix][s]
+            cell = np.degrees(abs(imhead(image, mode='get', hdkey='CDELT2')['value'])) * 3600.0
+            bmaj = imhead(image, mode='get', hdkey='bmaj')['value']
+            bmin = imhead(image, mode='get', hdkey='bmin')['value']
+            if not (np.isfinite(bmaj) and np.isfinite(bmin) and min(bmaj, bmin) >= MIN_BEAM_PIX * cell):
+                msg(f'WARNING: skipping epoch {os.path.basename(prefix)}: Stokes {s} MFS beam '
+                    f'{bmaj:.2f}"x{bmin:.2f}" is under {MIN_BEAM_PIX} pixels ({cell:.2f}" each)')
+                break
+        else:
+            good.append(k)
+    if len(good) < n_epochs:
+        prefix_arr = [prefix_arr[k] for k in good]
+        timing     = [timing[k] for k in good]
+        msg(f'Skipped {n_epochs - len(good)} of {n_epochs} epoch(s) for a beam under {MIN_BEAM_PIX} pixels')
+        n_epochs   = len(prefix_arr)
+    if not prefix_arr:
+        msg('WARNING: every epoch was skipped for its beam size -- nothing to process.')
+        return 0
 
     # JSON name: the last prefix without its time index, moved into RESULTS/
     # before the label is applied (see _apply_label)

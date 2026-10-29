@@ -364,6 +364,17 @@ CAL_1GC_PRIMARY_MODEL = 'auto'       # setjy = use setjy component model only
 CAL_1GC_DELAYCUT = 2.5               # [now defunct] Jy at central freq. Do not solve for K on secondaries weaker than this
 CAL_1GC_FILLGAPS = 8                 # Maximum channel gap over which to interpolate bandpass solutions
 
+# Secondaries too poor to calibrate against. In 1GC_05_casa_refcal.py (and
+# tools/manual_XF_solver.py, which it runs), targets paired with one of these
+# take their gains from the primary instead. The secondary itself is still
+# solved and calibrated with its own solutions.
+CAL_1GC_REPLACE_SECONDARY_WITH_PRIMARY = False
+CAL_1GC_BAD_SECONDARIES = []
+# With the above on: True takes only the amplitude gains (the fluxscaled
+# calmode='a' table) from the primary; delays and phases still come from the
+# secondary. False takes all three from the primary.
+CAL_1GC_REPLACE_SECONDARY_AMP_ONLY = False
+
 # Parallactic angle correction during 1GC.
 # If True, CASA applies the P-Jones correction as part of the 1GC solve.
 # This is safe for phase-only and standard polarisation calibration.
@@ -1009,6 +1020,9 @@ RMSYN_SPEC_INDEX_MAD_CLIP  = 10     # Iterative MAD outlier rejection threshold 
 RMSYN_MAX_I_DRIFT_PIX      = False  # Maximum pixel drift allowed for a Stokes I fitted position
                                     # before the fit is re-run with the position fixed.
                                     # False = no drift check; float = threshold in pixels.
+
+RMSYN_MIN_BEAM_PIX         = 2.0    # An epoch is skipped entirely if the BMAJ or BMIN of any of its
+                                    # MFS Stokes images spans fewer than this many pixels.
 
 RMSYN_USE_RESIDUAL_RMS     = True  # True: measure the noise annulus on the matching *-residual.fits
                                     # image (post-CLEAN noise, not biased by source flux or sidelobes),

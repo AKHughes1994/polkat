@@ -44,8 +44,8 @@ scans = np.unique(tb.getcol('SCAN_NUMBER'))
 for scan in scans:
     subtab      = tb.query(query='SCAN_NUMBER==' + str(scan))
     scan_times  = np.unique(subtab.getcol('TIME'))
-    scan_dt     = scan_times[-1] - scan_times[0]   # total scan duration (s)
-    integration = scan_times[1]  - scan_times[0]   # integration length (s)
+    integration = float(np.median(subtab.getcol('EXPOSURE')))   # integration length (s)
+    scan_dt     = len(scan_times) * integration                # total scan duration (s)
     if scan_dt < 10.0 and integration < 2.5:
         bad_scans.append(str(scan))
     else:
@@ -167,6 +167,7 @@ tb.open(opms)
 all_field_ids = tb.getcol('FIELD_ID')
 all_scan_nums = tb.getcol('SCAN_NUMBER')
 all_times     = tb.getcol('TIME')
+all_exposures = tb.getcol('EXPOSURE')
 tb.close()
 
 # Iterate over every unique field+scan combination and extract timing
@@ -177,7 +178,8 @@ for field_id in np.unique(all_field_ids):
         t_times  = all_times[mask]
         t_start  = t_times.min() / 86400.0
         t_end    = t_times.max() / 86400.0
-        duration = round((t_end - t_start) * 1440.0, 3)
+        # TIME is the integration midpoint, so the scan lasts one integration more than t_end - t_start
+        duration = round(((t_end - t_start) * 86400.0 + np.median(all_exposures[mask])) / 60.0, 3)
         time_info.append((
             opms,
             field_names[field_id],

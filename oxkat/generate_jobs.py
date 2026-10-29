@@ -752,7 +752,8 @@ def generate_syscall_wsclean(mslist,
     if multiscale:
         syscall += '-multiscale '
         syscall += f'-multiscale-scale-bias {multiscale_bias} '
-        # syscall += '-multiscale-scales '+scales+' ' # WSCLEAN docs seem to not favour this option for multiscale cleaning anymore
+        if scales:
+            syscall += '-multiscale-scales '+scales+' '
     syscall += '-niter '+str(niter)+' '
     syscall += '-gain '+str(gain)+' '
     syscall += '-mgain '+str(mgain)+' '
