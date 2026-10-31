@@ -123,7 +123,7 @@ def main():
     # lookup RMSYNTH uses, so any alias in that list (e.g. 'GRS1915', 'MAXIJ1848-015') matches.
     PCAL_INTER_PARAMS_SOURCES = ['J1848-015', 'GRS1915+105', 'EXO1846-031']
     PROBLEM_SOURCE_LOCALRMS      = 0.5   # Local-rms strength
-    PROBLEM_SOURCE_AUTOMASK      = 3.0   # Auto-mask threshold (sigma)
+    PROBLEM_SOURCE_AUTOMASK      = 4.0   # Auto-mask threshold (sigma)
     PROBLEM_SOURCE_AUTOTHRESHOLD = 1.0   # Auto-threshold (sigma)
     XRB_NAME_MATCHING = DATA + '/positions/XRB_name_matching.txt'
     pcal_inter_params_names = {gen.resolve_field_name(s, XRB_NAME_MATCHING)[0].lower() for s in PCAL_INTER_PARAMS_SOURCES}
