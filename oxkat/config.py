@@ -603,7 +603,8 @@ WSC_WEIGHT_HIGHRES = 'uniform'  # Weighting scheme for the high-resolution image
 # --- Deconvolution ---
 WSC_PARALLELDECONVOLUTION = 2560  # Tile size in pixels for parallel deconvolution (-parallel-deconvolution)
 WSC_MULTISCALE       = False      # Enable multi-scale CLEAN (-multiscale)
-WSC_SCALES           = '0,3,9'   # Multi-scale CLEAN scale sizes in pixels
+WSC_SCALES           = ''   # Multi-scale CLEAN scale sizes in pixels
+WSC_MAXSCALES        = 7        # Maximum number of multi-scale CLEAN scales (-multiscale-max-scales); '' = wsclean default
 WSC_MULTISCALE_BIAS  = 0.7       # Multi-scale bias parameter; higher = prefer smaller scales
 WSC_FULLUV_MULTISCALE = True     # Multi-scale CLEAN for the full UV blind (mask) and final images, with WSC_SCALES
 WSC_CHANDECONV       = 16      # Number of sub-band images used during deconvolution
@@ -672,10 +673,10 @@ WSC_SPLITPOL = True
 WSC_JOINPOLARIZATIONS = False
 
 # --- Masking: blind image (stage 0 — mask generation only) ---
-WSC_AUTOMASK_BLIND      = 10.0   # Auto-mask threshold (sigma) for blind image
-WSC_AUTOTHRESHOLD_BLIND = 1.0   # Auto-threshold (sigma) at which CLEAN stops for blind image
+WSC_AUTOMASK_BLIND      = 7.0    # Auto-mask threshold (sigma) for blind image
+WSC_AUTOTHRESHOLD_BLIND = 3.0    # Auto-threshold (sigma) at which CLEAN stops for blind image
 WSC_THRESHOLD_BLIND     = False  # Absolute flux threshold for blind image; False = use auto-threshold
-WSC_LOCALRMS_BLIND      = 0.75    # Local RMS map for masking in the blind image; local-rms strength
+WSC_LOCALRMS_BLIND      = 0.5    # Local RMS map for masking in the blind image; local-rms strength
 
 # --- Masking: first self-calibration pass (two-stage workflow only) ---
 # Restricts cleaning to high-significance pixels before any amplitude self-calibration.
@@ -853,7 +854,7 @@ MAKEMASK_DILATION = 1
 #
 
 BREIZORRO_THRESH = 5.0
-BREIZORRO_BOXSIZE = 250
+BREIZORRO_BOXSIZE = 350
 BREIZORRO_SMALLBOX = 150
 BREIZORRO_FILLHOLES = True
 BREIZORRO_DILATION = 1

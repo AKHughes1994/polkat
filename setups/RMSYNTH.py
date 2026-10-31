@@ -195,12 +195,12 @@ def main():
     # ------------------------------------------------------------------------------
     #
     # Verify every target has a known position before building the job graph.
-    # Resolved by the name-matching list first and normalized similarity second
-    # (gen.resolve_field_name() then gen.match_field_name()), the same two
-    # stages RMSYNTH_01_extract_fluxes.py's read_position_file() uses at
-    # runtime -- a target that passes here is guaranteed to resolve the same
-    # way there. read_position_file() hard-fails if it doesn't find a match, so
-    # this exists purely to catch that before a job is ever submitted.
+    # Resolved through the name-matching list only (gen.resolve_field_name()),
+    # then looked up exactly in the position file -- the same 1-to-1 lookup
+    # RMSYNTH_01_extract_fluxes.py's read_position_file() uses at runtime, so a
+    # target that passes here is guaranteed to resolve the same way there.
+    # read_position_file() hard-fails if it doesn't find a match, so this
+    # exists purely to catch that before a job is ever submitted.
     #
     # ------------------------------------------------------------------------------
 
@@ -220,8 +220,8 @@ def main():
 
     matching_file = cfg.DATA + '/positions/XRB_name_matching.txt'
     if not o.exists(matching_file):
-        print(gen.col('WARNING')+f'Name-matching list {matching_file} not found -- '
-              f'names resolved by similarity alone')
+        print(gen.col('ERROR')+f'Name-matching list {matching_file} not found')
+        sys.exit()
 
     print(gen.col('Position matches:'))
     missing_targets = []
@@ -230,22 +230,17 @@ def main():
             continue
 
         resolved_name, was_aliased = gen.resolve_field_name(field['name'], matching_file)
-        if was_aliased and any(name.lower() == resolved_name.lower() for name in known_names):
+        if not was_aliased:
+            missing_targets.append((field['name'], f'not in {matching_file}'))
+        elif any(name.lower() == resolved_name.lower() for name in known_names):
             print(gen.col(f"  {field['name']}") + f"-> '{resolved_name}' (name list)")
-            continue
-
-        best_name, best_ratio, matched = gen.match_field_name(resolved_name, known_names)
-        via = f" via '{resolved_name}'" if was_aliased else ''
-        if matched:
-            print(gen.col(f"  {field['name']}") + f"-> '{best_name}' ({best_ratio:.0%}){via}")
         else:
-            closest = f"closest was '{best_name}' at {best_ratio:.0%}" if best_name else 'position file is empty'
-            missing_targets.append((field['name'], closest + via))
+            missing_targets.append((field['name'], f"maps to '{resolved_name}', which is not in the position file"))
 
     if missing_targets:
-        print(gen.col('ERROR')+f"Target(s) with no entry in {position_file}, by name list or >= 80% similarity:")
-        for name, closest in missing_targets:
-            print(gen.col('ERROR')+f"  {name}: {closest}")
+        print(gen.col('ERROR')+f"Target(s) with no entry in {position_file} via the name list:")
+        for name, reason in missing_targets:
+            print(gen.col('ERROR')+f"  {name}: {reason}")
         print(gen.col('ERROR')+f'Add or fix the target(s) in the position file, or add the field name to {matching_file}, before re-running RMSYNTH.py')
         sys.exit()
 

@@ -685,6 +685,7 @@ def generate_syscall_wsclean(mslist,
                           multiscale = cfg.WSC_MULTISCALE,
                           multiscale_bias = cfg.WSC_MULTISCALE_BIAS,
                           scales = cfg.WSC_SCALES,
+                          maxscales = cfg.WSC_MAXSCALES,
                           nonegative = cfg.WSC_NONEGATIVE,
                           sourcelist = cfg.WSC_SOURCELIST,
                           bda = cfg.WSC_BDA,
@@ -821,6 +822,8 @@ def generate_syscall_wsclean(mslist,
         syscall += f'-multiscale-scale-bias {multiscale_bias} '
         if scales:
             syscall += '-multiscale-scales '+scales+' '
+        if maxscales:
+            syscall += '-multiscale-max-scales '+str(maxscales)+' '
     syscall += '-niter '+str(niter)+' '
     syscall += '-gain '+str(gain)+' '
     syscall += '-mgain '+str(mgain)+' '

@@ -114,6 +114,20 @@ def main():
     PCAL_TARGET_CHANOUT      = 512     # Number of output channels
     PCAL_TARGET_MAXCHAN      = 128      # Max deconvolution channels (set equal to chanout = all channels)
 
+    # Problem sources whose final mask (WSPMI), intermediate (WSCMI) and final pcal (WSCMA) images
+    # use the PROBLEM_SOURCE_* masking parameters below (with qu_automask_scale=1.0 for WSCMA) instead
+    # of the WSC_INTER_* values (WSPMI, WSCMI) and the wsclean defaults (WSCMA); the full UV (WSFUV)
+    # image always uses the same masking parameters as WSCMI. Both these names and the field name (with any _scan
+    # suffix removed) are resolved to their catalogue name via the XRB name-matching list
+    # (gen.resolve_field_name) and compared exactly (case-insensitively), the same 1-to-1
+    # lookup RMSYNTH uses, so any alias in that list (e.g. 'GRS1915', 'MAXIJ1848-015') matches.
+    PCAL_INTER_PARAMS_SOURCES = ['J1848-015', 'GRS1915+105', 'EXO1846-031']
+    PROBLEM_SOURCE_LOCALRMS      = 0.5   # Local-rms strength
+    PROBLEM_SOURCE_AUTOMASK      = 3.0   # Auto-mask threshold (sigma)
+    PROBLEM_SOURCE_AUTOTHRESHOLD = 1.0   # Auto-threshold (sigma)
+    XRB_NAME_MATCHING = DATA + '/positions/XRB_name_matching.txt'
+    pcal_inter_params_names = {gen.resolve_field_name(s, XRB_NAME_MATCHING)[0].lower() for s in PCAL_INTER_PARAMS_SOURCES}
+
     SELFCAL_MOD_DIR = DATA + '/selfcal_mod'
 
     # If True, skip imaging/self-calibrating the primary/polarization-angle/secondary calibrators
@@ -355,6 +369,19 @@ def main():
         pcal_img_prefix = img_dir+f'/img_{myms}_pcalmask'
         fulluv_img_prefix = img_dir+f'/img_{myms}_fulluv'
 
+        # Masking parameters for the final mask (WSPMI), intermediate (WSCMI), final pcal (WSCMA) and full UV (WSFUV) images
+        inter_mask_kwargs = dict(localrms = cfg.WSC_INTER_LOCALRMS,
+                automask = cfg.WSC_INTER_AUTOMASK,
+                autothreshold = cfg.WSC_INTER_AUTOTHRESHOLD)
+        pcal_mask_kwargs = {}
+        resolved_fieldname, was_aliased = gen.resolve_field_name(fieldname.split('_scan')[0].strip(), XRB_NAME_MATCHING)
+        if was_aliased and resolved_fieldname.lower() in pcal_inter_params_names:
+            inter_mask_kwargs = dict(localrms = PROBLEM_SOURCE_LOCALRMS,
+                    automask = PROBLEM_SOURCE_AUTOMASK,
+                    autothreshold = PROBLEM_SOURCE_AUTOTHRESHOLD)
+            pcal_mask_kwargs = dict(inter_mask_kwargs, qu_automask_scale = 1.0)
+            print(gen.col('Problem Source Masking')+f"WSPMI/WSCMI/WSCMA/WSFUV masking parameters (name list: '{resolved_fieldname}'): localrms={PROBLEM_SOURCE_LOCALRMS}, automask={PROBLEM_SOURCE_AUTOMASK}, autothreshold={PROBLEM_SOURCE_AUTOTHRESHOLD}")
+
         # Field-specific kill file
         kill_file = SCRIPTS+'/kill_2GC_jobs_'+filename_fieldname+'.sh'
 
@@ -470,9 +497,6 @@ def main():
 
         else:
             print(gen.col('Mask')+mask)
-
-        # Default finalmask to current mask (used for final WSCMA image)
-        finalmask = mask
 
         step = {}
         step['step'] = n
@@ -612,66 +636,67 @@ def main():
         steps.append(step)
         n += 1
 
-        if is_target:
+        imsize_inter = cfg.WSC_IMSIZE if is_target else CALIBRATOR_IMSIZE
+        maxchan_inter = cfg.WSC_MAX_CHANNELS if is_target else CALIBRATOR_MAXCHAN
+        chanout_inter = cfg.WSC_DMASK_CHANNELSOUT if is_target else CALIBRATOR_CHANNELSOUT
+        weight_inter = cfg.WSC_WEIGHT if is_target else 'uniform'
 
-            imsize_inter = cfg.WSC_IMSIZE
-            maxchan_inter = cfg.WSC_MAX_CHANNELS
-            chanout_inter = cfg.WSC_DMASK_CHANNELSOUT
-            weight_inter = cfg.WSC_WEIGHT
+        # Temporary masked Stokes I image of CORRECTED_DATA, used only to make the final mask
+        # (only the MFS image is used, so it takes the blind channelisation)
+        step = {}
+        step['step'] = n
+        step['comment'] = 'Run wsclean, masked Stokes I deconvolution of the CORRECTED_DATA (stage 1 selfcal) for {}'.format(fieldname)
+        step['dependency'] = n - 1
+        step['id'] = 'WSPMI'+code
+        step['glam_config'] = cfg.GLAM_WSC_SOURCE if is_target else cfg.GLAM_WSC_CAL
+        step['slurm_config'] = cfg.SLURM_WSCLEAN
+        step['pbs_config'] = cfg.PBS_WSCLEAN
+        absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
+        syscall = ''
+        prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
+        imcall = gen.generate_syscall_wsclean(mslist = [myms],
+                tempdir = temp_dir,
+                imgname = final_img_prefix,
+                datacol = 'CORRECTED_DATA',
+                mask = mask,
+                chanout = cfg.WSC_BLIND_CHANNELSOUT,
+                nomodel = True,
+                sourcelist = False,
+                pol = 'I',
+                tukeytaper = tukeytaper,
+                minuvl = minuvl,
+                maxuvl = maxuvl,
+                weight = weight_inter,
+                imsize = imsize_inter,
+                maxchan = maxchan_inter,
+                absmem = absmem,
+                **inter_mask_kwargs)
+        for call in imcall:
+            syscall += prefix + call + '\n\n'
+        step['syscall'] = syscall
+        step['grouping'] = None
+        steps.append(step)
+        n += 1
 
-            # Temporary masked Stokes I image of CORRECTED_DATA, used only to make the final mask
-            step = {}
-            step['step'] = n
-            step['comment'] = 'Run wsclean, masked Stokes I deconvolution of the CORRECTED_DATA (stage 1 phase selfcal) for {}'.format(fieldname)
-            step['dependency'] = n - 1
-            step['id'] = 'WSPMI'+code
-            step['glam_config'] = cfg.GLAM_WSC_SOURCE
-            step['slurm_config'] = cfg.SLURM_WSCLEAN
-            step['pbs_config'] = cfg.PBS_WSCLEAN
-            absmem = gen.absmem_helper(step,INFRASTRUCTURE,cfg.WSC_ABSMEM)
-            syscall = ''
-            prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
-            imcall = gen.generate_syscall_wsclean(mslist = [myms],
-                    tempdir = temp_dir,
-                    imgname = final_img_prefix,
-                    datacol = 'CORRECTED_DATA',
-                    mask = mask,
-                    chanout = chanout_inter,
-                    nomodel = True,
-                    sourcelist = False,
-                    pol = 'I',
-                    localrms = cfg.WSC_INTER_LOCALRMS,
-                    automask = cfg.WSC_INTER_AUTOMASK,
-                    autothreshold = cfg.WSC_INTER_AUTOTHRESHOLD,
-                    tukeytaper = tukeytaper,
-                    minuvl = minuvl,
-                    maxuvl = maxuvl,
-                    weight = weight_inter,
-                    imsize = imsize_inter,
-                    maxchan = maxchan_inter,
-                    absmem = absmem)
-            for call in imcall:
-                syscall += prefix + call + '\n\n'
-            step['syscall'] = syscall
-            step['grouping'] = None
-            steps.append(step)
-            n += 1
-
-            # Final mask: breizorro on the finalmask image
-            finalmask = f"{final_img_prefix}-MFS-image.mask.fits"
-            step = {}
-            step['step'] = n
-            step['comment'] = 'Make final cleaning mask for ' + fieldname
-            step['dependency'] = n - 1
-            step['id'] = 'MASKP'+code
-            step['glam_config'] = cfg.GLAM_SMALL
-            syscall  = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
-            syscall += gen.generate_syscall_breizorro(restoredimage = f"{final_img_prefix}-MFS-image.fits", outfile = finalmask, thresh=cfg.BREIZORRO_THRESH)[0]
-            # Delete the temporary finalmask image, keeping any masks
+        # Final mask: breizorro on the finalmask image (threshold=10.0 for calibrators)
+        finalmask = f"{final_img_prefix}-MFS-image.mask.fits"
+        breizorro_thresh = 10.0 if not is_target else cfg.BREIZORRO_THRESH
+        step = {}
+        step['step'] = n
+        step['comment'] = 'Make final cleaning mask for ' + fieldname
+        step['dependency'] = n - 1
+        step['id'] = 'MASKP'+code
+        step['glam_config'] = cfg.GLAM_SMALL
+        syscall  = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
+        syscall += gen.generate_syscall_breizorro(restoredimage = f"{final_img_prefix}-MFS-image.fits", outfile = finalmask, thresh=breizorro_thresh)[0]
+        # Delete the temporary finalmask image, keeping any masks
+        if ENABLE_CLEANUP:
             syscall += f'\n\nfind {img_dir} -type f -name "{os.path.basename(final_img_prefix)}*" ! -name "*.mask.fits" -delete\n'
-            step['syscall'] = syscall
-            steps.append(step)
-            n += 1
+        step['syscall'] = syscall
+        steps.append(step)
+        n += 1
+
+        if is_target:
 
             # WSCMI: image CORRECTED_DATA of original MS after phase selfcal
             step = {}
@@ -697,13 +722,11 @@ def main():
                     nomodel=True,
                     sourcelist = False,
                     qu_automask_scale = 1.0,
-                    localrms = cfg.WSC_INTER_LOCALRMS,
-                    automask = cfg.WSC_INTER_AUTOMASK,
-                    autothreshold = cfg.WSC_INTER_AUTOTHRESHOLD,
                     weight = weight_inter,
                     imsize = imsize_inter,
                     maxchan = maxchan_inter,
-                    absmem = absmem)
+                    absmem = absmem,
+                    **inter_mask_kwargs)
             for call in imcall:
                 syscall += prefix + call + '\n\n'
                 if ENABLE_CLEANUP:
@@ -922,8 +945,9 @@ def main():
                 weight = weight_pcal,
                 imsize = imsize_pcal,
                 maxchan = maxchan_pcal,
-                absmem = absmem)
-        for call in imcall: 
+                absmem = absmem,
+                **pcal_mask_kwargs)
+        for call in imcall:
             syscall += prefix + call + '\n\n'
             if ENABLE_CLEANUP:
                 syscall += f'rm -f {pcal_img_prefix}*dirty*\n'
@@ -993,21 +1017,26 @@ def main():
             steps.append(step)
             n += 1
 
-            # Full UV mask: breizorro on the blind image
+            # Full UV mask: breizorro on the blind image gives the extended mask, which is
+            # then combined with the point-like final mask (MASKP)
+            extended_mask = f"{fulluv_blind_prefix}-MFS-image.extended.mask.fits"
             fulluv_mask = f"{fulluv_blind_prefix}-MFS-image.mask.fits"
             step = {}
             step['step'] = n
-            step['comment'] = 'Make small-box cleaning mask for full UV image of ' + fieldname
+            step['comment'] = 'Make extended cleaning mask for full UV image of ' + fieldname + ' and combine it with the final mask'
             step['dependency'] = n - 1
             step['id'] = 'MASKF'+code
             step['glam_config'] = cfg.GLAM_SMALL
-            syscall  = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
-            syscall += gen.generate_syscall_breizorro(restoredimage = f"{fulluv_blind_prefix}-MFS-image.fits",
-                    outfile = fulluv_mask,
+            wsc_prefix = CONTAINER_RUNNER+WSCLEAN_CONTAINER+' ' if USE_SINGULARITY else ''
+            py_prefix = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
+            syscall  = wsc_prefix + gen.generate_syscall_breizorro(restoredimage = f"{fulluv_blind_prefix}-MFS-image.fits",
+                    outfile = extended_mask,
                     thresh = 20.0,
                     boxsize = 50)[0]
+            syscall += f'\n\n{py_prefix}python3 {TOOLS}/combine_FITS_masks.py {fulluv_mask} {extended_mask} {finalmask}'
             # Delete the temporary blind image, keeping any masks
-            syscall += f'\n\nfind {img_dir} -type f -name "{os.path.basename(fulluv_blind_prefix)}*" ! -name "*.mask.fits" -delete\n'
+            if ENABLE_CLEANUP:
+                syscall += f'\n\nfind {img_dir} -type f -name "{os.path.basename(fulluv_blind_prefix)}*" ! -name "*.mask.fits" -delete\n'
             step['syscall'] = syscall
             steps.append(step)
             n += 1
@@ -1039,7 +1068,8 @@ def main():
                     weight = weight_pcal,
                     imsize = imsize_pcal,
                     maxchan = maxchan_pcal,
-                    absmem = absmem)
+                    absmem = absmem,
+                    **inter_mask_kwargs)
             for call in imcall:
                 syscall += prefix + call + '\n\n'
                 if ENABLE_CLEANUP:
@@ -1061,24 +1091,10 @@ def main():
             steps.append(step)
             n += 1
 
-        step = {}
-        step['step'] = n
-        step['comment'] = 'Create zoom cutouts for '+fieldname
-        step['dependency'] = n - 1
-        step['id'] = 'CTOUT'+code
-        step['glam_config'] = cfg.GLAM_SMALL
-        syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
-        # Pass the relative path from IMAGES directory for make_cutouts.py
-        cutout_path = img_dir.replace(IMAGES+'/', '')
-        syscall += f"python3 {cfg.TOOLS}/make_cutouts.py {cutout_path}"
-        step['syscall'] = syscall
-        steps.append(step)
-        n += 1
-
         # Targets only: predict the final (PCALMASK) model into MODEL_DATA, subtract it from
         # CORRECTED_DATA, and split the CORRECTED_DATA (now the residuals) out as the DATA column of
         # the target's final MS in RMSYNTH_RESIDUAL_MS_DIR, as one job. This must come before the
-        # clean-up below, which removes the pcalmask channel model images the predict reads.
+        # cutouts and clean-up below, which remove the pcalmask channel model images the predict reads.
         if is_target and cfg.RMSYNTH_RESIDUAL_MS_DIR != '':
             residual_ms = f"{cfg.RMSYNTH_RESIDUAL_MS_DIR}/{o.basename(myms).replace('_stage2.ms', '.ms')}"
 
@@ -1106,19 +1122,33 @@ def main():
             steps.append(step)
             n += 1
 
-        step = {}
-        step['step'] = n
-        step['comment'] = 'Clean directory for '+fieldname
-        step['dependency'] = n - 1
-        step['id'] = 'CLEAN'+code
-        step['glam_config'] = cfg.GLAM_SMALL
-        syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
-        syscall += f"python3 {cfg.TOOLS}/clean_directory.py {filename_fieldname}\n\n"
         if ENABLE_CLEANUP:
+            step = {}
+            step['step'] = n
+            step['comment'] = 'Create zoom cutouts for '+fieldname
+            step['dependency'] = n - 1
+            step['id'] = 'CTOUT'+code
+            step['glam_config'] = cfg.GLAM_SMALL
+            syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
+            # Pass the relative path from IMAGES directory for make_cutouts.py
+            cutout_path = img_dir.replace(IMAGES+'/', '')
+            syscall += f"python3 {cfg.TOOLS}/make_cutouts.py {cutout_path}"
+            step['syscall'] = syscall
+            steps.append(step)
+            n += 1
+
+            step = {}
+            step['step'] = n
+            step['comment'] = 'Clean directory for '+fieldname
+            step['dependency'] = n - 1
+            step['id'] = 'CLEAN'+code
+            step['glam_config'] = cfg.GLAM_SMALL
+            syscall = CONTAINER_RUNNER+PYTHON3_CONTAINER+' ' if USE_SINGULARITY else ''
+            syscall += f"python3 {cfg.TOOLS}/clean_directory.py {filename_fieldname}\n\n"
             syscall += f"rm -rf {temp_dir}"
-        step['syscall'] = syscall
-        steps.append(step)
-        n += 1
+            step['syscall'] = syscall
+            steps.append(step)
+            n += 1
 
         field_type_str = 'target' if is_target else 'secondary'
         field_steps.append((steps,kill_file,fieldname,field_type_str))

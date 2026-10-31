@@ -374,25 +374,19 @@ def read_position_file(position_file, source_name, matching_file=None):
     either CASA HMS/DMS (RA colon-separated, Dec period-separated) or plain
     decimal degrees -- see parse_casa_position().
 
-    source_name is resolved against the FIELD_NAME column in two stages:
+    source_name is resolved against the FIELD_NAME column through the
+    name-matching list (data/positions/XRB_name_matching.txt) only: the list
+    maps an MS field name to the catalogue name this file is keyed on (e.g.
+    'J1709-3624' -> 'IGRJ17091-3624'), and that catalogue name is then looked
+    up exactly (case-insensitively). There is no similarity fallback -- every
+    field name is expected to have an entry in the list.
 
-    1. The name-matching list (data/positions/XRB_name_matching.txt) maps an
-       MS field name to the catalogue name this file is keyed on. It carries
-       the pairs no normalisation would connect, e.g. 'J1709-3624' ->
-       'IGRJ17091-3624'. A name found there is then looked up exactly
-       (case-insensitively).
-    2. Anything the list does not cover falls through to normalized
-       similarity -- see gen.match_field_name() / gen._normalize_field_name()
-       (>=80% difflib ratio after stripping spaces/underscores/colons/'+' and
-       lowercasing), which handles the incidental punctuation cases such as
-       'MAXI J1820+070' vs 'MAXIJ1820+070'.
-
-    Hard-fails (raises RuntimeError) if neither stage resolves the name. This
-    mirrors the pre-flight check in setups/RMSYNTH.py, which uses the same two
-    stages and is expected to catch this before a job is ever submitted --
-    reaching this at runtime means something unexpected changed (e.g. a list
-    was edited after the job was generated), so it does not silently fall back
-    to the MS phase centre.
+    Hard-fails (raises RuntimeError) if the field name is not in the list or
+    its catalogue name is not in this file. This mirrors the pre-flight check
+    in setups/RMSYNTH.py, which resolves names the same way and is expected to
+    catch this before a job is ever submitted -- reaching this at runtime means
+    something unexpected changed (e.g. a list was edited after the job was
+    generated), so it does not silently fall back to the MS phase centre.
     """
     if not os.path.exists(position_file):
         raise FileNotFoundError(f"Position file {position_file} not found")
@@ -414,38 +408,24 @@ def read_position_file(position_file, source_name, matching_file=None):
 
     names = [name for name, _ in entries]
 
-    # Stage 1: the name-matching list
     if matching_file is None:
         matching_file = cfg.DATA + '/positions/XRB_name_matching.txt'
     resolved_name, was_aliased = gen.resolve_field_name(source_name, matching_file)
 
-    if was_aliased:
-        msg(f"Name list: '{source_name}' -> '{resolved_name}'")
-        exact = [name for name in names if name.lower() == resolved_name.lower()]
-        if exact:
-            best_name = exact[0]
-            msg(f"Matched '{source_name}' -> '{best_name}' (name list)")
-            position_str = dict(entries)[best_name]
-            ra_deg, dec_deg = parse_casa_position(position_str)
-            if ra_deg is None:
-                raise RuntimeError(f"Failed to parse position '{position_str}' for '{best_name}' in {position_file}")
-            msg(f"Found position in file: RA={ra_deg:.6f} deg, Dec={dec_deg:.6f} deg")
-            return ra_deg, dec_deg
-        msg(f"WARNING: '{resolved_name}' is not in {position_file} -- "
-            f"falling back to similarity matching")
-
-    # Stage 2: normalized similarity, on the resolved name
-    best_name, best_ratio, matched = gen.match_field_name(resolved_name, names)
-
-    if not matched:
+    if not was_aliased:
         raise RuntimeError(
-            f"No entry in {position_file} matched '{source_name}'"
-            f"{f' (name list: {resolved_name})' if was_aliased else ''} at "
-            f">= 80% similarity (closest: '{best_name}' at {best_ratio:.0%}). "
-            f"Add/fix the target in the position file, or add the field name "
-            f"to {matching_file}.")
+            f"'{source_name}' has no entry in {matching_file}. Add the field "
+            f"name and its catalogue name to the name-matching list.")
 
-    msg(f"Matched '{source_name}' -> '{best_name}' ({best_ratio:.0%} similarity)")
+    exact = [name for name in names if name.lower() == resolved_name.lower()]
+    if not exact:
+        raise RuntimeError(
+            f"'{source_name}' maps to '{resolved_name}' in {matching_file}, but "
+            f"'{resolved_name}' is not in {position_file}. Add/fix the target "
+            f"in the position file, or fix its entry in the name-matching list.")
+
+    best_name = exact[0]
+    msg(f"Matched '{source_name}' -> '{best_name}' (name list)")
     position_str = dict(entries)[best_name]
     ra_deg, dec_deg = parse_casa_position(position_str)
     if ra_deg is None:
