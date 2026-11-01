@@ -827,7 +827,7 @@ def generate_syscall_wsclean(mslist,
     syscall += '-niter '+str(niter)+' '
     syscall += '-gain '+str(gain)+' '
     syscall += '-mgain '+str(mgain)+' '
-    if chandeconvolution and fitspectralpol != 0:
+    if chandeconvolution and fitspectralpol != 0 and chandeconvolution <= min(chanout, maxchan):
         syscall += '--deconvolution-channels '+str(chandeconvolution)+' '
     if joinchannels:
         syscall += '-join-channels '

@@ -604,7 +604,7 @@ WSC_WEIGHT_HIGHRES = 'uniform'  # Weighting scheme for the high-resolution image
 WSC_PARALLELDECONVOLUTION = 2560  # Tile size in pixels for parallel deconvolution (-parallel-deconvolution)
 WSC_MULTISCALE       = False      # Enable multi-scale CLEAN (-multiscale)
 WSC_SCALES           = ''   # Multi-scale CLEAN scale sizes in pixels
-WSC_MAXSCALES        = 7        # Maximum number of multi-scale CLEAN scales (-multiscale-max-scales); '' = wsclean default
+WSC_MAXSCALES        = 5        # Maximum number of multi-scale CLEAN scales (-multiscale-max-scales); '' = wsclean default
 WSC_MULTISCALE_BIAS  = 0.7       # Multi-scale bias parameter; higher = prefer smaller scales
 WSC_FULLUV_MULTISCALE = True     # Multi-scale CLEAN for the full UV blind (mask) and final images, with WSC_SCALES
 WSC_CHANDECONV       = 16      # Number of sub-band images used during deconvolution

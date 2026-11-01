@@ -1043,7 +1043,7 @@ def main():
 
             step = {}
             step['step'] = n
-            step['comment'] = f'Run wsclean, full UV range (no tukey taper / minuv-l cut), 16-channel Stokes I deconvolution of the CORRECTED_DATA (self-calibrated) for {fieldname}'
+            step['comment'] = f'Run wsclean, full UV range (no tukey taper / minuv-l cut), 8-channel Stokes I deconvolution of the CORRECTED_DATA (self-calibrated) for {fieldname}'
             step['dependency'] = n - 1
             step['id'] = 'WSFUV'+code
             step['glam_config'] = cfg.GLAM_WSC_SOURCE
@@ -1057,7 +1057,7 @@ def main():
                     imgname = fulluv_img_prefix,
                     datacol = 'CORRECTED_DATA',
                     mask = fulluv_mask,
-                    chanout = 16,
+                    chanout = cfg.WSC_BLIND_CHANNELSOUT,
                     nomodel = True,
                     sourcelist = False,
                     pol = 'I',
