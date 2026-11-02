@@ -976,7 +976,7 @@ def main():
 
         # Full UV imaging (targets only)
         if is_target:
-            # Temporary blind Stokes I full UV image, used only to make the full UV mask
+            # Blind Stokes I full UV image, used to make the full UV mask
             fulluv_blind_prefix = img_dir+f'/img_{myms}_fulluvblind'
             step = {}
             step['step'] = n
@@ -1003,6 +1003,7 @@ def main():
                     automask = 7.0,
                     autothreshold = cfg.WSC_AUTOTHRESHOLD_BLIND,
                     multiscale = cfg.WSC_FULLUV_MULTISCALE,
+                    maxscales = 3,
                     tukeytaper = False,
                     minuvl = '0',
                     maxuvl = '',
@@ -1034,9 +1035,9 @@ def main():
                     thresh = 20.0,
                     boxsize = 50)[0]
             syscall += f'\n\n{py_prefix}python3 {TOOLS}/combine_FITS_masks.py {fulluv_mask} {extended_mask} {finalmask}'
-            # Delete the temporary blind image, keeping any masks
+            # Delete the blind imaging products, keeping the MFS image and any masks
             if ENABLE_CLEANUP:
-                syscall += f'\n\nfind {img_dir} -type f -name "{os.path.basename(fulluv_blind_prefix)}*" ! -name "*.mask.fits" -delete\n'
+                syscall += f'\n\nfind {img_dir} -type f -name "{os.path.basename(fulluv_blind_prefix)}*" ! -name "*.mask.fits" ! -name "*-MFS-image.fits" -delete\n'
             step['syscall'] = syscall
             steps.append(step)
             n += 1
