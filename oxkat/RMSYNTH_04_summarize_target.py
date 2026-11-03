@@ -11,7 +11,7 @@
 #
 #   RESULTS/img_<target_ms>_pcalmask_polarization.json
 #       ['MFS']['component<N>']:
-#           I_flux_mJy[0], I_err_mJy[0]        -- MFS Stokes I +/- error
+#           I_flux_mJy[0], I_rms_mJy[0]        -- MFS Stokes I +/- image rms
 #           alpha[0], alpha_err[0]             -- spectral index (None if not fit)
 #           chi2_red[0], ndof[0]               -- reduced chi2 of the alpha fit and its dof
 #                                                  (None if not fit)
@@ -197,7 +197,7 @@ def main():
             time_ctr_isot = comp_mfs.get('time_ctr_isot', [None])[0]
 
             out.write(f'\n--- {component} ---\n')
-            line('MFS Stokes I (mJy)', fmt(comp_mfs.get("I_flux_mJy", [None])[0], comp_mfs.get("I_err_mJy", [None])[0]))
+            line('MFS Stokes I (mJy)', fmt(comp_mfs.get("I_flux_mJy", [None])[0], comp_mfs.get("I_rms_mJy", [None])[0]))
             if 'alpha' in comp_mfs:
                 line('Spectral index', fmt(comp_mfs.get("alpha", [None])[0], comp_mfs.get("alpha_err", [None])[0]))
                 chi2_red = comp_mfs.get("chi2_red", [None])[0]
