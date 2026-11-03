@@ -18,11 +18,11 @@ If you make use of this software, please cite:
 ---
 
 
-### Latest modification (July, 2026)
+### Latest modification (November, 2026)
 
 #### Update: Image-Plane UV Cuts for Short Baselines (X-KAT Tuning)
 
-The default `config.py` is now tuned for X-KAT observations, where preserving spectral fidelity across the band is the priority. Short baselines are now excluded via an **image-plane** UV cut (`WSC_BASELINE_CUT = True`, `WSC_BASELINE_CUTLENGTH = '750m'` by default, `WSC_TAPERMASK = True`) rather than by flagging the data. This addresses the same short-baseline artefacts that motivate `CAL_1GC_BL_MODE`, but without discarding any visibilities from the MS — the cut is only applied at imaging/deconvolution time, so you can always re-image the same MS with the full baseline range afterward (e.g. by setting `WSC_BASELINE_CUT = False`) to search for extended structure.
+The default `config.py` is now tuned for X-KAT observations, where preserving spectral fidelity across the band is the priority. Short baselines are now excluded via an **image-plane** UV cut (`WSC_BASELINE_CUT = True`, `WSC_BASELINE_CUTLENGTH = '300m'` by default, `WSC_TAPERMASK = True`) rather than by flagging the data. This addresses the same short-baseline artefacts that motivate `CAL_1GC_BL_MODE`, but without discarding any visibilities from the MS — the cut is only applied at imaging/deconvolution time, so you can always re-image the same MS with the full baseline range afterward (e.g. by setting `WSC_BASELINE_CUT = False`) to search for extended structure.
 
 # **IF YOU WANT THE FULL ARRAY / EXTENDED STRUCTURE, MAKE SURE TO SET `WSC_BASELINE_CUT = False`, OR RUN A SEPARATE IMAGING PASS WITHOUT THE CUT AFTER 2GC / YOUR DESIRED SELF-CALIBRATION — OTHERWISE SHORT BASELINES ARE SILENTLY EXCLUDED BY DEFAULT.**
 
@@ -321,8 +321,9 @@ Most imaging parameters for 2GC are found in `config.py` after the comment `# ws
 WSC_MINUVL = ''  # Minimum uv-distance in wavelengths (leave empty for no restriction)
 WSC_MAXUVL = ''  # Maximum uv-distance in wavelengths (leave empty for no restriction)
                  # Useful for matching angular scales across frequency
-WSC_TUKEYTAPER = False  # Apply Tukey taper to reduce edge effects in uv-coverage
-WSC_TAPERMASK = False   # Apply taper/uvcuts to blind and mask images (not just final images)
+WSC_TUKEYTAPER = 3000.0  # Inner Tukey taper in wavelengths; suppresses emission on scales
+                         # larger than ~1/taper radians
+WSC_TAPERMASK = True     # Apply taper/uvcuts to blind and mask images (not just final images)
 
 # Weighting
 WSC_WEIGHT = 'briggs 0.0'  # Imaging weighting scheme (default: Briggs robustness 0.0)
@@ -334,18 +335,19 @@ WSC_UNIFORM_IMAGE = True   # Also generate high-resolution image using WSC_WEIGH
 WSC_POL = 'IQUV'  # Stokes parameters to image. Pipeline designed for either Stokes I or 
                   # full IQUV. Atypical subsets (e.g., QUV, UV) may work but other pipeline 
                   # steps (e.g., RMSYNTH) may fail.
-WSC_SPLITPOL = False  # Image V/I and Q/U separately (necessary for high RM and MFS fitting)
-WSC_JOINPOLARIZATIONS = True  # Join polarizations during deconvolution
-WSC_SQUAREPOLARIZATIONS = False  # Use squared polarization during deconvolution
+WSC_SPLITPOL = True  # Image V/I and Q/U separately (necessary for high RM and MFS fitting)
+WSC_JOINPOLARIZATIONS = False  # Join polarizations during deconvolution
+WSC_SQUARECHANS = True  # Sum-of-squares channel joining for peak finding (Q/U only when
+                        # WSC_SPLITPOL = True)
 
 # Frequency channels
 WSC_BLIND_CHANNELSOUT = 8  # Number of channels for initial blind imaging
-WSC_PCAL_CHANNELSOUT = 8   # Number of channels for final post-calibration imaging
+WSC_PCAL_CHANNELSOUT = 64  # Number of channels for final post-calibration imaging
                            # Increase for sources with high rotation measure
 WSC_DMASK_CHANNELSOUT = WSC_PCAL_CHANNELSOUT  # Channels for datamask image (in case you want 
                                                # different channelization than pcalmask)
-WSC_CAL_CHANNELSOUT = 16   # Number of channels for calibrator imaging
-WSC_MAX_CHANNELS = 16      # Maximum channels imaged at once (memory limit). If 
+WSC_CAL_CHANNELSOUT = WSC_DMASK_CHANNELSOUT  # Number of channels for calibrator imaging
+WSC_MAX_CHANNELS = 64      # Maximum channels imaged at once (memory limit). If 
                            # WSC_PCAL_CHANNELSOUT > WSC_MAX_CHANNELS, imaging is performed 
                            # in steps and MFS is created by stacking in image plane 
                            # (qualitative only; do not report fluxes from this MFS image)
@@ -359,7 +361,7 @@ WSC_CIRCULARBEAM = False   # Force circular restoring beam
 
 # Masking: blind image (mask generation only)
 WSC_AUTOMASK_BLIND      = 5.0   # Auto-mask threshold (sigma) for blind image
-WSC_AUTOTHRESHOLD_BLIND = 1.0   # Auto-threshold (sigma) at which CLEAN stops for blind image
+WSC_AUTOTHRESHOLD_BLIND = 3.0   # Auto-threshold (sigma) at which CLEAN stops for blind image
 WSC_THRESHOLD_BLIND     = False  # Absolute flux threshold for blind image; False = use auto-threshold
 WSC_LOCALRMS_BLIND      = 0.5    # Local RMS map for masking in the blind image; local-rms strength
 
@@ -369,8 +371,8 @@ WSC_LOCALRMS_BLIND      = 0.5    # Local RMS map for masking in the blind image;
 # (For two-stage shallow/intermediate masking params, see WSC_SHALLOWMASK / WSC_INTER_* above.)
 WSC_MASK          = False   # FITS mask to use; False = no mask (blind deconvolution)
 WSC_THRESHOLD     = False   # Absolute flux threshold (Jy) to stop cleaning; False = use auto
-WSC_AUTOMASK      = 2.0     # Auto-mask threshold (sigma) for main deconvolution
-WSC_AUTOTHRESHOLD = 0.5     # Auto-threshold (sigma) at which CLEAN stops
+WSC_AUTOMASK      = 3.0     # Auto-mask threshold (sigma) for main deconvolution
+WSC_AUTOTHRESHOLD = 1.0     # Auto-threshold (sigma) at which CLEAN stops
 WSC_LOCALRMS      = False   # Local RMS map for adaptive masking: False disables, True enables at
                              # the default strength (0.5), a float enables at that strength
 ```
@@ -378,7 +380,7 @@ WSC_LOCALRMS      = False   # Local RMS map for adaptive masking: False disables
 
 **Multi-frequency weighting (IMPORTANT):**
 
-This pipeline supports spectrally resolved functionality (e.g., Rotation Measure synthesis). The `WSC_MFWEIGHT` parameter controls whether multi-frequency weighting is applied during imaging. It is set to `True` by default, optimized for a single combined MFS image with the lowest RMS noise. **If you plan to use spectral functionality, set this to `False` to avoid introducing artificial spectral structure** (see [wsclean MF weighting documentation](https://wsclean.readthedocs.io/en/latest/mf_weighting.html)).
+This pipeline supports spectrally resolved functionality (e.g., Rotation Measure synthesis). The `WSC_MFWEIGHT` parameter controls whether multi-frequency weighting is applied during imaging. It is set to `False` by default, to avoid introducing artificial spectral structure for spectral functionality. **Set it to `True` only if you need a single combined MFS image with the lowest RMS noise and do not plan to use spectral functionality** (see [wsclean MF weighting documentation](https://wsclean.readthedocs.io/en/latest/mf_weighting.html)).
 
 **Self-calibration control:**
 
