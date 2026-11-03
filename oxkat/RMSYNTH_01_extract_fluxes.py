@@ -1557,8 +1557,8 @@ def extract_polarization_properties(src_name, src_im_identifier, src_im_suffix, 
                            'time_ctr_isot': _mjd_to_isot(time_ctr_mjd), 'time_dt': time_dt})
             msg(f'  {component}: RA={res["I_RA_deg"]:.6f} deg  Dec={res["I_DEC_deg"]:.6f} deg  '
                 f'({I_x[z]:.1f}, {I_y[z]:.1f}) pix')
-            msg(f'    I = {res["I_flux_mJy"]:.3f} +/- {res["I_err_mJy"]:.3f} mJy  '
-                f'rms = {res["I_rms_mJy"]:.3f} mJy  S/N = {res["I_flux_mJy"] / res["I_rms_mJy"]:.1f}')
+            msg(f'    I = {res["I_flux_mJy"]:.3f} +/- {res["I_rms_mJy"]:.3f} mJy  '
+                f'S/N = {res["I_flux_mJy"] / res["I_rms_mJy"]:.1f}')
             if not only_intensity:
                 msg(f'    P0 = {res["P0_flux_mJy"]:.3f} mJy  LP = {res["LP_frac"]:.2f}%  '
                     f'V = {res["V_flux_mJy"]:.3f} mJy')
