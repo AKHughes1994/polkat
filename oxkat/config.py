@@ -364,6 +364,17 @@ CAL_1GC_PRIMARY_MODEL = 'auto'       # setjy = use setjy component model only
 CAL_1GC_DELAYCUT = 2.5               # [now defunct] Jy at central freq. Do not solve for K on secondaries weaker than this
 CAL_1GC_FILLGAPS = 8                 # Maximum channel gap over which to interpolate bandpass solutions
 
+# Secondaries too poor to calibrate against. In 1GC_05_casa_refcal.py (and
+# tools/manual_XF_solver.py, which it runs), targets paired with one of these
+# take their gains from the primary instead. The secondary itself is still
+# solved and calibrated with its own solutions.
+CAL_1GC_REPLACE_SECONDARY_WITH_PRIMARY = False
+CAL_1GC_BAD_SECONDARIES = []
+# With the above on: True takes only the amplitude gains (the fluxscaled
+# calmode='a' table) from the primary; delays and phases still come from the
+# secondary. False takes all three from the primary.
+CAL_1GC_REPLACE_SECONDARY_AMP_ONLY = False
+
 # Parallactic angle correction during 1GC.
 # If True, CASA applies the P-Jones correction as part of the 1GC solve.
 # This is safe for phase-only and standard polarisation calibration.
@@ -595,7 +606,8 @@ WSC_WEIGHT_HIGHRES = 'uniform'  # Weighting scheme for the high-resolution image
 # --- Deconvolution ---
 WSC_PARALLELDECONVOLUTION = 2560  # Tile size in pixels for parallel deconvolution (-parallel-deconvolution)
 WSC_MULTISCALE       = False      # Enable multi-scale CLEAN (-multiscale)
-WSC_SCALES           = '0,3,9'   # Multi-scale CLEAN scale sizes in pixels
+WSC_SCALES           = ''   # Multi-scale CLEAN scale sizes in pixels
+WSC_MAXSCALES        = 5   # Maximum number of multi-scale CLEAN scales (-multiscale-max-scales); '' = wsclean default
 WSC_MULTISCALE_BIAS  = 0.7       # Multi-scale bias parameter; higher = prefer smaller scales
 WSC_CHANDECONV       = 16      # Number of sub-band images used during deconvolution
                                   # (--deconvolution-channels); False = same as channels-out
@@ -664,7 +676,7 @@ WSC_JOINPOLARIZATIONS = False
 
 # --- Masking: blind image (stage 0 — mask generation only) ---
 WSC_AUTOMASK_BLIND      = 5.0   # Auto-mask threshold (sigma) for blind image
-WSC_AUTOTHRESHOLD_BLIND = 1.0   # Auto-threshold (sigma) at which CLEAN stops for blind image
+WSC_AUTOTHRESHOLD_BLIND = 3.0   # Auto-threshold (sigma) at which CLEAN stops for blind image
 WSC_THRESHOLD_BLIND     = False  # Absolute flux threshold for blind image; False = use auto-threshold
 WSC_LOCALRMS_BLIND      = 0.5    # Local RMS map for masking in the blind image; local-rms strength
 
@@ -708,7 +720,7 @@ WSC_LOCALRMS      = False    # Local RMS map for adaptive masking during main de
 #   '<value>m'  — a physical length in metres; converted to wavelengths per band (frequency-dependent)
 #   '<value>'   — already in wavelengths; used directly with no frequency scaling
 WSC_BASELINE_CUT = True
-WSC_BASELINE_CUTLENGTH = '500m'  # Default: exclude baselines shorter than 500 m for imaging
+WSC_BASELINE_CUTLENGTH = '300m'  # Default: exclude baselines shorter than 500 m for imaging
 
 if WSC_BASELINE_CUT:
     _cutlen = str(WSC_BASELINE_CUTLENGTH).strip()
@@ -1009,6 +1021,9 @@ RMSYN_SPEC_INDEX_MAD_CLIP  = 10     # Iterative MAD outlier rejection threshold 
 RMSYN_MAX_I_DRIFT_PIX      = False  # Maximum pixel drift allowed for a Stokes I fitted position
                                     # before the fit is re-run with the position fixed.
                                     # False = no drift check; float = threshold in pixels.
+
+RMSYN_MIN_BEAM_PIX         = 2.0    # An epoch is skipped entirely if the BMAJ or BMIN of any of its
+                                    # MFS Stokes images spans fewer than this many pixels.
 
 RMSYN_USE_RESIDUAL_RMS     = True  # True: measure the noise annulus on the matching *-residual.fits
                                     # image (post-CLEAN noise, not biased by source flux or sidelobes),

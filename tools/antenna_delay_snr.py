@@ -1,55 +1,30 @@
-#!/usr/bin/env python3
 """
 antenna_delay_snr.py
-=====================
-Per-antenna delay-solve S/N ranking for reference-antenna selection, based
-on a primary/delay-calibrator field.
 
-Method
-------
-For each baseline (a1, a2), the parallel-hand correlations (XX/YY, or
-RR/LL if the array is circular) are vector-averaged over time and over
-all unflagged rows within one scan to build one complex spectrum per
-baseline:
+Per-antenna delay-solve S/N ranking for reference antenna selection, on the
+primary calibrator.
 
-    V_ij(f) ~= A * exp(-2*pi*j*f*tau_ij) + noise
+For each baseline (a1 < a2) and scan, the unflagged parallel-hand
+correlations (XX/YY or RR/LL) are vector-averaged over time into one
+complex spectrum
 
-That spectrum is Hanning-tapered, zero-padded, and FFT'd into an
-oversampled delay spectrum. Delay is the power-weighted centroid of
-the central peak (sub-bin precision). The peak's FWHM and first-null
-half-width are measured analytically (`analytic_peak_widths`) from the
-window function's own noise-free peak shape. S/N is the peak amplitude
-over the RMS of a local noise annulus that starts just outside the
-peak (its first null) and extends NOISE_ANNULUS_FWHM FWHM further on
-each side:
+    V_ij(nu) ~ A exp(+2 pi i nu tau_ij)
 
-    SNR = peak_amplitude / local_annulus_rms
+which is Hanning-tapered, zero-padded and FFT'd (numpy sign convention, so
+a positive phase slope gives a positive delay). The delay is the
+power-weighted centroid of the central peak, and the S/N is the peak
+amplitude over the rms of a noise annulus around it. Each antenna's S/N is
+the mean over every connected baseline in every scan.
 
-Baselines are grouped by antenna. For each antenna, the single baseline
-with the highest SNR (among all baselines touching that antenna) is
-taken as that antenna's representative measurement for that solve.
+Run with exec() inside CASA, which provides `tb`, `myms`, `bpcal_name` and
+`GAINPLOTS`. Sets `refant_snr_ranking`, a list of (antenna name, S/N)
+sorted best first.
 
-Reference-antenna ranking
---------------------------
-This solve is repeated **independently per scan** on the given field
-(e.g. the primary), giving each antenna one representative SNR value
-per scan. Those per-scan values are then pooled across all scans
-("combined") and averaged to give a single per-antenna S/N used to
-rank candidate reference antennas -- an antenna whose delay solution
-is only strong in one scan won't outrank one that's consistently good
-throughout the track.
-
-Assumptions
------------
-- Single spectral window (SPECTRAL_WINDOW row 0 / uniform channel
-  spacing); like MeerKAT. Multi-SPW MSs are not handled.
+Assumes a single spectral window with uniform channel spacing (MeerKAT).
 """
-
-from __future__ import annotations
 
 import functools
 import json
-import time
 from pathlib import Path
 
 import numpy as np
@@ -57,591 +32,438 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.lines import Line2D
 
 print = functools.partial(print, flush=True)
 
-# --------------------------------------------------------------------------
-# Configuration
-# --------------------------------------------------------------------------
+ZERO_PAD_FACTOR = 8       # FFT oversampling factor
+NOISE_ANNULUS_FWHM = 100  # noise annulus extent on each side of the peak, in FWHM
+ZOOM_FWHM = 5             # half-width of the zoom inset in the FFT plots, in FWHM
+MIN_UNFLAGGED_FRAC = 0.1  # skip baselines with less unflagged data than this
+TOP_N = 7                 # antennas printed at each end of the ranking
 
-ZERO_PAD_FACTOR = 8       # oversampling factor applied before the FFT
-NOISE_ANNULUS_FWHM = 100  # noise annulus extent on EACH side of the excluded peak, in FWHM
-ZOOM_FWHM = 5              # per-antenna FFT plot zoom half-width, in FWHM
-MIN_UNFLAGGED_FRAC = 0.1  # skip a baseline if less than this fraction of samples are unflagged
-TOP_N = 7                 # number of best/worst antennas to print/rank
+PARALLEL_HANDS = {5: "RR", 8: "LL", 9: "XX", 12: "YY"}  # casacore Stokes codes
 
-# Debug/smoke-test switch: when True, stop after the first baseline that
-# clears MIN_UNFLAGGED_FRAC and run the full pipeline (delay/SNR estimate +
-# all plots) on just that one baseline as a quick example/sanity check.
-SINGLE_BASELINE_TEST = False
-
-# casacore Stokes enum codes for the parallel-hand correlations
-PARALLEL_HAND_NAMES = {
-    5: "RR", 8: "LL",    # circular
-    9: "XX", 12: "YY",   # linear
-}
 
 # --------------------------------------------------------------------------
-# MS access helpers
+# MS access
 # --------------------------------------------------------------------------
 
-def get_antenna_names(ms_path: Path) -> list[str]:
-    tb.open(str(ms_path / "ANTENNA"))
-    names = list(tb.getcol("NAME"))
-    tb.close()
-    return names
-
-
-def get_field_id(ms_path: Path, field_name: str) -> int:
-    tb.open(str(ms_path / "FIELD"))
-    names = list(tb.getcol("NAME"))
-    tb.close()
-    matches = [i for i, n in enumerate(names) if n == field_name]
-    if not matches:
-        raise RuntimeError(f"Field '{field_name}' not found in {ms_path}::FIELD (have {names})")
-    if len(matches) > 1:
-        raise RuntimeError(f"Field '{field_name}' is ambiguous in {ms_path}::FIELD (IDs {matches})")
-    return matches[0]
-
-
-def get_scans_for_field(ms_path: Path, field_id: int) -> list[int]:
-    tb.open(str(ms_path))
-    sub = tb.query(f"FIELD_ID=={field_id}")
-    scans = sorted({int(s) for s in sub.getcol("SCAN_NUMBER")})
-    sub.close()
-    tb.close()
-    return scans
-
-
-def get_parallel_hand_indices(ms_path: Path) -> tuple[list[int], list[str]]:
-    tb.open(str(ms_path / "POLARIZATION"))
-    corr_type = tb.getcol("CORR_TYPE").T[0]  # tb returns (ncorr, nrow); flip to (nrow, ncorr)
-    tb.close()
-    idx = [i for i, c in enumerate(corr_type) if c in PARALLEL_HAND_NAMES]
-    if not idx:
-        raise RuntimeError(
-            f"No parallel-hand (XX/YY or RR/LL) correlations found in CORR_TYPE={corr_type}"
-        )
-    labels = [PARALLEL_HAND_NAMES[corr_type[i]] for i in idx]
-    return idx, labels
-
-
-def get_spw_chan_freq(ms_path: Path, spw_id: int = 0) -> np.ndarray:
-    tb.open(str(ms_path / "SPECTRAL_WINDOW"))
-    chan_freq = tb.getcol("CHAN_FREQ").T[spw_id]  # Hz; tb returns (nchan, nrow)
-    tb.close()
-    return np.asarray(chan_freq, dtype=float)
-
-
-def get_present_baselines(
-    ms_path: Path, field_id: int | None = None, scan_number: int | None = None
-) -> list[tuple[int, int]]:
-    tb.open(str(ms_path))
-    conds = []
-    if field_id is not None:
-        conds.append(f"FIELD_ID=={field_id}")
-    if scan_number is not None:
-        conds.append(f"SCAN_NUMBER=={scan_number}")
-    if conds:
-        sub = tb.query(" && ".join(conds))
-        a1 = sub.getcol("ANTENNA1")
-        a2 = sub.getcol("ANTENNA2")
-        sub.close()
-    else:
-        a1 = tb.getcol("ANTENNA1")
-        a2 = tb.getcol("ANTENNA2")
-    tb.close()
-    pairs = {(int(i), int(j)) for i, j in zip(a1, a2) if i != j}
-    pairs = {(min(i, j), max(i, j)) for i, j in pairs}
-    return sorted(pairs)
-
-
-def load_baseline_spectrum(
-    ms_path: Path, a1: int, a2: int, corr_indices: list[int],
-    field_id: int | None = None, scan_number: int | None = None,
-) -> tuple[np.ndarray | None, float]:
-    """Vector-average DATA over all rows in the given selection for baseline
-    (a1, a2), using only unflagged samples in the given (parallel-hand)
-    correlation indices.
-
-    `a1` must be < `a2` -- callers always pass the canonical (lower, higher)
-    antenna-index ordering (see `get_present_baselines`) so each physical
-    baseline is only ever solved once. The TaQL query still matches both
-    (ANTENNA1, ANTENNA2) storage orders so rows aren't silently dropped if
-    the MS happens to store a pair the other way round.
-
-    Returns (spectrum[nchan] complex, unflagged_fraction).
+def read_col(table, col):
     """
-    assert a1 < a2, f"expected canonical (lower, higher) antenna order, got ({a1}, {a2})"
-    tb.open(str(ms_path))
-    conds = [f"((ANTENNA1=={a1} && ANTENNA2=={a2}) || (ANTENNA1=={a2} && ANTENNA2=={a1}))"]
-    if field_id is not None:
-        conds.append(f"FIELD_ID=={field_id}")
-    if scan_number is not None:
-        conds.append(f"SCAN_NUMBER=={scan_number}")
-    sub = tb.query(" && ".join(conds))
-    if sub.nrows() == 0:
-        sub.close()
-        tb.close()
-        return None, 0.0
-    data = sub.getcol("DATA").T          # tb returns (ncorr, nchan, nrow) -> (nrow, nchan, ncorr)
-    flag = sub.getcol("FLAG").T          # same axis flip
-    flag_row = sub.getcol("FLAG_ROW")    # (nrow,)
-    row_ant1 = sub.getcol("ANTENNA1")    # (nrow,)
+    Read one column of a table.
+
+    Parameters
+    ----------
+    table : str
+        Table path.
+    col : str
+        Column name.
+
+    Returns
+    -------
+    numpy.ndarray
+        Row axis first, as python-casacore returns it.
+    """
+    tb.open(table)
+    values = tb.getcol(col).T
+    tb.close()
+    return values
+
+
+def query_cols(table, where, cols):
+    """
+    Read columns of the rows of a table matching a TaQL condition.
+
+    Parameters
+    ----------
+    table : str
+        Table path.
+    where : str
+        TaQL condition.
+    cols : list of str
+        Column names.
+
+    Returns
+    -------
+    list of numpy.ndarray
+        One array per column, row axis first (empty when no row matches).
+    """
+    tb.open(table)
+    sub = tb.query(where)
+    values = [sub.getcol(c).T if sub.nrows() else np.array([]) for c in cols]
     sub.close()
     tb.close()
+    return values
 
-    # Rows stored as (a2, a1) instead of the canonical (a1, a2) carry the
-    # conjugate visibility (V_ji = conj(V_ij)) -- conjugate them back before
-    # averaging in with the rest, so they don't corrupt the phase/delay.
-    reversed_rows = row_ant1 == a2
-    if reversed_rows.any():
-        data[reversed_rows] = np.conj(data[reversed_rows])
 
-    data = data[:, :, corr_indices]
-    flag = flag[:, :, corr_indices] | flag_row[:, None, None]
+def field_id(ms, name):
+    """
+    ID of the field called `name`.
 
-    good = ~flag
-    unflagged_frac = float(good.mean()) if good.size else 0.0
+    Raises
+    ------
+    RuntimeError
+        If the name is missing or appears more than once.
+    """
+    ids = [i for i, n in enumerate(read_col(f"{ms}/FIELD", "NAME")) if n == name]
+    if len(ids) != 1:
+        raise RuntimeError(f"Field '{name}' found {len(ids)} times in {ms}/FIELD")
+    return ids[0]
 
-    data = np.where(good, data, 0.0)
-    num = data.sum(axis=(0, 2))
-    den = good.sum(axis=(0, 2))
-    spectrum = np.divide(num, den, out=np.zeros_like(num), where=den > 0)
-    return spectrum, unflagged_frac
+
+def parallel_hands(ms):
+    """
+    Indices and labels of the parallel-hand correlations.
+
+    Returns
+    -------
+    idx : list of int
+    labels : list of str
+    """
+    corr_type = read_col(f"{ms}/POLARIZATION", "CORR_TYPE")[0]
+    idx = [i for i, c in enumerate(corr_type) if c in PARALLEL_HANDS]
+    if not idx:
+        raise RuntimeError(f"No parallel-hand correlations in CORR_TYPE={corr_type}")
+    return idx, [PARALLEL_HANDS[corr_type[i]] for i in idx]
+
+
+def baseline_spectrum(ms, a1, a2, corr_idx, where):
+    """
+    Time- and correlation-averaged spectrum of baseline (a1, a2), a1 < a2.
+
+    Rows stored as (a2, a1) are conjugated before averaging.
+
+    Parameters
+    ----------
+    ms : str
+        Measurement set.
+    a1, a2 : int
+        Antenna indices, a1 < a2.
+    corr_idx : list of int
+        Correlation indices to average.
+    where : str
+        Extra TaQL selection (field and scan).
+
+    Returns
+    -------
+    spectrum : numpy.ndarray of complex, shape (nchan,), or None
+        None when the baseline has no rows.
+    unflagged_frac : float
+        Fraction of selected samples that are unflagged.
+    """
+    pair = f"((ANTENNA1=={a1} && ANTENNA2=={a2}) || (ANTENNA1=={a2} && ANTENNA2=={a1}))"
+    data, flag, flag_row, ant1 = query_cols(ms, f"{pair} && {where}",
+                                            ["DATA", "FLAG", "FLAG_ROW", "ANTENNA1"])
+    if not data.size:
+        return None, 0.0
+
+    data[ant1 == a2] = np.conj(data[ant1 == a2])
+    good = ~(flag[:, :, corr_idx] | flag_row[:, None, None])
+    data = np.where(good, data[:, :, corr_idx], 0.0)
+
+    n = good.sum(axis=(0, 2))
+    spectrum = np.divide(data.sum(axis=(0, 2)), n, out=np.zeros(n.shape, complex), where=n > 0)
+    return spectrum, float(good.mean())
 
 
 # --------------------------------------------------------------------------
-# Delay / SNR estimation
+# Delay and S/N
 # --------------------------------------------------------------------------
 
-def compute_delay_spectrum(
-    spectrum: np.ndarray, chan_freq: np.ndarray, zero_pad_factor: int = ZERO_PAD_FACTOR
-) -> tuple[np.ndarray, np.ndarray]:
-    """FFT a (Hanning-tapered, zero-padded) channel spectrum into an
-    oversampled delay spectrum. Returns (delay_ns, amplitude)."""
-    nchan = len(chan_freq)
-    df = abs(float(np.median(np.diff(chan_freq))))  # Hz
-    npad = int(nchan * zero_pad_factor)
+def delay_spectrum(spectrum, df):
+    """
+    Oversampled delay spectrum of a channel spectrum.
 
-    windowed = spectrum * np.hanning(nchan)
-    padded = np.zeros(npad, dtype=complex)
-    padded[:nchan] = windowed
+    Parameters
+    ----------
+    spectrum : numpy.ndarray of complex, shape (nchan,)
+    df : float
+        Channel width (Hz).
 
-    delay_spec = np.fft.fftshift(np.fft.fft(padded))
-    delay_axis_s = np.fft.fftshift(np.fft.fftfreq(npad, d=df))
-    return delay_axis_s * 1e9, np.abs(delay_spec)
-
-
-def analytic_peak_widths(nchan: int, zero_pad_factor: int = ZERO_PAD_FACTOR) -> tuple[float, int]:
-    """Measure the FWHM and first-null half-width (both in oversampled
-    bins) of the delay-domain peak this pipeline's Hanning-tapered,
-    zero-padded FFT produces for a perfect, noise-free zero-delay point
-    source -- the exact peak shape, not an estimate from noisy data.
-    Used to size the peak-exclusion window and noise annulus to the
-    peak's real width instead of a fixed bin count."""
-    window = np.hanning(nchan)
-    npad = int(nchan * zero_pad_factor)
-    padded = np.zeros(npad, dtype=complex)
-    padded[:nchan] = window
-    amp = np.abs(np.fft.fftshift(np.fft.fft(padded)))
-    peak_idx = int(np.argmax(amp))
-    peak_amp = amp[peak_idx]
-
-    def _interp_crossing(threshold: float) -> float:
-        """Bins from the peak (sub-bin, linearly interpolated) to where
-        amp first drops below `threshold` walking outward from the peak."""
-        i = peak_idx
-        while i + 1 < len(amp) and amp[i + 1] >= threshold:
-            i += 1
-        if i + 1 >= len(amp):
-            return float(i - peak_idx)
-        a0, a1 = amp[i], amp[i + 1]
-        frac = (a0 - threshold) / (a0 - a1) if a0 != a1 else 0.0
-        return (i - peak_idx) + frac
-
-    fwhm_bins = 2.0 * _interp_crossing(0.5 * peak_amp)
-
-    i = peak_idx
-    while i + 1 < len(amp) and amp[i + 1] < amp[i]:
-        i += 1
-    peak_half_width = int(np.ceil(i - peak_idx))
-
-    return fwhm_bins, peak_half_width
+    Returns
+    -------
+    delay_ns : numpy.ndarray
+        Delay axis (ns), increasing.
+    amp : numpy.ndarray
+        |FFT| of the Hanning-tapered, zero-padded spectrum.
+    """
+    npad = len(spectrum) * ZERO_PAD_FACTOR
+    amp = np.abs(np.fft.fftshift(np.fft.fft(spectrum * np.hanning(len(spectrum)), npad)))
+    delay_ns = np.fft.fftshift(np.fft.fftfreq(npad, d=df)) * 1e9
+    return delay_ns, amp
 
 
-def estimate_delay_and_snr(
-    delay_ns: np.ndarray, amp: np.ndarray,
-    half_width: int, noise_half_width: int,
-) -> dict:
+def peak_widths(nchan):
+    """
+    FWHM and first-null half-width of the noise-free delay peak.
+
+    Measured on the delay spectrum of a flat (zero-delay) spectrum, so they
+    are exact for this taper and padding.
+
+    Parameters
+    ----------
+    nchan : int
+
+    Returns
+    -------
+    fwhm : float
+        Full width at half maximum (oversampled bins).
+    null : int
+        Bins from the peak to its first null.
+    """
+    amp = delay_spectrum(np.ones(nchan, complex), 1.0)[1]
+    side = amp[int(np.argmax(amp)):]
+    null = int(np.argmax(np.diff(side) >= 0))
+    i = int(np.argmax(side < 0.5 * side[0]))
+    fwhm = 2.0 * (i - 1 + (side[i - 1] - 0.5 * side[0]) / (side[i - 1] - side[i]))
+    return fwhm, null
+
+
+def delay_and_snr(delay_ns, amp, null, noise_half_width):
+    """
+    Delay and S/N of the strongest peak in a delay spectrum.
+
+    Parameters
+    ----------
+    delay_ns, amp : numpy.ndarray
+        Output of `delay_spectrum`.
+    null : int
+        Peak half-width out to its first null (bins).
+    noise_half_width : int
+        Half-width of the noise annulus (bins), measured from the peak.
+
+    Returns
+    -------
+    dict
+        delay_ns (power-weighted centroid of the peak), snr (peak over
+        annulus rms), noise_rms, peak (index), window and noise_window
+        (index ranges of the peak and the annulus).
+    """
     n = len(amp)
-    peak_idx = int(np.argmax(amp))
-    lo = max(0, peak_idx - half_width)
-    hi = min(n, peak_idx + half_width + 1)
+    peak = int(np.argmax(amp))
+    lo, hi = max(0, peak - null), min(n, peak + null + 1)
+    w = amp[lo:hi] ** 2
+    delay = float(np.sum(delay_ns[lo:hi] * w) / np.sum(w))
 
-    window_delay = delay_ns[lo:hi]
-    window_amp = amp[lo:hi]
-    weights = window_amp ** 2  # power-weighted centroid
-    centroid_delay = (
-        float(np.sum(window_delay * weights) / np.sum(weights))
-        if weights.sum() > 0
-        else float(delay_ns[peak_idx])
-    )
+    nlo, nhi = max(0, peak - noise_half_width), min(n, peak + noise_half_width + 1)
+    noise = np.zeros(n, bool)
+    noise[nlo:nhi] = True
+    noise[lo:hi] = False
+    if noise.sum() < 5:  # peak near an edge: use everything outside the peak
+        noise[:], noise[lo:hi] = True, False
+        nlo, nhi = 0, n
+    rms = float(np.std(amp[noise]))
 
-    # Local noise annulus, excluding the full central peak out to its first null.
-    noise_lo = max(0, peak_idx - noise_half_width)
-    noise_hi = min(n, peak_idx + noise_half_width + 1)
-    noise_mask = np.zeros(n, dtype=bool)
-    noise_mask[noise_lo:noise_hi] = True
-    noise_mask[lo:hi] = False
-
-    if noise_mask.sum() < 5:
-        # annulus too small (peak near an edge, or a short spectrum) --
-        # fall back to everything outside the central peak
-        noise_mask = np.ones(n, dtype=bool)
-        noise_mask[lo:hi] = False
-        noise_lo, noise_hi = 0, n
-    noise_rms = float(np.std(amp[noise_mask])) if noise_mask.sum() >= 5 else float(np.std(amp))
-
-    peak_amp = float(amp[peak_idx])
-    snr = peak_amp / noise_rms if noise_rms > 0 else float("inf")
-
-    return {
-        "peak_idx": peak_idx,
-        "peak_delay_ns": float(delay_ns[peak_idx]),
-        "centroid_delay_ns": centroid_delay,
-        "peak_amp": peak_amp,
-        "noise_rms": noise_rms,
-        "snr": snr,
-        "window": (lo, hi),
-        "noise_window": (noise_lo, noise_hi),
-    }
+    return {"delay_ns": delay, "snr": float(amp[peak]) / rms if rms > 0 else np.inf,
+            "noise_rms": rms, "peak": peak, "window": (lo, hi), "noise_window": (nlo, nhi)}
 
 
-def solve_baselines(
-    ms_path: Path, pairs: list[tuple[int, int]], corr_indices: list[int],
-    chan_freq: np.ndarray, antenna_names: list[str],
-    half_width: int, noise_half_width: int,
-    field_id: int | None = None, scan_number: int | None = None,
-    min_unflagged_frac: float = MIN_UNFLAGGED_FRAC, single_baseline_test: bool = False,
-    verbose: bool = True,
-) -> list[dict]:
-    """Solve delay/SNR for every baseline in `pairs`, within the given
-    (field, scan) selection. Returns a list of per-baseline result dicts."""
-    results: list[dict] = []
+def solve_scan(ms, fid, scan, corr_idx, df, null, noise_half_width):
+    """
+    Delay and S/N of every baseline of one field and scan.
+
+    Parameters
+    ----------
+    ms : str
+    fid, scan : int
+        Field ID and scan number.
+    corr_idx : list of int
+        Parallel-hand correlation indices.
+    df : float
+        Channel width (Hz).
+    null, noise_half_width : int
+        See `delay_and_snr`.
+
+    Returns
+    -------
+    list of dict
+        One `delay_and_snr` result per usable baseline, with a1, a2 and the
+        delay spectrum (delay_axis, amp) added.
+    """
+    where = f"FIELD_ID=={fid} && SCAN_NUMBER=={scan}"
+    a1s, a2s = query_cols(ms, where, ["ANTENNA1", "ANTENNA2"])
+    pairs = sorted({(min(i, j), max(i, j)) for i, j in zip(a1s, a2s) if i != j})
+
+    results = []
     for a1, a2 in pairs:
-        spectrum, unflagged_frac = load_baseline_spectrum(
-            ms_path, a1, a2, corr_indices, field_id=field_id, scan_number=scan_number)
-        name1, name2 = antenna_names[a1], antenna_names[a2]
-        if spectrum is None or unflagged_frac < min_unflagged_frac:
-            if verbose:
-                print(f"    skip {name1}-{name2}: unflagged fraction {unflagged_frac:.2f} "
-                      f"< {min_unflagged_frac}")
+        spectrum, frac = baseline_spectrum(ms, a1, a2, corr_idx, where)
+        if spectrum is None or frac < MIN_UNFLAGGED_FRAC:
             continue
-
-        delay_ns, amp = compute_delay_spectrum(spectrum, chan_freq)
-        res = estimate_delay_and_snr(delay_ns, amp, half_width, noise_half_width)
-        res.update({
-            "a1": a1, "a2": a2, "name1": name1, "name2": name2,
-            "delay_ns_axis": delay_ns, "amp": amp,
-            "unflagged_frac": unflagged_frac,
-        })
-        results.append(res)
-        if verbose:
-            print(f"    {name1}-{name2}: delay={res['centroid_delay_ns']:+.4f} ns, "
-                  f"SNR={res['snr']:.1f}")
-
-        if single_baseline_test:
-            break
-
+        delay_axis, amp = delay_spectrum(spectrum, df)
+        results.append({**delay_and_snr(delay_axis, amp, null, noise_half_width),
+                        "a1": a1, "a2": a2, "delay_axis": delay_axis, "amp": amp})
     return results
 
 
-def best_per_antenna_from_baselines(
-    baseline_results: list[dict],
-) -> tuple[dict[int, dict], dict[int, list[float]]]:
-    """Group baseline results by antenna, keeping the highest-SNR connected
-    baseline per antenna. Returns (best_per_antenna, antenna_snrs) where
-    antenna_snrs holds *all* connected baselines' SNRs per antenna."""
-    best_per_antenna: dict[int, dict] = {}
-    antenna_snrs: dict[int, list[float]] = {}
-    for res in baseline_results:
-        for ant, other, sign in ((res["a1"], res["a2"], +1.0), (res["a2"], res["a1"], -1.0)):
-            antenna_snrs.setdefault(ant, []).append(res["snr"])
-            cur = best_per_antenna.get(ant)
-            if cur is None or res["snr"] > cur["snr"]:
-                best_per_antenna[ant] = {
-                    **res,
-                    "signed_delay_ns": sign * res["centroid_delay_ns"],
-                    "partner": other,
-                }
-    return best_per_antenna, antenna_snrs
-
-
 # --------------------------------------------------------------------------
-# Plotting
+# Plots
 # --------------------------------------------------------------------------
 
-def _labeled_figure(
-    n_items: int, per_item: float, min_width: float = 8.0, max_width: float = 60.0,
-    height: float = 5.0, max_ticks: int = 120,
-):
-    """Create a fig/ax sized for n_items x-tick labels.
+def median_ci(values):
+    """Median and its 68% interval (1.4826 x MAD) as (median, lo, hi)."""
+    med = float(np.median(values))
+    sig = 1.4826 * float(np.median(np.abs(np.asarray(values) - med)))
+    return med, med - sig, med + sig
 
-    The width grows with n_items but is capped at `max_width` inches so the
-    rendered image can never approach matplotlib/Agg's 2**16 px-per-side
-    limit (large antenna arrays can easily produce 1000+ baselines). If
-    there'd be more labels than `max_ticks` can show legibly at that width,
-    only every Nth one is drawn. Returns (fig, ax, tick_indices).
+
+def antenna_axes(n):
+    """Figure and axes sized for n antenna labels, at most 120 of them shown."""
+    fig, ax = plt.subplots(figsize=(min(60.0, max(8.0, 0.35 * n)), 5.0))
+    ticks = list(range(0, n, max(1, -(-n // 120))))
+    return fig, ax, ticks
+
+
+def plot_snr(snrs_by_scan, names, out_png, title):
     """
-    width = min(max_width, max(min_width, per_item * n_items))
-    fig, ax = plt.subplots(figsize=(width, height))
-    step = max(1, -(-n_items // max_ticks))  # ceil(n_items / max_ticks)
-    tick_idx = list(range(0, n_items, step))
-    return fig, ax, tick_idx
+    Median S/N +/- 68% interval per antenna, one series per scan.
 
+    Parameters
+    ----------
+    snrs_by_scan : dict of {label: dict of {antenna: list of float}}
+    names : list of str
+        Antenna names.
+    out_png : pathlib.Path
+    title : str
+    """
+    ants = sorted({a for s in snrs_by_scan.values() for a in s}, key=lambda a: names[a])
+    fig, ax, ticks = antenna_axes(len(ants))
+    x = np.arange(len(ants))
+    cmap = plt.get_cmap("tab10" if len(snrs_by_scan) <= 10 else "tab20")
+    offsets = np.linspace(-0.3, 0.3, len(snrs_by_scan)) if len(snrs_by_scan) > 1 else [0.0]
 
-def median_mad_ci(values: list[float]) -> tuple[float, float, float]:
-    """Median and 68% CI (1.4826x median absolute deviation). Returns
-    (median, ci_lo, ci_hi)."""
-    arr = np.asarray(values, dtype=float)
-    med = float(np.median(arr))
-    if arr.size < 2:
-        return med, med, med
-    sigma = 1.4826 * float(np.median(np.abs(arr - med)))
-    return med, med - sigma, med + sigma
+    for k, (label, snrs) in enumerate(snrs_by_scan.items()):
+        stats = np.array([median_ci(snrs[a]) if snrs.get(a) else (np.nan,) * 3 for a in ants])
+        ax.errorbar(x + offsets[k], stats[:, 0],
+                    yerr=[stats[:, 0] - stats[:, 1], stats[:, 2] - stats[:, 0]],
+                    fmt="o", ms=4, color=cmap(k % cmap.N), capsize=2, alpha=0.85, label=label)
 
-
-def plot_snr_per_scan(
-    snr_by_scan: dict[int, dict[int, list[float]]], antenna_names: list[str], plot_dir: Path
-) -> None:
-    """SNR-vs-antenna, one series per scan: median +/- 68% CI over all
-    baselines connected to that antenna in that scan."""
-    ants = sorted({a for per_ant in snr_by_scan.values() for a in per_ant},
-                  key=lambda i: antenna_names[i])
-    labels = [antenna_names[i] for i in ants]
-    scans = sorted(snr_by_scan.keys())
-
-    fig, ax, tick_idx = _labeled_figure(len(labels), per_item=0.35)
-    x = np.arange(len(labels))
-    cmap = plt.get_cmap("tab10" if len(scans) <= 10 else "tab20")
-    offsets = np.linspace(-0.3, 0.3, len(scans)) if len(scans) > 1 else [0.0]
-    for si, scan in enumerate(scans):
-        meds, err_lo, err_hi = [], [], []
-        for a in ants:
-            vals = snr_by_scan[scan].get(a)
-            if not vals:
-                meds.append(np.nan); err_lo.append(0.0); err_hi.append(0.0)
-                continue
-            med, lo, hi = median_mad_ci(vals)
-            meds.append(med)
-            err_lo.append(med - lo)
-            err_hi.append(hi - med)
-        ax.errorbar(x + offsets[si], meds, yerr=[err_lo, err_hi], fmt="o", ms=4,
-                    color=cmap(si % cmap.N), ecolor=cmap(si % cmap.N),
-                    elinewidth=1, capsize=2, alpha=0.85, zorder=3, label=f"scan {scan}")
     ax.grid(axis="y", color="0.85", lw=0.6, zorder=0)
-    ax.set_xticks(tick_idx)
-    ax.set_xticklabels([labels[i] for i in tick_idx], rotation=90, fontsize=8)
-    ax.set_ylabel("Delay-solve SNR (median ± 68% CI)")
-    ax.set_title("Per-scan delay-solve SNR by antenna (primary calibrator)")
-    ax.legend(fontsize=7, ncol=min(len(scans), 6))
+    ax.set_xticks(ticks)
+    ax.set_xticklabels([names[ants[i]] for i in ticks], rotation=90, fontsize=8)
+    ax.set_ylabel("Delay-solve S/N (median, 68% interval)")
+    ax.set_title(title)
+    if len(snrs_by_scan) > 1:
+        ax.legend(fontsize=7, ncol=min(len(snrs_by_scan), 6))
     fig.tight_layout()
-    fig.savefig(plot_dir / "refant_snr_per_scan.png", dpi=150)
+    fig.savefig(out_png, dpi=150)
     plt.close(fig)
 
 
-def plot_antenna_snr_combined(
-    antenna_snrs: dict[int, list[float]], antenna_names: list[str], plot_dir: Path
-) -> None:
-    """Median SNR +/- 68% CI over all connected-baseline SNRs, all scans
-    pooled -- this is the population the ranking is drawn from."""
-    ants = sorted(antenna_snrs.keys(), key=lambda i: antenna_names[i])
-    labels = [antenna_names[i] for i in ants]
+def plot_best_fft(best, names, out_dir, zoom):
+    """
+    Delay spectrum of each antenna's highest-S/N baseline.
 
-    medians, err_lo, err_hi = [], [], []
-    for i in ants:
-        med, lo, hi = median_mad_ci(antenna_snrs[i])
-        medians.append(med)
-        err_lo.append(med - lo)
-        err_hi.append(hi - med)
-
-    fig, ax, tick_idx = _labeled_figure(len(labels), per_item=0.35)
-    x = np.arange(len(labels))
-    ax.errorbar(x, medians, yerr=[err_lo, err_hi], fmt="none", ecolor="0.4",
-                elinewidth=1, capsize=3, zorder=2)
-    ax.scatter(x, medians, c="#2ca02c", s=70, zorder=3, edgecolor="k", linewidth=0.5)
-    ax.grid(axis="y", color="0.85", lw=0.6, zorder=0)
-    ax.set_xticks(tick_idx)
-    ax.set_xticklabels([labels[i] for i in tick_idx], rotation=90, fontsize=8)
-    ax.set_ylabel("Median SNR, all scans combined (68% CI)")
-    ax.set_title("Combined (all-scan) delay-solve SNR by antenna")
-    fig.tight_layout()
-    fig.savefig(plot_dir / "refant_snr_combined.png", dpi=150)
-    plt.close(fig)
-
-
-def plot_best_baseline_fft_per_antenna(
-    best_per_antenna: dict[int, dict], antenna_names: list[str], plot_dir: Path,
-    zoom_half_width: int,
-) -> None:
-    out_dir = plot_dir / "refant_fft_per_antenna"
+    Parameters
+    ----------
+    best : dict of {antenna: dict}
+        `solve_scan` result per antenna, with its baseline partner added.
+    names : list of str
+        Antenna names.
+    out_dir : pathlib.Path
+    zoom : int
+        Half-width of the zoom inset (bins).
+    """
     out_dir.mkdir(exist_ok=True)
-
-    for ant_idx, res in best_per_antenna.items():
-        if "delay_ns_axis" not in res:
-            continue  # no baseline data at all for this antenna
-
-        delay_ns = res["delay_ns_axis"]
-        amp = res["amp"]
-        lo, hi = res["window"]
-        noise_lo, noise_hi = res["noise_window"]
-        ant_name = antenna_names[ant_idx]
-        partner_name = antenna_names[res["partner"]]
+    for ant, r in best.items():
+        d, amp = r["delay_axis"], r["amp"]
+        (lo, hi), (nlo, nhi) = r["window"], r["noise_window"]
+        zlo, zhi = max(0, r["peak"] - zoom), min(len(d), r["peak"] + zoom + 1)
 
         fig, ax = plt.subplots(figsize=(7, 4.5))
-        ax.plot(delay_ns, amp, color="0.4", lw=1, label="|FFT|")
-        ax.axvspan(delay_ns[noise_lo], delay_ns[noise_hi - 1], color="steelblue", alpha=0.12,
-                    label="local noise annulus")
-        ax.axvspan(delay_ns[lo], delay_ns[hi - 1], color="orange", alpha=0.3,
-                    label="central peak")
-        ax.axvline(res["centroid_delay_ns"], color="crimson", lw=1.5,
-                    label=f"centroid = {res['centroid_delay_ns']:.4f} ns")
-        ax.axhline(res["noise_rms"], color="steelblue", ls="--", lw=1,
-                    label=f"local noise RMS (SNR={res['snr']:.1f})")
-        ax.set_xlabel("Delay (ns)")
-        ax.set_ylabel("Amplitude")
-        ax.set_title(f"{ant_name}: best baseline -> {partner_name} (SNR={res['snr']:.1f})")
-        ax.legend(fontsize=7)
-
-        # Zoomed-in inset (top-left): peak +/- zoom_half_width (in FWHM),
-        # so the sub-bin centroid location is visible even when it sits
-        # well inside a single pixel of the full-width plot.
-        peak_idx = res["peak_idx"]
-        zlo = max(0, peak_idx - zoom_half_width)
-        zhi = min(len(delay_ns), peak_idx + zoom_half_width + 1)
-
         axins = ax.inset_axes([0.04, 0.54, 0.42, 0.42])
-        axins.plot(delay_ns[zlo:zhi], amp[zlo:zhi], color="0.4", lw=1.2, marker=".", ms=3)
-        axins.axvspan(delay_ns[noise_lo], delay_ns[noise_hi - 1], color="steelblue", alpha=0.12)
-        axins.axvspan(delay_ns[lo], delay_ns[hi - 1], color="orange", alpha=0.3)
-        axins.axvline(res["centroid_delay_ns"], color="crimson", lw=1.5)
-        axins.axhline(res["noise_rms"], color="steelblue", ls="--", lw=1)
-        axins.set_xlim(delay_ns[zlo], delay_ns[zhi - 1])
-        axins.set_title("zoom near peak", fontsize=7, pad=2)
+        for a in (ax, axins):
+            a.plot(d, amp, color="0.4", lw=1)
+            a.axvspan(d[nlo], d[nhi - 1], color="steelblue", alpha=0.12)
+            a.axvspan(d[lo], d[hi - 1], color="orange", alpha=0.3)
+            a.axvline(r["delay_ns"], color="crimson", lw=1.5)
+            a.axhline(r["noise_rms"], color="steelblue", ls="--", lw=1)
+        axins.set_xlim(d[zlo], d[zhi - 1])
         axins.tick_params(labelsize=6)
         ax.indicate_inset_zoom(axins, edgecolor="0.3")
+
+        partner = names[r["partner"]]
+        ax.set_xlabel("Delay (ns)")
+        ax.set_ylabel("Amplitude")
+        ax.set_title(f"{names[ant]}-{partner}: delay {r['delay_ns']:.4f} ns, S/N {r['snr']:.1f}")
         fig.tight_layout()
-        fig.savefig(out_dir / f"fft_{ant_name}_best_{partner_name}.png", dpi=150)
+        fig.savefig(out_dir / f"fft_{names[ant]}_best_{partner}.png", dpi=150)
         plt.close(fig)
 
 
 # --------------------------------------------------------------------------
-# Ranking / reporting
+# Ranking
 # --------------------------------------------------------------------------
 
-def print_best_worst(
-    avg_snr_by_ant: dict[int, float], antenna_names: list[str], top_n: int
-) -> list[tuple[str, float]]:
-    """Print the top-N and bottom-N antennas by average SNR. Returns the
-    full ranking as (name, avg_snr) sorted best-first."""
-    ranked = sorted(
-        ((antenna_names[a], snr) for a, snr in avg_snr_by_ant.items()),
-        key=lambda x: x[1], reverse=True,
-    )
-    n = min(top_n, len(ranked))
-    print(f"\nAntenna delay-solve S/N ranking ({len(ranked)} antennas, "
-          f"average over all connected baselines, all scans, of the primary):")
-    print(f"  BEST {n}:")
-    for name, snr in ranked[:n]:
-        print(f"    {name}: {snr:.1f}")
-    print(f"  WORST {n}:")
-    for name, snr in ranked[-n:][::-1]:
-        print(f"    {name}: {snr:.1f}")
-    return ranked
+def rank_antennas(ms, field, plot_dir):
+    """
+    Rank antennas by mean delay-solve S/N on one field, and plot it.
+
+    Parameters
+    ----------
+    ms : str
+        Measurement set.
+    field : str
+        Field name (normally the primary calibrator).
+    plot_dir : pathlib.Path
+        Directory for refant_snr_ranking.json and the plots.
+
+    Returns
+    -------
+    list of (str, float)
+        Antenna name and mean S/N over every connected baseline in every
+        scan, best first.
+    """
+    plot_dir.mkdir(parents=True, exist_ok=True)
+
+    names = list(read_col(f"{ms}/ANTENNA", "NAME"))
+    fid = field_id(ms, field)
+    scans = sorted(set(query_cols(ms, f"FIELD_ID=={fid}", ["SCAN_NUMBER"])[0].tolist()))
+    corr_idx, corr_labels = parallel_hands(ms)
+    chan_freq = read_col(f"{ms}/SPECTRAL_WINDOW", "CHAN_FREQ")[0]
+    df = abs(float(np.median(np.diff(chan_freq))))
+
+    fwhm, null = peak_widths(len(chan_freq))
+    noise_half_width = null + int(round(NOISE_ANNULUS_FWHM * fwhm))
+    print(f"Delay S/N on {field} (field {fid}), scans {scans}, correlations {corr_labels}, "
+          f"{len(chan_freq)} channels; peak FWHM {fwhm:.2f} bins, first null {null} bins")
+
+    snrs_by_scan, best = {}, {}
+    for scan in scans:
+        snrs = {}
+        for r in solve_scan(ms, fid, scan, corr_idx, df, null, noise_half_width):
+            for ant, partner in ((r["a1"], r["a2"]), (r["a2"], r["a1"])):
+                snrs.setdefault(ant, []).append(r["snr"])
+                if ant not in best or r["snr"] > best[ant]["snr"]:
+                    best[ant] = {**r, "partner": partner}
+        print(f"  scan {scan}: {sum(map(len, snrs.values())) // 2} usable baseline(s)")
+        if snrs:
+            snrs_by_scan[f"scan {scan}"] = snrs
+
+    if not snrs_by_scan:
+        raise RuntimeError(f"No usable baselines on {field} in any scan")
+
+    combined = {}
+    for snrs in snrs_by_scan.values():
+        for ant, values in snrs.items():
+            combined.setdefault(ant, []).extend(values)
+
+    ranking = sorted(((names[a], float(np.mean(v))) for a, v in combined.items()),
+                     key=lambda r: r[1], reverse=True)
+
+    n = min(TOP_N, len(ranking))
+    print(f"Best {n}:  " + ", ".join(f"{a} {s:.1f}" for a, s in ranking[:n]))
+    print(f"Worst {n}: " + ", ".join(f"{a} {s:.1f}" for a, s in ranking[::-1][:n]))
+
+    with open(plot_dir / "refant_snr_ranking.json", "w") as f:
+        json.dump([{"antenna": a, "avg_snr": s} for a, s in ranking], f, indent=2)
+
+    plot_snr(snrs_by_scan, names, plot_dir / "refant_snr_per_scan.png",
+             f"Per-scan delay-solve S/N by antenna ({field})")
+    plot_snr({"all scans": combined}, names, plot_dir / "refant_snr_combined.png",
+             f"Combined (all-scan) delay-solve S/N by antenna ({field})")
+    plot_best_fft(best, names, plot_dir / "refant_fft_per_antenna", int(round(ZOOM_FWHM * fwhm)))
+    print(f"Ranking and plots written to {plot_dir}")
+    return ranking
 
 
-def write_ranking_json(ranked: list[tuple[str, float]], plot_dir: Path) -> Path:
-    out_path = plot_dir / "refant_snr_ranking.json"
-    with open(out_path, "w") as f:
-        json.dump([{"antenna": name, "avg_snr": snr} for name, snr in ranked], f, indent=2)
-    return out_path
-
-
-# --------------------------------------------------------------------------
-# Main
-# --------------------------------------------------------------------------
-
-t_start = time.perf_counter()
-
-ms_path = Path(myms)
-plot_dir = Path(GAINPLOTS)
-plot_dir.mkdir(parents=True, exist_ok=True)
-
-antenna_names = get_antenna_names(ms_path)
-
-field_id = get_field_id(ms_path, bpcal_name)
-scans = get_scans_for_field(ms_path, field_id)
-print(f"Field '{bpcal_name}' (ID {field_id}): {len(scans)} scan(s): {scans}")
-
-corr_indices, corr_labels = get_parallel_hand_indices(ms_path)
-print(f"Using parallel-hand correlations: {corr_labels}")
-
-chan_freq = get_spw_chan_freq(ms_path)
-print(f"{len(chan_freq)} channels, {chan_freq[0] / 1e9:.4f}-{chan_freq[-1] / 1e9:.4f} GHz")
-
-fwhm_bins, peak_half_width = analytic_peak_widths(len(chan_freq), ZERO_PAD_FACTOR)
-noise_half_width = peak_half_width + int(round(NOISE_ANNULUS_FWHM * fwhm_bins))
-zoom_half_width = int(round(ZOOM_FWHM * fwhm_bins))
-print(f"Analytic peak shape: FWHM = {fwhm_bins:.2f} bins, central peak half-width "
-      f"(first null) = {peak_half_width} bins, noise annulus half-width = {noise_half_width} bins")
-
-snr_by_scan: dict[int, dict[int, list[float]]] = {}
-combined_snrs: dict[int, list[float]] = {}
-combined_best_per_antenna: dict[int, dict] = {}  # for the FFT diagnostic plots
-
-for scan in scans:
-    t_scan = time.perf_counter()
-    pairs = get_present_baselines(ms_path, field_id=field_id, scan_number=scan)
-    print(f"\nScan {scan}: {len(pairs)} baseline(s)")
-    if pairs:
-        baseline_results = solve_baselines(
-            ms_path, pairs, corr_indices, chan_freq, antenna_names,
-            peak_half_width, noise_half_width,
-            field_id=field_id, scan_number=scan,
-            single_baseline_test=SINGLE_BASELINE_TEST)
-        if not baseline_results:
-            print(f"  no usable baselines in scan {scan}")
-        else:
-            best_this_scan, all_this_scan = best_per_antenna_from_baselines(baseline_results)
-            snr_by_scan[scan] = all_this_scan
-            for a, snr_list in all_this_scan.items():
-                combined_snrs.setdefault(a, []).extend(snr_list)
-            for a, r in best_this_scan.items():
-                cur = combined_best_per_antenna.get(a)
-                if cur is None or r["snr"] > cur["snr"]:
-                    combined_best_per_antenna[a] = r
-
-    print(f"  scan {scan} done in {time.perf_counter() - t_scan:.1f}s "
-          f"(total elapsed {time.perf_counter() - t_start:.1f}s)")
-
-    if SINGLE_BASELINE_TEST:
-        break
-
-if not combined_snrs:
-    raise RuntimeError("No usable baselines found in any scan (check flags / correlation selection).")
-
-avg_snr_by_ant = {a: float(np.mean(vals)) for a, vals in combined_snrs.items()}
-
-refant_snr_ranking = print_best_worst(avg_snr_by_ant, antenna_names, TOP_N)
-ranking_path = write_ranking_json(refant_snr_ranking, plot_dir)
-print(f"\nRanking written to {ranking_path}")
-
-t_plot = time.perf_counter()
-plot_snr_per_scan(snr_by_scan, antenna_names, plot_dir)
-plot_antenna_snr_combined(combined_snrs, antenna_names, plot_dir)
-plot_best_baseline_fft_per_antenna(combined_best_per_antenna, antenna_names, plot_dir, zoom_half_width)
-print(f"Plots written to {plot_dir} ({time.perf_counter() - t_plot:.1f}s)")
-
-print(f"Total runtime: {time.perf_counter() - t_start:.1f}s")
+refant_snr_ranking = rank_antennas(myms, bpcal_name, Path(GAINPLOTS))

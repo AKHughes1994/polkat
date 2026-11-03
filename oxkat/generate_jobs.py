@@ -618,6 +618,7 @@ def generate_syscall_wsclean(mslist,
                           multiscale = cfg.WSC_MULTISCALE,
                           multiscale_bias = cfg.WSC_MULTISCALE_BIAS,
                           scales = cfg.WSC_SCALES,
+                          maxscales = cfg.WSC_MAXSCALES,
                           nonegative = cfg.WSC_NONEGATIVE,
                           sourcelist = cfg.WSC_SOURCELIST,
                           bda = cfg.WSC_BDA,
@@ -752,11 +753,14 @@ def generate_syscall_wsclean(mslist,
     if multiscale:
         syscall += '-multiscale '
         syscall += f'-multiscale-scale-bias {multiscale_bias} '
-        # syscall += '-multiscale-scales '+scales+' ' # WSCLEAN docs seem to not favour this option for multiscale cleaning anymore
+        if scales:
+            syscall += '-multiscale-scales '+scales+' '
+        if maxscales:
+            syscall += '-multiscale-max-scales '+str(maxscales)+' '
     syscall += '-niter '+str(niter)+' '
     syscall += '-gain '+str(gain)+' '
     syscall += '-mgain '+str(mgain)+' '
-    if chandeconvolution and fitspectralpol != 0:
+    if chandeconvolution and fitspectralpol != 0 and chandeconvolution <= min(chanout, maxchan):
         syscall += '--deconvolution-channels '+str(chandeconvolution)+' '
     if joinchannels:
         syscall += '-join-channels '

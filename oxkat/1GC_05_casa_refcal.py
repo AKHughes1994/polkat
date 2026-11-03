@@ -22,6 +22,23 @@ if PRE_FIELDS != '':
     pcal_names = user_pcals
     target_cal_map = user_cal_map
 
+# Targets paired with a CAL_1GC_BAD_SECONDARIES secondary take their gains from
+# the primary: all of them, or with CAL_1GC_REPLACE_SECONDARY_AMP_ONLY just the
+# amplitudes. target_cal_map sets the delay and phase field for each target,
+# target_amp_cal_map the amplitude field. The secondary itself is still solved,
+# flagged and calibrated with its own solutions. tools/manual_XF_solver.py, run
+# from this script, re-reads the project info and applies the same mapping.
+target_amp_cal_map = list(target_cal_map)
+if CAL_1GC_REPLACE_SECONDARY_WITH_PRIMARY:
+    replaced_what = 'amplitude gains' if CAL_1GC_REPLACE_SECONDARY_AMP_ONLY else 'all gains'
+    for bad_pcal in CAL_1GC_BAD_SECONDARIES:
+        if bad_pcal in target_cal_map:
+            print(f'Replacing secondary {bad_pcal} with primary {bpcal_name} for target {replaced_what}')
+    remapped_cal_map = [bpcal_name if c in CAL_1GC_BAD_SECONDARIES else c for c in target_cal_map]
+    target_amp_cal_map = remapped_cal_map
+    if not CAL_1GC_REPLACE_SECONDARY_AMP_ONLY:
+        target_cal_map = remapped_cal_map
+
 def stamp():
     now = str(datetime.datetime.now()).replace(' ','-').replace(':','-').split('.')[0]
     return now
@@ -1498,12 +1515,13 @@ if pacal_name == '':
 
         target = targets[i]
         related_pcal = target_cal_map[i]
+        amp_pcal = target_amp_cal_map[i]
 
         applycal(vis=myms,
                 gaintable = [ktab, gptab, bptab, ftab, dftab] + override_cross_table,
                 field=target,
                 parang=override_parang_target,
-                gainfield = [delay_field(related_pcal), related_pcal, bpcal_name, related_pcal, bpcal_name] + override_cross_field,
+                gainfield = [delay_field(related_pcal), related_pcal, bpcal_name, amp_pcal, bpcal_name] + override_cross_field,
                 interp = [delay_interp(target, delay_field(related_pcal)),'linear','linear','linear','linear'] + override_cross_interp,
                 flagbackup=False)
 
@@ -1594,12 +1612,13 @@ for i in range(0,len(targets)):
 
     target = targets[i]
     related_pcal = target_cal_map[i]
+    amp_pcal = target_amp_cal_map[i]
 
     applycal(vis=myms,
                 field=target,
                 parang=CAL_1GC_APPLYPARANG,
                 gaintable = [ktab, gptab, bptab, ftab, dftab] + cross_table,
-                gainfield = [delay_field(related_pcal), related_pcal, bpcal_name, related_pcal, bpcal_name] + cross_field,
+                gainfield = [delay_field(related_pcal), related_pcal, bpcal_name, amp_pcal, bpcal_name] + cross_field,
                 interp = [delay_interp(target, delay_field(related_pcal)),'linear','linear','linear','linear'] + cross_interp,
                 flagbackup=False)
 

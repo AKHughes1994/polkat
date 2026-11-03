@@ -44,6 +44,11 @@ from oxkat import config as cfg
 # picked up and renamed automatically by the completion-check/rename pass below.
 SNAP_SCANS = 'auto'
 
+# Dry run: work out each scan's integrations, interval range and t-labels, and
+# print the wsclean command for every scan that would be imaged, without
+# running wsclean or touching any existing images.
+SNAP_DRY_RUN = False
+
 def msg(txt):
     stamp = time.strftime(' %Y-%m-%d %H:%M:%S | ')
     print(stamp+txt, flush=True)
@@ -192,15 +197,14 @@ def get_total_ints(myms):
 
     tt = table(myms,readonly=True)
 
-    scan_numbers = list(set(tt.getcol('SCAN_NUMBER')))
-    exposure = round(np.mean(tt.getcol('EXPOSURE')),4)
+    scan_numbers = sorted(set(tt.getcol('SCAN_NUMBER')))
 
     int_arr = []
 
     for scan in scan_numbers:
         subtab = tt.query(query='SCAN_NUMBER=='+str(scan))
-        times = subtab.getcol('TIME')
-        n_int = round((times[-1] - times[0]) / exposure, 0)
+        # One integration per distinct timestamp
+        n_int = len(np.unique(subtab.getcol('TIME')))
         int_arr.append(int(n_int))
 
     return int_arr
@@ -278,7 +282,12 @@ def main():
     nint_arr = []
     for scan_n, ints in enumerate(int_arr):
         int0 = int(np.sum(int_arr[:scan_n]))
-        if cfg.SNAP_INTEND:
+        if intbin >= ints:
+            # Bin as long as the scan or longer: image the whole scan as one interval
+            int1 = int0 + ints
+            nint = 1
+            msg(f'Scan {scan_n:04d}: SNAP_INTBIN ({intbin}) >= its {ints} integration(s) -- imaging the whole scan')
+        elif cfg.SNAP_INTEND:
             int1 = ints - ints % intbin + int0
             nint = int((int1 - int0) / intbin)
         else:
@@ -301,7 +310,8 @@ def main():
     # it's clear what the final naming should look like before any imaging happens.
     for scan_n, (nint, t0) in enumerate(zip(nint_arr, t_offset_arr)):
         t_end = t0 + nint - 1
-        msg(f'Predicted: scan{scan_n:04d} -> {nint} interval(s) -> after renaming: t{t0:04d}-t{t_end:04d}')
+        msg(f'Predicted: scan{scan_n:04d} -> {int_arr[scan_n]} integration(s), -interval {int0_arr[scan_n]} {int1_arr[scan_n]} '
+            f'-> {nint} interval(s) -> after renaming: t{t0:04d}-t{t_end:04d}')
         if nint == 1:
             msg(f'Scan {scan_n:04d} has 1 interval -- wsclean will omit the t-label, adding -t0000 manually')
     msg(f'Predicted total: {expected_total_nint} interval(s) across {len(int_arr)} scan(s) -> t0000-t{expected_total_nint - 1:04d}')
@@ -324,10 +334,13 @@ def main():
 
     msg(f'Imaging {len(to_image)}/{len(int_arr)} scan(s): {to_image}')
 
+    if SNAP_DRY_RUN:
+        msg('SNAP_DRY_RUN is True -- printing the wsclean commands only, nothing will be imaged or renamed')
+
     # Tag any untagged single-interval output left over from an earlier run before the
     # completion check, so it is recognised as complete rather than re-imaged.
     for scan_n, nint in enumerate(nint_arr):
-        if nint == 1:
+        if nint == 1 and not SNAP_DRY_RUN:
             add_single_interval_t_label(cfg.INTERVALS+f'/img_{myms}_modelsub_scan{scan_n:04d}')
 
     # Regex used to count distinct per-channel (non-MFS) image files and pull out their
@@ -389,8 +402,14 @@ def main():
                         minuvl = cfg.WSC_MINUVL,
                         maxuvl = cfg.WSC_MAXUVL)
 
+        if SNAP_DRY_RUN:
+            for syscall in imcall:
+                msg(f'Would run: {syscall}')
+            continue
+
         wsclean_failed = False
         for syscall in imcall:
+            msg(f'Running: {syscall}')
             result = subprocess.run([syscall], shell=True)
             if result.returncode != 0:
                 msg(f'ERROR: wsclean exited with code {result.returncode} for scan {scan_n:04d} '
@@ -426,6 +445,10 @@ def main():
             continue
 
         scan_images[scan_n] = images
+
+    if SNAP_DRY_RUN:
+        msg('SNAP_DRY_RUN: done -- no imaging or renaming was run')
+        return
 
     if already_complete_scans:
         msg(f'SNAP_SCANS = auto: {len(already_complete_scans)}/{len(to_image)} scan(s) already complete, '
