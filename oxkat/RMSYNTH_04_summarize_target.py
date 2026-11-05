@@ -19,7 +19,7 @@
 #
 #   RESULTS/*<target>*_pcalmask_polarization.json
 #       ['MFS']:
-#           I_flux_mJy, I_err_mJy   -- MFS Stokes I +/- error
+#           I_flux_mJy, I_rms_mJy   -- MFS Stokes I +/- image rms
 #           alpha, alpha_err        -- spectral index (absent if not fit)
 #           chi2, ndof, chi2_red    -- spectral index fit quality (absent if not fit)
 #           time_ctr_mjd            -- MJD at the centre of the exposure
@@ -30,8 +30,8 @@
 #       ['pol_image_type']          -- 'Plin' or 'Ptot' (names the P keys below)
 #       ['CHAN'] (per-channel lists, one entry per successfully fitted channel):
 #           freq_GHz                -- channel frequency
-#           I_flux_mJy, I_err_mJy   -- Stokes I +/- error
-#           <P>_flux_mJy, <P>_err_mJy -- polarized intensity +/- error (<P> = pol_image_type);
+#           I_flux_mJy, I_rms_mJy   -- Stokes I +/- image rms
+#           <P>_flux_mJy, <P>_rms_mJy -- polarized intensity +/- image rms (<P> = pol_image_type);
 #                                      used for the peak per-channel P/I. The reported
 #                                      channel is the index into these lists, which skips
 #                                      flagged/failed channels, so it is not the WSCLEAN
@@ -169,7 +169,7 @@ def summarize_epoch(out, line, pol_json_path):
 
     epoch_label = o.basename(pol_json_path).replace(f'_{IDENTIFIER}_polarization.json', '')
     out.write(f'\n--- {epoch_label} ---\n')
-    line('MFS Stokes I (mJy)', fmt(mfs.get('I_flux_mJy'), mfs.get('I_err_mJy')))
+    line('MFS Stokes I (mJy)', fmt(mfs.get('I_flux_mJy'), mfs.get('I_rms_mJy')))
     if mfs.get('alpha') is not None:
         line('Spectral index', fmt(mfs.get('alpha'), mfs.get('alpha_err')))
         line('Spectral fit chi2 / ndof / chi2_red',

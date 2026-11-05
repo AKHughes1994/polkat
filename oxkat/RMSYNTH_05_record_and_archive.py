@@ -38,7 +38,7 @@
 #
 #   RESULTS/*<target>*_pcalmask_polarization.json (one per epoch)
 #       ['MFS']:
-#           I_flux_mJy, I_err_mJy   -- MFS Stokes I +/- error
+#           I_flux_mJy, I_rms_mJy   -- MFS Stokes I +/- image rms
 #           time_ctr_isot           -- exposure-centre date/time (UTC)
 #       ['timing']['middle_mjd']    -- exposure-centre MJD, used when time_ctr_isot is absent
 #       ['pol_image_type'], ['CHAN'] -- per-channel P/I, see peak_chan_frac_pol()
@@ -144,7 +144,7 @@ def epoch_record(target, pol_json_path):
         'epoch':        o.basename(pol_json_path).replace(f'_{IDENTIFIER}_polarization.json', ''),
         'date':         date,
         'I_flux':       I_flux,
-        'I_err':        mfs.get('I_err_mJy'),
+        'I_err':        mfs.get('I_rms_mJy'),
         'ptype':        pol.get('pol_image_type', 'P'),
         'peak':         peak,
         'parang_delta': parang_delta,

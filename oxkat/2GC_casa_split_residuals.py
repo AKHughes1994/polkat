@@ -1,10 +1,9 @@
 # andrew.hughes@physics.ox.ac.uk
 # fraser.cowie@physics.ox.ac.uk
 
-# Split a field's residuals into the final MS at the end of 2GC. In the input MS the
-# final model has been subtracted from CORRECTED_DATA, so CORRECTED_DATA holds the
-# residuals. The output holds them as its DATA column, with WEIGHT_SPECTRUM, and no
-# CORRECTED_DATA or MODEL_DATA.
+# Split a field's self-calibrated CORRECTED_DATA into the final MS at the end of 2GC.
+# The output holds it as its DATA column, with WEIGHT_SPECTRUM, and no CORRECTED_DATA
+# or MODEL_DATA; the final model is predicted into its MODEL_DATA afterwards.
 
 import os
 import shutil
@@ -40,14 +39,14 @@ def main():
     if out_dir != '' and not os.path.isdir(out_dir):
         os.makedirs(out_dir)
 
-    print(f'\nSplitting the residuals (CORRECTED_DATA) of {input_ms} -> {output_ms}\n')
+    print(f'\nSplitting the CORRECTED_DATA of {input_ms} -> {output_ms}\n')
 
     mstransform(vis = input_ms,
                 outputvis = output_ms,
                 datacolumn = 'corrected',
                 usewtspectrum = True)
 
-    flagmanager(vis = output_ms, mode = 'save', versionname = 'post-split-residuals')
+    flagmanager(vis = output_ms, mode = 'save', versionname = 'post-split-final')
 
     # Check what came out
     tb.open(output_ms)
@@ -59,7 +58,7 @@ def main():
         sys.exit(f'{output_ms} has no DATA column')
     for column in ('CORRECTED_DATA', 'MODEL_DATA'):
         if column in out_columns:
-            print(f'WARNING: {column} is in the output, which should hold only the residual DATA\n')
+            print(f'WARNING: {column} is in the output, which should hold only DATA\n')
 
     clearstat()
     clearstat()
