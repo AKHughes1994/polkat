@@ -368,6 +368,7 @@ def main():
         final_img_prefix = img_dir+f'/img_{myms}_finalmask'
         pcal_img_prefix = img_dir+f'/img_{myms}_pcalmask'
         fulluv_img_prefix = img_dir+f'/img_{myms}_fulluv'
+        fulluv_blind_prefix = img_dir+f'/img_{myms}_fulluvblind'
 
         # Masking parameters for the final mask (WSPMI), intermediate (WSCMI), final pcal (WSCMA) and full UV (WSFUV) images
         inter_mask_kwargs = dict(localrms = cfg.WSC_INTER_LOCALRMS,
@@ -977,7 +978,6 @@ def main():
         # Full UV imaging (targets only)
         if is_target:
             # Blind Stokes I full UV image, used to make the full UV mask
-            fulluv_blind_prefix = img_dir+f'/img_{myms}_fulluvblind'
             step = {}
             step['step'] = n
             step['comment'] = f'Shallow blind wsclean, full UV range, Stokes I of the CORRECTED_DATA for {fieldname}'
