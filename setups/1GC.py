@@ -125,6 +125,10 @@ def main():
     step['id'] = 'CL1GC'+code
     syscall = cfg.CASA_RUNNER+CASA_CONTAINER+' ' if USE_SINGULARITY else ''
     syscall += gen.generate_syscall_casa(casascript=cfg.OXKAT+'/1GC_05_casa_refcal.py')
+    # CASA can exit 0 without finishing, so the job only passes if refcal wrote its marker
+    marker = cfg.CAL_1GC_DONE_MARKER
+    syscall += (f'\nif [ -f {marker} ]; then echo "1GC CHECK PASSED: found {marker}"; '
+                f'else echo "1GC CHECK FAILED: {marker} not found, 1GC_05_casa_refcal.py did not finish" >&2; exit 1; fi\n')
     step['syscall'] = syscall
     step['glam_config'] = cfg.GLAM_COREHEAVY
     steps.append(step)
@@ -180,6 +184,10 @@ def main():
 
     f = open(submit_file,'w')
     f.write('#!/usr/bin/env bash\n')
+    # Node mode runs the steps in this script directly: stop at the first failing
+    # step, with pipefail so the exit status survives the pipe through tee
+    if INFRASTRUCTURE == 'node':
+        f.write('set -eo pipefail\n')
     f.write('export SINGULARITY_BINDPATH='+cfg.BINDPATH+'\n')
 
     if INFRASTRUCTURE == 'glam':

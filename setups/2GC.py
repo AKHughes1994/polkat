@@ -1173,6 +1173,10 @@ def main():
 
     f = open(submit_file,'w')
     f.write('#!/usr/bin/env bash\n')
+    # Node mode runs the steps in this script directly: stop at the first failing
+    # step, with pipefail so the exit status survives the pipe through tee
+    if INFRASTRUCTURE == 'node':
+        f.write('set -eo pipefail\n')
     f.write('export SINGULARITY_BINDPATH='+cfg.BINDPATH+'\n')
 
     if INFRASTRUCTURE == 'glam':

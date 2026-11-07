@@ -276,6 +276,33 @@ xftab  = GAINTABLES+'/cal_1GC_'+myms+'.Xf'
 dftab6 = GAINTABLES+'/cal_1GC_'+myms+'.Df6'
 
 
+# ------- Completion marker
+
+# A marker from an earlier run must not vouch for this one
+if os.path.exists(CAL_1GC_DONE_MARKER):
+    os.remove(CAL_1GC_DONE_MARKER)
+
+
+def finish_1gc(tables):
+    """Confirm every applied gain table is on disk, then write the completion marker.
+
+    Exits non-zero, with no marker written, if any table is missing.
+    """
+    missing = [t for t in tables if not os.path.isdir(t)]
+    if missing:
+        print('1GC FAILED: gain table(s) missing: ' + ', '.join(missing))
+        sys.exit(1)
+    with open(CAL_1GC_DONE_MARKER, 'w') as m:
+        m.write(f'{myms} {stamp()}\n')
+        for t in tables:
+            m.write(t + '\n')
+    print(f'1GC PASSED: all {len(tables)} gain tables present')
+    for t in tables:
+        print(f'  {t}')
+    print(f'Completion marker written: {CAL_1GC_DONE_MARKER}')
+    print('Hail the wolf king')
+
+
 # Restore the auto_cal flag version
 flagmanager(vis=myms,
     mode='restore',
@@ -1616,7 +1643,9 @@ if pacal_name == '':
         mode='save',
         versionname='1GC_flags')
 
-    sys.exit('Ending Early! No polarization angle calibrator')
+    print('Ending early: no polarization angle calibrator')
+    finish_1gc([ktab, gptab, bptab, ftab, dftab] + _alt_cross_table)
+    sys.exit(0)
 
 # -------- Full polarization 
 
@@ -1779,3 +1808,5 @@ try:
             print(f'  {field_name}: no visibilities')
 except (KeyError, TypeError, ZeroDivisionError):
     print('Flag summary: breakdown unavailable')
+
+finish_1gc([ktab, gptab, bptab, ftab, dftab] + cross_table)

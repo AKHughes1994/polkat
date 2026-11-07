@@ -847,7 +847,11 @@ run_ms() {
         return 1
       }
     else
-      run_stage_node "$subs" || log "  $subs exited non-zero, continuing"
+      run_stage_node "$subs" || {
+        log "  stage $i failed ($subs exited non-zero)"
+        record_failure "$id" "${ms##*/}" "$stage" "$subs exited non-zero"
+        return 1
+      }
     fi
     # An MS with no science targets is finished once INFO has run: mark it
     # complete in TRACKING and skip the remaining stages

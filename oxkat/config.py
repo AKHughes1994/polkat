@@ -42,6 +42,10 @@ SCRIPTS = CWD+'/SCRIPTS'
 VISPLOTS = CWD+'/VISPLOTS'
 INTERVALS = CWD+'/INTERVALS'
 
+# Written as the last act of 1GC_05_casa_refcal.py once its gain tables are
+# confirmed on disk; the CL1GC job fails if it is missing
+CAL_1GC_DONE_MARKER = GAINTABLES+'/1GC_05_complete.txt'
+
 
 # ------------------------------------------------------------------------
 #

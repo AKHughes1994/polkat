@@ -292,8 +292,11 @@ pacal_name = ','.join(f for f in _requested_fields if f in _ms_field_names)
 if pacal_name:
     msg(f'  Field(s) in Xf solve: {pacal_name}')
 else:
+    # No usable field (e.g. the only secondary is in CAL_1GC_BAD_SECONDARIES and
+    # there is no polang cal): no Xf tables are written and the caller applies none.
     msg('WARNING: No target/secondary/polang fields available for the Xf solve. '
         'Xf solving will be skipped.')
+    sys.exit(0)
 
 
 # -----------------------------------------------------------------------
