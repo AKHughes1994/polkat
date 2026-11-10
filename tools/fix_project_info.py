@@ -26,7 +26,7 @@ for fname in ['1GC_flags', 'after_pcal_SwiftJ1727', 'applycal_1', 'autoflag_cals
 # Get  names and field IDs for sources that are 
 tb.open(opms+'/FIELD')
 names = tb.getcol('NAME')
-ids   = tb.getcol('SOURCE_ID')
+ids   = np.arange(len(names))  # FIELD_ID of each field is its row number in the FIELD table
 tb.done()
 
 # Append the working names and IDs to project info as mstranform will modify the field IDs if PRE_FIELDS != ''

@@ -19,6 +19,10 @@ exec(open('oxkat/config.py').read())
 exec(open('oxkat/casa_read_project_info.py').read())
 exec(open(f'{TOOLS}/fix_delay_table.py').read())
 
+# Targets are selected by name: target_ids number the fields of the master MS,
+# and the working MS numbers its fields differently when any were left out.
+targets = target_names
+
 if PRE_FIELDS != '':
     targets = user_targets
     pcal_names = user_pcals

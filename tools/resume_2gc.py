@@ -21,6 +21,7 @@ checked are
     is not expected, nor are channel-split (_partNNNN) runs, whose MFS images
     fix_image_naming.py removes;
   - the residual MS written by 2GC_casa_split_residuals.py.
+An output that a later mv in the same job moves is checked at its destination.
 Dependencies on completed jobs are dropped, since those jobs are not
 resubmitted. The jobs' slurm scripts in SCRIPTS/ are reused unchanged.
 
@@ -94,16 +95,19 @@ def clean_patterns():
 
 def deleted_on_purpose(path, scripts, cleaned):
     """
-    Whether a cleanup in `scripts` (find -delete, rm, clean_directory.py) removes `path`.
+    Whether a cleanup in `scripts` (find -delete, rm, clean_directory.py) removes
+    `path`. A removal followed by an mv onto `path` in the same script (clearing
+    the destination before moving into it) does not count.
     """
     base = os.path.basename(path)
     for script in scripts:
+        removed = False
         for line in script.splitlines():
             if "clean_directory.py" in line and "--ms-only" not in line:
                 deleted, excluded = cleaned
                 if (any(fnmatch.fnmatch(base, g) for g in deleted)
                         and not any(fnmatch.fnmatch(base, g) for g in excluded)):
-                    return True
+                    removed = True
                 continue
             try:
                 tokens = shlex.split(line)
@@ -116,11 +120,15 @@ def deleted_on_purpose(path, scripts, cleaned):
                          if tokens[i] == "-name" and tokens[i - 1] != "!"]
                 if (all(fnmatch.fnmatch(base, g) for g in match)
                         and not any(fnmatch.fnmatch(base, g) for g in keep)):
-                    return True
+                    removed = True
             elif tokens[:1] == ["rm"]:
                 if any(fnmatch.fnmatch(path, g) or fnmatch.fnmatch(base, os.path.basename(g))
                        for g in tokens[1:] if not g.startswith("-")):
-                    return True
+                    removed = True
+            elif tokens[:1] == ["mv"] and len(tokens) == 3 and tokens[2] == path:
+                removed = False
+        if removed:
+            return True
     return False
 
 
@@ -136,6 +144,10 @@ def expected_outputs(script):
     paths = []
     for line in script.splitlines():
         tokens = line.split()
+        # mv <src> <dst> later in the job: the output is checked where it ends up
+        if tokens[:1] == ["mv"] and len(tokens) == 3:
+            paths = [tokens[2] if p == tokens[1] else p for p in paths]
+            continue
         # ... -c <tools>/2GC_casa_split_residuals.py <ms> <residual ms>
         split = [i for i, t in enumerate(tokens) if t.endswith("2GC_casa_split_residuals.py")]
         if split and len(tokens) > split[0] + 2:

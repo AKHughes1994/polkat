@@ -32,7 +32,7 @@ def main():
     # Load in the  FIELD identifier Information
     fldtab = table(myms+'/FIELD', ack=False)
     names  = fldtab.getcol('NAME')
-    ids         = fldtab.getcol('SOURCE_ID')
+    ids         = np.arange(len(names))  # FIELD_ID of each field is its row number in the FIELD table
     dirs        = fldtab.getcol('PHASE_DIR')
     time        = fldtab.getcol('TIME')
     fldtab.done()
