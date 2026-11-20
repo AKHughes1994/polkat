@@ -67,13 +67,9 @@ def main():
     target_ms = project_info['target_ms']
     myms = project_info['working_ms']
 
-    # Determine if the blind/datamask images are going to be tapered
-    if not cfg.WSC_TAPERMASK:
-        tukeytaper = False
-        minuvl = ''
-    else:
-        tukeytaper = cfg.WSC_TUKEYTAPER
-        minuvl = cfg.WSC_MINUVL   
+    # The imaging UV cut and taper are used for the blind/datamask images
+    tukeytaper = cfg.WSC_TUKEYTAPER
+    minuvl = cfg.WSC_MINUVL
 
     # ------------------------------------------------------------------------------
     #

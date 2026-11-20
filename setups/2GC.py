@@ -75,6 +75,13 @@ def main():
     # Set to a directory path to use a single shared temp directory, or '' to use per-field temp directories
     OVERRIDE_TEMP_DIR = '/mnt/scratchssd'
 
+    # If the shared temp directory does not exist on this machine, fall back to
+    # per-field temp directories rather than failing (or creating it) later
+    if OVERRIDE_TEMP_DIR != '' and not os.path.isdir(OVERRIDE_TEMP_DIR):
+        print(gen.col('Temp dir')+f'OVERRIDE_TEMP_DIR {OVERRIDE_TEMP_DIR} not found; '
+              f'using per-field temp directories instead')
+        OVERRIDE_TEMP_DIR = ''
+
     # Set this flag to False to disable all cleanup operations (find/delete/rm commands)
     ENABLE_CLEANUP = True
 
@@ -129,6 +136,11 @@ def main():
     pcal_inter_params_names = {gen.resolve_field_name(s, XRB_NAME_MATCHING)[0].lower() for s in PCAL_INTER_PARAMS_SOURCES}
 
     SELFCAL_MOD_DIR = DATA + '/selfcal_mod'
+
+    # Width in pixels of the strip along every image edge that is zeroed in the
+    # full UV (WSFUV) cleaning mask, so the full UV image never cleans at the
+    # edge of the field. 0 turns it off.
+    FULLUV_MASK_BORDER = 20
 
     # If True, skip imaging/self-calibrating the primary/polarization-angle/secondary calibrators
     # entirely and process targets only. Now set in oxkat/config.py (CAL_SKIP_CALS) so 1GC's
@@ -273,17 +285,11 @@ def main():
         field_list = [f for f in field_list if f not in skipped]
         print(gen.col('2GC Cals')+f'CAL_2GC_SKIP_CALS is True -- skipping {n_cals} secondary field/scan(s)')
 
-    # Determine if the blind/datamask images are going to be tapered
-    if not cfg.WSC_TAPERMASK:
-        tukeytaper = False
-        minuvl = ''
-        maxuvl = ''
-        print(gen.col('UV Range')+f'Full UV range will be used for masking/self-calibration')
-    else:
-        tukeytaper = cfg.WSC_TUKEYTAPER
-        minuvl = cfg.WSC_MINUVL
-        maxuvl = cfg.WSC_MAXUVL
-        print(gen.col('UV Range')+f'Restricted UV range will be used for masking/self-calibration: [{minuvl}, {maxuvl}]')   
+    # The imaging UV cut and taper are used for the blind/datamask images and self-calibration
+    tukeytaper = cfg.WSC_TUKEYTAPER
+    minuvl = cfg.WSC_MINUVL
+    maxuvl = cfg.WSC_MAXUVL
+    print(gen.col('UV Range')+f'UV range used for masking/self-calibration: [{minuvl}, {maxuvl}]')
 
     # ------------------------------------------------------------------------------
     # Calibrator (non-target) imaging parameters
@@ -1019,7 +1025,9 @@ def main():
             n += 1
 
             # Full UV mask: breizorro on the blind image gives the extended mask, which is
-            # then combined with the point-like final mask (MASKP)
+            # then combined with the point-like final mask (MASKP). The outer
+            # FULLUV_MASK_BORDER pixels along every image edge are zeroed, so the
+            # full UV image never cleans emission at the edge of the field
             extended_mask = f"{fulluv_blind_prefix}-MFS-image.extended.mask.fits"
             fulluv_mask = f"{fulluv_blind_prefix}-MFS-image.mask.fits"
             step = {}
@@ -1034,7 +1042,8 @@ def main():
                     outfile = extended_mask,
                     thresh = 20.0,
                     boxsize = 50)[0]
-            syscall += f'\n\n{py_prefix}python3 {TOOLS}/combine_FITS_masks.py {fulluv_mask} {extended_mask} {finalmask}'
+            syscall += (f'\n\n{py_prefix}python3 {TOOLS}/combine_FITS_masks.py --border {FULLUV_MASK_BORDER} '
+                        f'{fulluv_mask} {extended_mask} {finalmask}')
             # Delete the blind imaging products, keeping the MFS image and any masks
             if ENABLE_CLEANUP:
                 syscall += f'\n\nfind {img_dir} -type f -name "{os.path.basename(fulluv_blind_prefix)}*" ! -name "*.mask.fits" ! -name "*-MFS-image.fits" -delete\n'

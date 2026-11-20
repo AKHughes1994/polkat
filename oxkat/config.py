@@ -10,6 +10,20 @@ import sys
 
 # ------------------------------------------------------------------------
 #
+# Machine. Picks the container settings and the end-of-run record and archive
+# paths for that machine: 'mahrez', 'pi2' or 'idia'. Must match MACHINE in
+# run_all_ms.sh, which checks the two agree before it starts.
+#
+
+MACHINE = 'mahrez'
+
+MACHINES = ('mahrez', 'pi2', 'idia')
+if MACHINE not in MACHINES:
+    raise ValueError(f"MACHINE must be one of {MACHINES}, not {MACHINE!r}")
+
+
+# ------------------------------------------------------------------------
+#
 # Check for project_info file and get band
 #
 
@@ -66,6 +80,21 @@ CHPC_CONTAINER_PATH = [HOME+'/containers/']
 HIPPO_CONTAINER_PATH = None
 NODE_CONTAINER_PATH = [HOME+'/containers/', CWD, HOME]
 GLAM_CONTAINER_PATH = ['/mnt/users/hughesa', '/mnt/extraspace/thunderkat_pol', CWD]
+
+# pi2: the home directory is mounted at a different path on the host than in
+# the container, and /pi2 must be bound explicitly. The defaults above work on
+# mahrez and idia.
+if MACHINE == 'pi2':
+    HOST_HOME = '/mnt/users/hughesa'
+    CONTAINER_HOME = '/home/hughesa'
+
+    BIND = '/mnt:/mnt,/pi2:/pi2'
+    HOME_BIND = f'{HOST_HOME}:{CONTAINER_HOME}'
+    CWD_BIND = f'{CWD}:{CWD}'
+
+    BINDPATH = ','.join([BIND, HOME_BIND, CWD_BIND])
+
+    NODE_CONTAINER_PATH = [HOME+'/containers/', '/mnt/ephem/containers', CWD, HOME]
 
 
 PYTHON3_PATTERN = 'polkat-0.2.5'
@@ -568,10 +597,6 @@ WSC_INTERVALSOUT = False  # Number of output time intervals (-intervals-out); Fa
 # --- Inner UV taper (suppress short-spacing artefacts) ---
 WSC_TUKEYTAPER  = 3000.0  # Inner Tukey taper in wavelengths (-taper-inner-tukey);
                           # suppresses emission on scales larger than ~1/taper radians
-WSC_TAPERMASK   = True    # If False, WSC_MINUVL/MAXUVL/TUKEYTAPER applied only to the
-                          # final self-calibrated image; masking and self-cal use full UV
-                          # range. If True, UV cuts also applied during blind masking and
-                          # self-calibration.
 
 # --- Parallelism ---
 WSC_PARALLELREORDERING = 8  # Number of parallel threads for MS reordering (-parallel-reordering)
@@ -1033,9 +1058,27 @@ RMCLEAN_WINDOW             = -4     # CLEAN window half-width; negative = multip
 
 # --- End-of-run records and archiving (RMSYNTH_05_record_and_archive.py) ---
 #
-# All three are absolute paths; leave any of them blank ('') to skip that part.
+# All four are absolute paths, set per MACHINE (top of this file) in
+# RMSYNTH_PATHS below; leave any of them blank ('') to skip that part.
 # They are read and written from the host (not inside a container), so they do
 # not need to be on the singularity BINDPATH.
+
+#                (interesting file, archive dir, tracking file, residual MS dir)
+RMSYNTH_PATHS = {
+    'mahrez': ('/mnt/scratchhdd/tkat_reprocessing/tracking/mahrez_interesting.txt',
+               '/mnt/scratchhdd/tkat_reprocessing/final_products',
+               '/mnt/scratchhdd/tkat_reprocessing/tracking/mahrez_tracking.txt',
+               '/mnt/extraspace/tkat_residual_ms'),
+    'pi2':    ('/pi2/tkat_reprocessing/tracking/pi2_interesting.txt',
+               '/pi2/tkat_reprocessing/final_products',
+               '/pi2/tkat_reprocessing/tracking/pi2_tracking.txt',
+               '/pi2/tkat_reprocessing/residual_ms'),
+    'idia':   ('/idia/users/hughesakh/tkat_reprocessing/tracking/idia_interesting.txt',
+               '/idia/users/hughesakh/tkat_reprocessing/final_prods',
+               '/idia/users/hughesakh/tkat_reprocessing/tracking/idia_tracking.txt',
+               '/idia/users/hughesakh/tkat_reprocessing/residual_ms'),
+}
+_interesting, _archive, _tracking, _residual = RMSYNTH_PATHS[MACHINE]
 
 # Plain-text file (created if missing, appended to otherwise) listing every
 # target epoch from every run that is bright (MFS Stokes I > 10 mJy), polarised
@@ -1043,23 +1086,23 @@ RMCLEAN_WINDOW             = -4     # CLEAN window half-width; negative = multip
 # angle range across its own scan(s) (> 10 deg -- a lot of parallactic angle
 # is being averaged together), and/or has an RM-CLEAN peak S/N >= 10 (RMCLEAN),
 # with the reason(s)
-RMSYNTH_INTERESTING_FILE = '/mnt/scratchhdd/tkat_reprocessing/tracking/mahrez_interesting.txt'
+RMSYNTH_INTERESTING_FILE = _interesting
 
 # Directory under which the entire working directory is moved at the end of the
 # run, into <RMSYNTH_ARCHIVE_DIR>/<obsid>/ (an existing <obsid> directory there is
 # deleted first). The obsid is the leading number of the master MS name.
-RMSYNTH_ARCHIVE_DIR = '/mnt/scratchhdd/tkat_reprocessing/final_products'
+RMSYNTH_ARCHIVE_DIR = _archive
 
 # Plain-text file (created if missing, appended to otherwise) with one line per
 # completed obsid: completion time and any interesting sources from that run
-RMSYNTH_TRACKING_FILE = '/mnt/scratchhdd/tkat_reprocessing/tracking/mahrez_tracking.txt'
+RMSYNTH_TRACKING_FILE = _tracking
 
 # Directory for each target's final residual MS. At the end of 2GC, for every target, the final
 # (pcalmask) model is predicted into MODEL_DATA, subtracted from CORRECTED_DATA, and the
 # CORRECTED_DATA (now the residuals) is split out as the DATA column of a new MS in this directory,
 # named after the target's MS. It is the only MS kept for the target. An absolute path outside the
 # working directory, so the archive step does not move it; leave blank ('') to skip the step.
-RMSYNTH_RESIDUAL_MS_DIR = '/mnt/extraspace/tkat_residual_ms'
+RMSYNTH_RESIDUAL_MS_DIR = _residual
 
 
 # ------------------------------------------------------------------------

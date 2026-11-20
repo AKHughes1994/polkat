@@ -89,11 +89,44 @@ set -uo pipefail
 # INPUTS -- fill these in, then run the script with no arguments
 # ------------------------------------------------------------------ #
 
-INFRA='node'      # 'idia', 'hippo', or 'node'
-MS_DIR='/mnt/extraspace/tkat_reprocessing'     # directory containing the *.ms to process
-TRACKING='/mnt/scratchhdd/tkat_reprocessing/tracking/mahrez_tracking.txt'   # tracking file; must match RMSYNTH_TRACKING_FILE in the pipeline's oxkat/config.py
-PIPELINE='/mnt/scratchhdd/tkat_reprocessing/polkat_tkat_reprocessing'   # pipeline directory to run, e.g. 'polkat_tkat_reprocessing'
-WORK='/mnt/scratchhdd/tkat_reprocessing/working_dir'       # scratch working directory, emptied at the start; each MS runs in WORK/<obsid>, rebuilt for every MS -- must be dedicated to this script, not shared with anything else
+# Which machine this run is on. Picks INFRA and the four locations below in
+# one go: 'mahrez', 'pi2' or 'idia'. To add a machine, copy one block.
+MACHINE='mahrez'
+
+#   INFRA     'idia', 'hippo', or 'node'
+#   MS_DIR    directory containing the *.ms to process
+#   TRACKING  tracking file; must match RMSYNTH_TRACKING_FILE in the pipeline's oxkat/config.py
+#   PIPELINE  pipeline directory to run, e.g. 'polkat_tkat_reprocessing'
+#   WORK      scratch working directory, emptied at the start; each MS runs in WORK/<obsid>,
+#             rebuilt for every MS -- must be dedicated to this script, not shared with anything else
+case $MACHINE in
+  mahrez)
+    INFRA='node'
+    MS_DIR='/mnt/extraspace/tkat_reprocessing'
+    TRACKING='/mnt/scratchhdd/tkat_reprocessing/tracking/mahrez_tracking.txt'
+    PIPELINE='/mnt/scratchhdd/tkat_reprocessing/polkat_tkat_reprocessing'
+    WORK='/mnt/scratchhdd/tkat_reprocessing/working_dir'
+    ;;
+  pi2)
+    INFRA='node'
+    MS_DIR='/pi2/tkat_reprocessing/raw_ms'
+    TRACKING='/pi2/tkat_reprocessing/tracking/pi2_tracking.txt'
+    PIPELINE='/pi2/tkat_reprocessing/polkat_tkat_reprocessing'
+    WORK='/pi2/tkat_reprocessing/working_dir'
+    ;;
+  idia)
+    INFRA='idia'
+    MS_DIR='/idia/users/hughesakh/tkat_reprocessing/raw_ms'
+    TRACKING='/idia/users/hughesakh/tkat_reprocessing/tracking/idia_tracking.txt'
+    PIPELINE='/users/hughesakh/polkat_tkat_reprocessing'
+    WORK='/scratch3/users/hughesakh/tkat_reprocessing/working_dir'
+    ;;
+  *)
+    echo "MACHINE must be 'mahrez', 'pi2' or 'idia' (got: '$MACHINE')" >&2
+    exit 1
+    ;;
+esac
+
 POLL=300            # slurm queue poll interval in seconds; also how often the main loop wakes
 FIRST_N=1          # run only the first N MSs that are not already in the tracking file (debugging); 0 = no limit
 START_AT=''         # obsid or MS name: start the run at this MS, skipping every MS before it in the sorted list. With FIRST_N=1, only this MS runs. Must not already be in the tracking file. '' = no start MS
@@ -191,9 +224,34 @@ esac
 CONFIG="$PIPELINE/oxkat/config.py"
 [[ -f $CONFIG ]] || { echo "Pipeline is missing oxkat/config.py: $CONFIG" >&2; exit 1; }
 
+# A setting's final value in the pipeline's config.py, as the pipeline itself
+# sees it: config.py is run with plain python3 (it imports only json, os and
+# sys, and writes nothing) in an empty scratch directory, so that a stray
+# project_info.json is never picked up. Values set per MACHINE there come out
+# already resolved.
 cfg_value() {
-  sed -n "s/^$1[[:space:]]*=[[:space:]]*'\([^']*\)'.*/\1/p" "$CONFIG" | head -n1
+  local scratch value status
+  scratch=$(mktemp -d) || { echo "cfg_value: could not make a scratch directory" >&2; return 1; }
+  value=$(cd -- "$scratch" && python3 -c '
+import sys
+ns = {}
+exec(open(sys.argv[1]).read(), ns)
+print(ns.get(sys.argv[2], ""))
+' "$CONFIG" "$1")
+  status=$?
+  rmdir -- "$scratch"
+  [[ $status -eq 0 ]] || { echo "Could not read $1 from $CONFIG (python3 exited with $status)" >&2; return 1; }
+  echo "$value"
 }
+
+# config.py has its own MACHINE switch (container settings and these paths);
+# the two must agree, or the run would use one machine's layout with the
+# other's records and archive
+CFG_MACHINE=$(cfg_value MACHINE) || exit 1
+if [[ $CFG_MACHINE != "$MACHINE" ]]; then
+  echo "MACHINE is '$MACHINE' here but '$CFG_MACHINE' in $CONFIG -- set both to the same machine" >&2
+  exit 1
+fi
 
 # Resolves to an absolute path even if the file doesn't exist yet (TRACKING is
 # created on first write), so it can be compared against config.py's value.
@@ -201,8 +259,8 @@ cfg_value() {
 # can run silently instead of also printing an error.
 canon() { readlink -f -- "$1" 2>/dev/null || echo "$1"; }
 
-CFG_ARCHIVE_DIR=$(cfg_value RMSYNTH_ARCHIVE_DIR)
-CFG_TRACKING_FILE=$(cfg_value RMSYNTH_TRACKING_FILE)
+CFG_ARCHIVE_DIR=$(cfg_value RMSYNTH_ARCHIVE_DIR) || exit 1
+CFG_TRACKING_FILE=$(cfg_value RMSYNTH_TRACKING_FILE) || exit 1
 
 if [[ -z $CFG_ARCHIVE_DIR ]]; then
   echo "You need to specify RMSYNTH_ARCHIVE_DIR in $CONFIG -- without it, each MS's" >&2
@@ -398,8 +456,8 @@ confirm() {
 }
 
 if [[ $RESTART == true ]]; then
-  CFG_INTERESTING_FILE=$(cfg_value RMSYNTH_INTERESTING_FILE)
-  CFG_RESIDUAL_MS_DIR=$(cfg_value RMSYNTH_RESIDUAL_MS_DIR)
+  CFG_INTERESTING_FILE=$(cfg_value RMSYNTH_INTERESTING_FILE) || exit 1
+  CFG_RESIDUAL_MS_DIR=$(cfg_value RMSYNTH_RESIDUAL_MS_DIR) || exit 1
 
   WIPE_FILES=("$(canon "$TRACKING")" "$(canon "$FAILED_FILE")" "$(canon "$FAILED_FILE.lock")")
   [[ -n $CFG_INTERESTING_FILE ]] && WIPE_FILES+=("$(canon "$CFG_INTERESTING_FILE")")
@@ -729,6 +787,41 @@ run_stage_node() {
   bash "./$1"
 }
 
+# Seconds as H:MM:SS
+fmt_dur() {
+  printf '%d:%02d:%02d' $(($1 / 3600)) $(($1 % 3600 / 60)) $(($1 % 60))
+}
+
+# Records how long stage $1 (named $2, started at epoch $3, outcome $4) took:
+# logs it, appends a line to $5/timings.txt, and writes the time of each of its
+# jobs to $5/stage<i>_jobtimes.txt -- from sacct on slurm, and on node from the
+# summed bash `time` "real" lines of every LOGS/oxk_*.log the stage wrote, in
+# the order they were last written.
+record_stage_time() {
+  local i=$1 stage=$2 t0=$3 outcome=$4 state=$5 dt f name secs
+  dt=$(( $(date +%s) - t0 ))
+  log "  stage $i ($stage) $outcome in $(fmt_dur "$dt")"
+  echo "stage$i | $stage | $outcome | $(fmt_dur "$dt") | ${dt}s" >> "$state/timings.txt"
+  if [[ $MODE == slurm ]]; then
+    [[ -s $state/stage$i.jobids ]] && sacct -j "$(paste -sd, "$state/stage$i.jobids")" -X \
+      -o JobID,JobName%60,State,Elapsed,Start,End > "$state/stage${i}_jobtimes.txt" 2>&1
+  else
+    : > "$state/stage${i}_jobtimes.txt"
+    while IFS= read -r f; do
+      secs=$(awk '/^real[ \t]/ {
+                    v = $2; m = 0
+                    if ((p = index(v, "m")) > 0) { m = substr(v, 1, p - 1); v = substr(v, p + 1) }
+                    sub(/s$/, "", v); t += m * 60 + v
+                  }
+                  END { printf "%d", t }' "$f")
+      name=${f##*/oxk_}
+      name=${name%.log}
+      printf '%-60s %s\n' "$name" "$(fmt_dur "$secs")" >> "$state/stage${i}_jobtimes.txt"
+    done < <(find LOGS -maxdepth 1 -name 'oxk_*.log' -newermt "@$t0" -printf '%T@ %p\n' 2>/dev/null \
+               | sort -n | cut -d' ' -f2-)
+  fi
+}
+
 # With an obsid argument, empties just WORK/<obsid> (other MSs may be running in
 # their own subdirectories); with none, empties all of WORK.
 clear_work() {
@@ -777,7 +870,7 @@ clear_work() {
 # Runs every stage for one MS inside WORK/<obsid>; returns non-zero at the first
 # stage that fails. Runs in a background subshell, so its cd stays its own.
 run_ms() {
-  local ms=$1 i setup subs stage start=0 resume=false failed
+  local ms=$1 i setup subs stage start=0 resume=false failed t0
   local id=$(obsid "$ms")
   local state="$STATE/$id"
   if can_resume "$id"; then
@@ -806,6 +899,7 @@ run_ms() {
     stage=${setup#setups/}
     stage=${stage%.py}
     log "  stage $i: $setup"
+    t0=$(date +%s)
     if [[ $resume == true && $i -eq $GC2_INDEX ]]; then
       # Rerun the 2GC setup first: it recreates the per-source temp directories
       # (each source's CLEAN job deletes its own) and rewrites the slurm scripts,
@@ -841,13 +935,17 @@ run_ms() {
       run_stage_slurm "$subs" "$state/stage$i.jobids" || failed=1
       # Every 2GC submission's job IDs are kept, so a later resume sees all attempts
       [[ $i -eq $GC2_INDEX ]] && cat -- "$state/stage$i.jobids" >> "$state/2GC_submitted.jobids"
+      record_stage_time "$i" "$stage" "$t0" "$([[ $failed -eq 0 ]] && echo done || echo failed)" "$state"
       [[ $failed -eq 0 ]] || {
         log "  stage $i failed"
         record_failure "$id" "${ms##*/}" "$stage" "job(s) did not complete"
         return 1
       }
     else
-      run_stage_node "$subs" || {
+      failed=0
+      run_stage_node "$subs" || failed=1
+      record_stage_time "$i" "$stage" "$t0" "$([[ $failed -eq 0 ]] && echo done || echo failed)" "$state"
+      [[ $failed -eq 0 ]] || {
         log "  stage $i failed ($subs exited non-zero)"
         record_failure "$id" "${ms##*/}" "$stage" "$subs exited non-zero"
         return 1
@@ -918,6 +1016,8 @@ n=0
 # Workers still running: obsid -> background pid, and obsid -> MS path.
 declare -A PID_OF=()
 declare -A MS_RUNNING=()
+# obsid -> epoch its worker started, for the total time per MS
+declare -A START_OF=()
 
 # On Ctrl-C / kill, stop the workers too. Submitted slurm jobs are left alone.
 trap 'kill "${PID_OF[@]}" 2>/dev/null; exit 130' INT TERM
@@ -930,7 +1030,10 @@ clear_work
 # succeeded, RMSYNTH just wasn't one of them" (STAGES was deliberately
 # shortened, e.g. for a quick test) apart from "a stage genuinely failed".
 finish_ms() {
-  local id=$1 ran_ok=$2 ms=${MS_RUNNING[$id]}
+  local id=$1 ran_ok=$2 ms=${MS_RUNNING[$id]} dt
+  dt=$(( $(date +%s) - START_OF[$id] ))
+  log "  $id total time $(fmt_dur "$dt")"
+  echo "total | all stages | exit $ran_ok | $(fmt_dur "$dt") | ${dt}s" >> "$STATE/$id/timings.txt"
   if [[ -f $STATE/$id/no_targets ]]; then
     log "=== $id complete (no science targets -- stages after 0_GET_INFO skipped) ==="
     NO_TARGETS+=("$id  ${ms##*/}")
@@ -946,7 +1049,7 @@ finish_ms() {
     log "=== $id FAILED (not in tracking) ==="
     FAILED+=("$id  ${ms##*/}")
   fi
-  unset "PID_OF[$id]" "MS_RUNNING[$id]"
+  unset "PID_OF[$id]" "MS_RUNNING[$id]" "START_OF[$id]"
 }
 
 # Up to BATCH MSs run at once, each in a background worker going through its
@@ -983,6 +1086,7 @@ while :; do
       n=$((n+1))
       ATTEMPTED[$id]=1
       log "=== [$n] $id: ${ms##*/} (${#PID_OF[@]} already running, ${#TODO[@]} to run including this one) ==="
+      START_OF[$id]=$(date +%s)
       ( LOG_TAG=$id; run_ms "$ms" ) &
       PID_OF[$id]=$!
       MS_RUNNING[$id]=$ms
