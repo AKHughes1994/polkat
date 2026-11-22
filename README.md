@@ -22,7 +22,7 @@ If you make use of this software, please cite:
 
 #### Update: Image-Plane UV Cuts for Short Baselines (X-KAT Tuning)
 
-The default `config.py` is now tuned for X-KAT observations, where preserving spectral fidelity across the band is the priority. Short baselines are now excluded via an **image-plane** UV cut (`WSC_BASELINE_CUT = True`, `WSC_BASELINE_CUTLENGTH = '300m'` by default, `WSC_TAPERMASK = True`) rather than by flagging the data. This addresses the same short-baseline artefacts that motivate `CAL_1GC_BL_MODE`, but without discarding any visibilities from the MS — the cut is only applied at imaging/deconvolution time, so you can always re-image the same MS with the full baseline range afterward (e.g. by setting `WSC_BASELINE_CUT = False`) to search for extended structure.
+The default `config.py` is now tuned for X-KAT observations, where preserving spectral fidelity across the band is the priority. Short baselines are now excluded via an **image-plane** UV cut (`WSC_BASELINE_CUT = True`, `WSC_BASELINE_CUTLENGTH = '300m'` by default) rather than by flagging the data. This addresses the same short-baseline artefacts that motivate `CAL_1GC_BL_MODE`, but without discarding any visibilities from the MS — the cut is only applied at imaging/deconvolution time, so you can always re-image the same MS with the full baseline range afterward (e.g. by setting `WSC_BASELINE_CUT = False`) to search for extended structure.
 
 # **IF YOU WANT THE FULL ARRAY / EXTENDED STRUCTURE, MAKE SURE TO SET `WSC_BASELINE_CUT = False`, OR RUN A SEPARATE IMAGING PASS WITHOUT THE CUT AFTER 2GC / YOUR DESIRED SELF-CALIBRATION — OTHERWISE SHORT BASELINES ARE SILENTLY EXCLUDED BY DEFAULT.**
 
@@ -273,7 +273,7 @@ If 1GC is successful, check the visibility/gain solutions. Polarization can be f
 
 After completing 1GC, move on to the 2GC step. This stage performs final flagging, imaging (using [wsclean](https://wsclean.readthedocs.io/en/latest/)), and direction-independent phase self-calibration. The 2GC process produces both channelized images and a single MFS (multi-frequency synthesis) image. The MFS image maximizes sensitivity, but may be affected by bandwidth depolarization.
 
-By default, 2GC applies an image-plane UV cut and taper to suppress short-baseline artefacts (`WSC_BASELINE_CUT = True`, `WSC_TAPERMASK = True` — see "Image-Plane UV Cuts for Short Baselines" above) — X-KAT observations are mostly focused on point sources, so this is the appropriate default. If you instead need to recover extended/diffuse structure, re-image with `WSC_BASELINE_CUT = False`, or use [`extra/setup_extended_imaging.py`](extra/setup_extended_imaging.py) to jointly image across the full UV range without re-running calibration.
+By default, 2GC applies an image-plane UV cut and taper to suppress short-baseline artefacts (`WSC_BASELINE_CUT = True` — see "Image-Plane UV Cuts for Short Baselines" above) — X-KAT observations are mostly focused on point sources, so this is the appropriate default. If you instead need to recover extended/diffuse structure, re-image with `WSC_BASELINE_CUT = False`, or use [`extra/setup_extended_imaging.py`](extra/setup_extended_imaging.py) to jointly image across the full UV range without re-running calibration.
 
 **To run 2GC:**
 
@@ -323,7 +323,6 @@ WSC_MAXUVL = ''  # Maximum uv-distance in wavelengths (leave empty for no restri
                  # Useful for matching angular scales across frequency
 WSC_TUKEYTAPER = 3000.0  # Inner Tukey taper in wavelengths; suppresses emission on scales
                          # larger than ~1/taper radians
-WSC_TAPERMASK = True     # Apply taper/uvcuts to blind and mask images (not just final images)
 
 # Weighting
 WSC_WEIGHT = 'briggs 0.0'  # Imaging weighting scheme (default: Briggs robustness 0.0)

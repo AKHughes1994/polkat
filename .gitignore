@@ -12,3 +12,6 @@ ipython-*.log
 
 # OS junk
 .DS_Store
+
+# Claude working outputs (local only, not pushed)
+Claude outputs/

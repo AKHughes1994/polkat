@@ -4,7 +4,7 @@
 #
 # Joint, full-UV-range imaging of an arbitrary set of measurement sets, for
 # recovering extended/diffuse structure that the standard short-baseline
-# uv-cut (WSC_BASELINE_CUT / WSC_TAPERMASK) is designed to suppress in 2GC.
+# uv-cut (WSC_BASELINE_CUT) is designed to suppress in 2GC.
 # Unlike 2GC/setup_2GC_twostage.py this does no calibration at all: it is
 # just blind image -> mask -> final image (or final image only, if a mask
 # is supplied), run once across whichever MS are given, jointly.

@@ -123,11 +123,108 @@ mstransform(
 flagmanager(vis=opms, mode='save', versionname='observatory')
 clearcal(vis=opms, addmodel=True)
 
-# Read field names and IDs from the output MS —
-# mstransform renumbers field IDs when PRE_FIELDS != '', so we re-derive them here
+
+# -----------------------------------------------------------------------
+# Weight check
+# -----------------------------------------------------------------------
+#
+# Some MSs come out of mstransform with most of WEIGHT_SPECTRUM zero or
+# negative, which silently down-weights or drops data in every later solve
+# and image. The primary's weights are checked: a weight is good if it is
+# positive, and only unflagged samples count, so a heavily flagged primary
+# whose flagged samples carry zero weight does not trigger a rebuild.
+#
+#   WEIGHT_SPECTRUM good                  leave the weights as they are
+#   WEIGHT_SPECTRUM bad, WEIGHT good      rebuild WEIGHT_SPECTRUM from WEIGHT
+#   both bad                              rebuild both from channel width and
+#                                         integration time (wtmode 'nyq'), and warn
+#
+# "Good" means at least PRE_MIN_GOOD_WEIGHT_FRAC (config.py) of the unflagged
+# samples are positive. A rebuild applies to the whole MS, every field.
+
+def good_weight_fractions(ms, field, chunk=2000):
+    """
+    Positive, zero and negative fractions of the unflagged WEIGHT and
+    WEIGHT_SPECTRUM samples of one field, read in chunks of rows.
+
+    A WEIGHT_SPECTRUM sample (corr, chan, row) is unflagged where FLAG is
+    False; a WEIGHT sample (corr, row) where at least one of its channels is
+    unflagged.
+
+    Returns
+    -------
+    dict of {str: (float, float, float) or None}
+        Column name to its (positive, zero, negative) fractions, or None if
+        the field has no unflagged samples.
+    """
+    # Look the field up by name: mstransform may have renumbered the fields
+    tb.open(ms + '/FIELD')
+    fid = list(tb.getcol('NAME')).index(field)
+    tb.close()
+
+    # positive, zero, negative, total unflagged
+    counts = {col: np.zeros(4) for col in ('WEIGHT', 'WEIGHT_SPECTRUM')}
+    tb.open(ms)
+    t = tb.query(f'FIELD_ID == {fid}')
+    for start in range(0, t.nrows(), chunk):
+        n = min(chunk, t.nrows() - start)
+        flag = t.getcol('FLAG', start, n)                     # (corr, chan, row)
+        ok = {'WEIGHT_SPECTRUM': ~flag,
+              'WEIGHT': ~flag.all(axis=1)}                    # (corr, row)
+        for col, c in counts.items():
+            w = t.getcol(col, start, n)[ok[col]]
+            c += [np.sum(w > 0), np.sum(w == 0), np.sum(w < 0), w.size]
+    t.close()
+    tb.close()
+
+    return {col: (tuple(c[:3] / c[3]) if c[3] > 0 else None) for col, c in counts.items()}
+
+def report_weights(ms, label):
+    """
+    Print the primary's unflagged weight fractions and return the good
+    (positive) fraction of WEIGHT_SPECTRUM and of WEIGHT, or None for a
+    column with no unflagged samples.
+    """
+    fractions = good_weight_fractions(ms, bpcal_name)
+    print(f'\nWeights of the primary {bpcal_name} ({label}, unflagged samples only):')
+    for col, frac in fractions.items():
+        if frac is None:
+            print(f'  {col:15s}  no unflagged samples')
+        else:
+            pos, zero, neg = frac
+            print(f'  {col:15s}  positive {pos:.2%}  zero {zero:.2%}  negative {neg:.2%}')
+    good = {col: (frac[0] if frac is not None else None) for col, frac in fractions.items()}
+    return good['WEIGHT_SPECTRUM'], good['WEIGHT']
+
+good_wtsp, good_wt = report_weights(opms, 'after mstransform')
+if good_wtsp is None:
+    # Nothing unflagged on the primary to judge by; later stages will fail on
+    # it anyway, so the weights are left alone rather than rebuilt blind
+    print(f'\n!!! WARNING: the primary {bpcal_name} has no unflagged data -- weights '
+          f'not checked and left as they are !!!\n')
+elif good_wtsp < PRE_MIN_GOOD_WEIGHT_FRAC:
+    if good_wt is not None and good_wt >= PRE_MIN_GOOD_WEIGHT_FRAC:
+        print(f'\nOnly {good_wtsp:.1%} of WEIGHT_SPECTRUM is positive but WEIGHT is good ({good_wt:.1%}) '
+              f'-- reinitialising WEIGHT_SPECTRUM from WEIGHT\n')
+        initweights(vis=opms, wtmode='weight', dowtsp=True)
+    else:
+        print(f'\n!!! WARNING: the weights in this MS look broken: only {good_wtsp:.1%} of WEIGHT_SPECTRUM and '
+              f'{good_wt:.1%} of WEIGHT are positive (need {PRE_MIN_GOOD_WEIGHT_FRAC:.0%}). Reinitialising '
+              f'both from channel width and integration time (wtmode nyq) -- check this MS !!!\n')
+        initweights(vis=opms, wtmode='nyq', dowtsp=True)
+    report_weights(opms, 'after initweights')
+else:
+    print(f'\nWeights look good: {good_wtsp:.1%} of WEIGHT_SPECTRUM and {good_wt:.1%} of WEIGHT are positive '
+          f'(need {PRE_MIN_GOOD_WEIGHT_FRAC:.0%}) -- leaving them as they are\n')
+
+
+# Read field names and IDs from the output MS. mstransform renumbers fields
+# when PRE_FIELDS != '', and FIELD_ID in the main table is the row number of
+# the FIELD table (not its SOURCE_ID, which can differ), so the IDs are
+# re-derived here from the row order
 tb.open(opms + '/FIELD')
 names = tb.getcol('NAME')
-ids   = tb.getcol('SOURCE_ID')
+ids   = np.arange(len(names))
 tb.done()
 
 # Persist working names and IDs into project_info.json for downstream scripts

@@ -1438,7 +1438,7 @@ def process_chunk_cpu_worker(args):
         
         # Extract chunk from shared memory stack and compute median
         chunk_data = image_stack[:, y_start:y_end, x_start:x_end]
-        median_chunk = bn.median(chunk_data, axis=0)
+        median_chunk = bn.nanmedian(chunk_data, axis=0)
         
         # Don't close the shared memory here - it will be cleaned up by the main process
         return (median_chunk, y_start, y_end, x_start, x_end)
@@ -1571,7 +1571,7 @@ def process_chunk_threaded(args: Tuple) -> Tuple:
     Notes
     -----
     Uses pre-allocated numpy arrays and loads images one at a time to reduce
-    memory footprint. Missing/failed images are filled with zeros.
+    memory footprint. Missing/failed images are filled with NaN (ignored by the median).
     """
 
     chunk_id, images, y_start, y_end, x_start, x_end = args
@@ -1582,7 +1582,7 @@ def process_chunk_threaded(args: Tuple) -> Tuple:
         num_images = len(images)
         
         # Pre-allocate array for chunk data from all images
-        chunk_data = np.zeros((num_images, chunk_height, chunk_width), dtype=np.float32)
+        chunk_data = np.full((num_images, chunk_height, chunk_width), np.nan, dtype=np.float32)
         
         # Load chunk data from each image
         for img_idx, img_path in enumerate(images):
@@ -1594,10 +1594,10 @@ def process_chunk_threaded(args: Tuple) -> Tuple:
                 else:
                     msg(f"Warning: Image {img_path} has incompatible dimensions {img.shape}")
                 del img
-            # If img is None, chunk_data[img_idx] remains zeros by default initialization
-        
+            # If img is None, chunk_data[img_idx] remains NaN and is ignored by the median
+
         # Compute median across images for this chunk
-        result_chunk = bn.median(chunk_data, axis=0)
+        result_chunk = bn.nanmedian(chunk_data, axis=0)
         
         # Clean up
         del chunk_data
@@ -1831,7 +1831,7 @@ def compute_median_chunked(images: List[str],
             # Simple median computation
             msg("Computing median using simple array approach...")
             start_time = time.time()
-            result = bn.median(image_stack, axis=0)
+            result = bn.nanmedian(image_stack, axis=0)
             elapsed = time.time() - start_time
             msg(f"Simple median computation completed in {elapsed:.1f}s")
             
@@ -1908,6 +1908,8 @@ def process_psf(psf: str, beam: Tuple[float, float, float], identifier: str) -> 
           'processed' - int, 1 if completed (including already-skipped), else 0
           'failed'    - int, 1 if a fatal error occurred, else 0
           'message'   - human-readable summary string
+          'image_status' - {homogenized image path: 'clean' | 'partial' |
+                          'all_nan' | 'failed'} for each Stokes image
     """
     a, b, p = beam[0], beam[1], beam[2]
 
@@ -1992,6 +1994,7 @@ def process_psf(psf: str, beam: Tuple[float, float, float], identifier: str) -> 
     images = glob.glob(psf.split('-psf.fits')[0] + '*-image.fits')
     images = [im for im in images if not ('-Plin-' in im or '-Ptot-' in im)]
 
+    image_status = {}
     for im in images:
         try:
             image_name    = im.replace('image.fits', 'image.homogenized.fits')
@@ -2005,12 +2008,31 @@ def process_psf(psf: str, beam: Tuple[float, float, float], identifier: str) -> 
 
             if model_image is None or residual_image is None or kernel_image is None:
                 msg(f'Warning: Could not load required images for {im}, skipping')
+                image_status[image_name] = 'failed'
                 continue
+
+            # Non-finite pixels going in: fftconvolve spreads even one NaN
+            # across the whole output image
+            bad_in = {k: int(np.count_nonzero(~np.isfinite(v)))
+                      for k, v in (('model', model_image), ('residual', residual_image),
+                                   ('kernel', kernel_image))}
 
             # Convolve model with new PSF, residual with homogenization kernel
             image_new  = scipy.signal.fftconvolve(model_image,    psf_new_image, mode='same')
             image_rms  = scipy.signal.fftconvolve(residual_image, kernel_image,  mode='same')
             image_new += image_rms
+
+            # Non-finite pixels coming out, and whether the inputs explain them
+            n_bad = int(np.count_nonzero(~np.isfinite(image_new)))
+            if n_bad == 0:
+                image_status[image_name] = 'clean'
+            else:
+                image_status[image_name] = 'all_nan' if n_bad == image_new.size else 'partial'
+                bad = ', '.join(f'{k} {v}' for k, v in bad_in.items() if v)
+                cause = (f'non-finite input pixels ({bad}) spread by fftconvolve' if bad
+                         else 'all inputs finite, so fftconvolve itself produced them')
+                msg(f'WARNING: {os.path.basename(image_name)}: {n_bad} of {image_new.size} pixels '
+                    f'({100 * n_bad / image_new.size:.1f}%) non-finite after homogenization; cause: {cause}')
 
             header = fits.getheader(im)
             header['BMAJ']    = a / fwhm_to_sig
@@ -2025,11 +2047,13 @@ def process_psf(psf: str, beam: Tuple[float, float, float], identifier: str) -> 
 
         except Exception as e:
             msg(f'Error processing image {im}: {e}')
+            image_status[image_name] = 'failed'
             continue
 
     return {
         'psf': psf, 'success': True, 'processed': 1, 'failed': 0,
-        'message': f'Completed: {os.path.basename(psf)}'
+        'message': f'Completed: {os.path.basename(psf)}',
+        'image_status': image_status
     }
 
 
@@ -2173,6 +2197,7 @@ def homogenize_images(identifier: str, beam: Tuple[float, float, float],
     msg(f'Workers (selected)    : {n_workers}  [min(mem={mem_cap}, cpu={cpu_cap}, images={len(good_psfs)})]')
 
     # Dispatch all PSFs in parallel; each worker is fully independent
+    image_status = {}
     with ProcessPoolExecutor(max_workers=n_workers) as pool:
         futures = {
             pool.submit(process_psf, psf, beam, identifier): psf
@@ -2184,6 +2209,7 @@ def homogenize_images(identifier: str, beam: Tuple[float, float, float],
                 msg(result['message'])
                 processed_count += result['processed']
                 failed_count    += result['failed']
+                image_status.update(result.get('image_status', {}))
             except Exception as e:
                 msg(f'ERROR processing {futures[future]}: {e}')
                 failed_count += 1
@@ -2193,26 +2219,43 @@ def homogenize_images(identifier: str, beam: Tuple[float, float, float],
     msg(f"  Good PSF files (passed filter): {len(good_psfs)}")
     msg(f"  Rejected PSF files (outliers): {len(rejected_psfs)}")
 
+    # Stokes parameters present in the images
+    stokes = [s for s in ('-I', '-Q', '-U', '-V') if glob.glob(f'{identifier}*{s}-*')] or ['']
+
+    # Per-Stokes count of usable homogenized channels. The PSF beam checks
+    # are per channel, so counts that differ between Stokes point to
+    # Stokes-specific flagging or bad images
+    msg('Homogenized channel images by Stokes:')
+    usable = {}
+    for stoke in stokes:
+        label  = stoke.lstrip('-') or 'I'
+        status = [image_status.get(psf.replace('-psf.fits', f'{stoke}-image.homogenized.fits'), 'missing')
+                  for psf in good_psfs]
+        n = {k: status.count(k) for k in ('clean', 'partial', 'all_nan', 'failed', 'missing')}
+        usable[label] = n['clean'] + n['partial']
+        msg(f'  Stokes {label}: {usable[label]} of {len(good_psfs)} channel(s) usable '
+            f'({n["clean"]} clean, {n["partial"]} partly non-finite); '
+            f'{n["all_nan"]} all non-finite, {n["failed"]} failed, {n["missing"]} missing')
+    if len(set(usable.values())) > 1:
+        msg('WARNING: usable channel counts differ between Stokes ('
+            + ', '.join(f'{s}={k}' for s, k in usable.items())
+            + ') -- possibly Stokes-specific flagging or bad images; see the warnings above')
+
     # Check if MFS image exists, if not make a pseudo MFS image
     if glob.glob(f'{identifier}-MFS-psf.fits') == []:
-          
-        # Figure out what the Stokes parameters are included in the images
-        stokes = []
-        for stoke in ['-I', '-Q', '-U', '-V']:
-            if glob.glob(f'{identifier}*{stoke}-*') != []:
-                stokes.append(stoke)
-        if stokes == []:        
-            stokes = ['']
 
         # Make a MFS image for each stokes parameter
         for stoke in stokes:
             msg(f'Making a (pseudo-) Stokes{stoke} MFS image; take these images with a grain of salt')
             suffix = f'{stoke}-image.homogenized.fits'
             # suffix = f'{stoke}-image.fits' # REMOVE
-            images = [im.replace('-psf.fits', suffix)  for im in good_psfs if os.path.exists(im.replace('-psf.fits', suffix))]
+            # Only channels homogenized in this run with some finite pixels;
+            # nanmedian ignores the remaining non-finite pixels
+            images = [im.replace('-psf.fits', suffix) for im in good_psfs
+                      if image_status.get(im.replace('-psf.fits', suffix)) in ('clean', 'partial')]
 
             if not images:
-                msg(f'No homogenized images found for Stokes {stoke}')
+                msg(f'No usable homogenized images found for Stokes {stoke}')
                 continue
 
             freq = []
@@ -2227,6 +2270,9 @@ def homogenize_images(identifier: str, beam: Tuple[float, float, float],
             # Adopt median values for each pixel and output MFS image
             msg(f'Computing median for {len(images)} images using chunked processing')
             data = compute_median_chunked(images, resources=resources)
+            n_bad = int(np.count_nonzero(~np.isfinite(data)))
+            msg(f'Pseudo-MFS Stokes{stoke}: median of {len(images)} channel(s); {n_bad} pixel(s) '
+                f'({100 * n_bad / data.size:.2f}%) non-finite in every channel')
  
             if freq:
                 header['CRVAL3'] = np.nanmean(freq)

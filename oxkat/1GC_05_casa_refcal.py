@@ -1,6 +1,39 @@
 # andrew.hughes@physics.ox.ac.uk
 # fraser.cowie@physics.ox.ac.uk
 
+"""
+1GC reference calibration: delays, bandpass, gains, leakage and cross-hand
+phase from the calibrators, applied to every field.
+
+Overview of the workflow, in the order it runs
+
+    Models          primary model (crystalball or setjy), 1 Jy placeholders
+                    for the secondaries and the polang cal
+    Primary, stage 0
+                    K0, Gp0, B0, G0, Df0 on the primary, applied to it and used
+                    to flag its residuals (CORRECTED - MODEL)
+    Primary, working tables
+                    K, Gp, B, G, Df re-solved on the freshly flagged primary
+    Secondaries + polang cal, stage 0
+                    Gp0, G0 (and K0) solved against the primary's K, B, Df,
+                    applied and used to flag each calibrator
+    Secondaries + polang cal, working tables
+                    Gp, G (and K) re-solved on the flagged data, then G is
+                    bootstrapped onto the primary's flux scale (F table)
+    Cross-hand      KCROSS and Xf on the polang cal (CASA solver, or the manual
+                    solver in tools/manual_XF_solver.py)
+    Applycal        every field, then target flagging
+
+Which field each table is taken from:
+
+    K   the field's own delays, or the primary's with CAL_1GC_DELAY_FROM_PRIMARY
+    Gp  the field's own phases (targets: their paired secondary)
+    B   always the primary
+    G/F the field's own amplitudes (targets: their paired secondary), or the
+        primary's with CAL_1GC_AMP_FROM_PRIMARY
+    Df  always the primary
+    Xf  always the polang cal
+"""
 
 import glob
 import shutil
@@ -39,10 +72,38 @@ if CAL_1GC_REPLACE_SECONDARY_WITH_PRIMARY:
     if not CAL_1GC_REPLACE_SECONDARY_AMP_ONLY:
         target_cal_map = remapped_cal_map
 
-def stamp():
-    now = str(datetime.datetime.now()).replace(' ','-').replace(':','-').split('.')[0]
-    return now
-    
+# Amplitude gains from the primary for every field (CAL_1GC_AMP_FROM_PRIMARY in
+# config.py). Overrides target_amp_cal_map above; delays and phases unaffected.
+if CAL_1GC_AMP_FROM_PRIMARY:
+    print(f'Amplitudes: applying the primary ({bpcal_name}) amplitude gains to every field')
+    target_amp_cal_map = [bpcal_name] * len(targets)
+
+def amp_field(field):
+    """Field whose amplitude (G) solutions are applied to `field`."""
+    return bpcal_name if CAL_1GC_AMP_FROM_PRIMARY else field
+
+
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+# ---------------------------- MANUAL FLAGS ---------------------------------- #
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+
+# Last-minute manual flags, applied before any solve. Each entry is one
+# flagdata command in CASA list syntax (as in a flagdata inpfile), selecting
+# whatever needs to go: antennas, fields, scans, times, channels, baselines.
+# They are applied right after the 'autoflag_cals_data' flag version is
+# restored below, so they survive into every table and every field, and they
+# are kept in every flag version saved from there on. Leave empty for none.
+#
+# Examples:
+#   "antenna='m029'"                                 # an antenna everywhere
+#   "antenna='m038' field='J2011-0644' scan='12'"    # one antenna, one scan
+#   "antenna='m010&m022'"                            # one baseline
+#   "timerange='2026/06/02/22:10:00~22:25:00'"       # a time range, all fields
+#   "spw='*:1419.8~1421.3MHz'"                       # a frequency range
+MANUAL_FLAGS = []
+
 
 # ---------------------------------------------------------------------------- #
 # ---------------------------------------------------------------------------- #
@@ -224,6 +285,26 @@ def plot_post_based(myms, field, label):
     print(f'DEBUG: plotting amp/phase vs baseline after BASED flagger [{field}]: {shadems_cmd}')
     subprocess.run([shadems_cmd], shell=True)
 
+def run_based_flagger(field, suffix, description,
+                      outlier_mode=BASED_FLAGGER_OUTLIER_MODE, flag_fields_arg=''):
+    """
+    Run basedflagger on `field` and apply its flag list.
+
+    `suffix` names the outputs (baseline_flags<suffix>.txt and the plots),
+    `description` is what the log calls the field, and `flag_fields_arg` the
+    --flag-fields argument for the fields its flags are passed on to.
+    """
+    based_cmd = (f"python_dask {TOOLS}/basedflagger.py "
+                 f"{myms} {field} "
+                 f"--correlation-products {BASED_FLAGGER_CORRELATION_PRODUCTS} "
+                 f"--antenna-flag-cap {BASED_FLAGGER_ANTENNA_FLAG_CAP} --outlier-mode {outlier_mode} "
+                 f"--save-dir {VISPLOTS}/ --output-suffix {suffix}"
+                 + BASED_FLAGGER_PHASE_ARG + flag_fields_arg)
+    print(f'Running BASED flagger on {description}: {based_cmd}')
+    based_run = subprocess.run([based_cmd], shell=True)
+    apply_based_flags(myms, f'baseline_flags{suffix}.txt', field, based_run.returncode)
+    plot_post_based(myms, field, suffix)
+
 
 # ---------------------------------------------------------------------------- #
 # ---------------------------------------------------------------------------- #
@@ -235,20 +316,16 @@ gapfill = CAL_1GC_FILLGAPS
 myuvrange = CAL_1GC_UVRANGE
 myspw = CAL_1GC_FREQRANGE
 
-# Optional: Override uvrange for primary calibrator only (leave as '' to use myuvrange)
+# Optional: uvrange for the primary's solves only (leave as '' to use myuvrange,
+# CAL_1GC_UVRANGE in config.py, as every other calibrator does)
 # primary_uvrange = '>1000m'
 primary_uvrange = ''
+primary_uvrange_use = primary_uvrange if primary_uvrange != '' else myuvrange
 
-# Use primary_uvrange if set, otherwise use myuvrange
-if primary_uvrange != '':
-    primary_uvrange_use = primary_uvrange
-else:
-    primary_uvrange_use = myuvrange
-
-# Delay (K) handling for the polarisation angle calibrator and the secondaries.
-# When on, no K is solved on those fields and the primary's delays are applied
-# to them instead, so the K tables hold primary solutions only.
-DELAY_FROM_PRIMARY = False
+# Delay (K) handling for the polarisation angle calibrator and the secondaries
+# is set by CAL_1GC_DELAY_FROM_PRIMARY in config.py. When on, no K is solved on
+# those fields and the primary's delays are applied to them instead, so the K
+# tables hold primary solutions only.
 
 # interp for the K table wherever it is applied -- solves and applycal alike,
 # including the cross-hand (KCROSS/Xf) path.
@@ -270,10 +347,163 @@ def delay_field(field):
     """
     Which field's K solutions to apply to `field`.
 
-    With DELAY_FROM_PRIMARY the K tables carry no entry for the secondaries or
+    With CAL_1GC_DELAY_FROM_PRIMARY the K tables carry no entry for the secondaries or
     the polang cal, so every field takes the primary's delays.
     """
-    return bpcal_name if DELAY_FROM_PRIMARY else field
+    return bpcal_name if CAL_1GC_DELAY_FROM_PRIMARY else field
+
+
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+# ------------------------------ HELPERS ------------------------------------- #
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+
+def tables(*terms):
+    """
+    The gaintable, gainfield and interp arguments of a CASA solve or applycal,
+    from (table, field, interp) terms in apply order. Keeping each table next
+    to the field and interp it is applied with stops the three lists drifting
+    out of step.
+    """
+    return dict(gaintable=[t[0] for t in terms],
+                gainfield=[t[1] for t in terms],
+                interp=[t[2] for t in terms])
+
+def debug_flags():
+    """DEBUGGING: print the flag summary of the whole MS (DEBUG_PRINT_FLAGS)."""
+    if DEBUG_PRINT_FLAGS:
+        print('DEBUG: PRINTING FLAGS')
+        flagdata(myms, mode='summary')
+
+def flag_bandpass(bptable):
+    """Flag outliers in a bandpass table (CPARAM) before it is used."""
+
+    # tfcrop on bandpass amplitude (CPARAM), all correlations
+    flagdata(vis=bptable, mode='tfcrop', datacolumn='CPARAM',
+        maxnpieces=BPCAL_CPARAM_TFCROP_MAXNPIECES,
+        timecutoff=BPCAL_CPARAM_TFCROP_TIMECUTOFF, freqcutoff=BPCAL_CPARAM_TFCROP_FREQCUTOFF,
+        extendflags=BPCAL_CPARAM_EXTENDFLAGS, flagbackup=False)
+
+    # L-band only: rflag on bandpass amplitude (CPARAM) over a restricted frequency range
+    if BPCAL_CPARAM_LBAND_RFLAG and band == 'L':
+        flagdata(vis=bptable, mode='rflag', datacolumn='CPARAM', spw=BPCAL_CPARAM_LBAND_RFLAG_SPW,
+            timedevscale=BPCAL_CPARAM_LBAND_RFLAG_TIMEDEVSCALE, freqdevscale=BPCAL_CPARAM_LBAND_RFLAG_FREQDEVSCALE,
+            extendflags=BPCAL_CPARAM_EXTENDFLAGS, flagbackup=False)
+
+    # rflag on bandpass amplitude (CPARAM), all correlations
+    flagdata(vis=bptable, mode='rflag', datacolumn='CPARAM',
+        timedevscale=BPCAL_CPARAM_RFLAG_TIMEDEVSCALE, freqdevscale=BPCAL_CPARAM_RFLAG_FREQDEVSCALE,
+        extendflags=BPCAL_CPARAM_EXTENDFLAGS, flagbackup=False)
+
+    # tfcrop on bandpass phase only (ARG_Sol1,Sol2)
+    if BPCAL_EXTRA_TFCROP:
+        flagdata(vis=bptable, mode='tfcrop', datacolumn='CPARAM', correlation='ARG_Sol1,Sol2',
+            maxnpieces=BPCAL_ARG_TFCROP_MAXNPIECES,
+            timecutoff=BPCAL_ARG_TFCROP_TIMECUTOFF, freqcutoff=BPCAL_ARG_TFCROP_FREQCUTOFF,
+            extendflags=BPCAL_CPARAM_EXTENDFLAGS, flagbackup=False)
+
+    # extend on the bandpass table (CPARAM)
+    if BPCAL_CPARAM_EXTEND:
+        flagdata(vis=bptable, mode='extend', extendpols=BPCAL_CPARAM_EXTENDPOLS,
+            growtime=BPCAL_CPARAM_EXTEND_TIME, growfreq=BPCAL_CPARAM_EXTEND_FREQ,
+            flagbackup=False)
+
+def flag_calibrator(field, datacolumn):
+    """
+    rflag, tfcrop and (optionally) extend a calibrator's visibilities.
+    `datacolumn` is 'residual' (CORRECTED - MODEL) for the primary, whose model
+    is known, and 'corrected' for the 1 Jy placeholder calibrators.
+    """
+    flagdata(vis=myms,
+        mode='rflag',
+        datacolumn=datacolumn,
+        field=field,
+        timedevscale=CAL_VIS_RFLAG_TIMEDEVSCALE,
+        freqdevscale=CAL_VIS_RFLAG_FREQDEVSCALE,
+        extendflags=EXTEND_AUTO,
+        flagbackup=False)
+
+    flagdata(vis=myms,
+        mode='tfcrop',
+        datacolumn=datacolumn,
+        field=field,
+        maxnpieces=CAL_VIS_TFCROP_MAXNPIECES,
+        timecutoff=CAL_VIS_TFCROP_TIMECUTOFF,
+        freqcutoff=CAL_VIS_TFCROP_FREQCUTOFF,
+        extendflags=EXTEND_AUTO,
+        flagbackup=False)
+
+    # extend on this calibrator only (CAL_VIS_EXTEND)
+    if CAL_VIS_EXTEND:
+        flagdata(vis=myms,
+            mode='extend',
+            field=field,
+            growtime=CAL_VIS_EXTEND_TIME,
+            growfreq=CAL_VIS_EXTEND_FREQ,
+            growaround=CAL_VIS_EXTEND_GROWAROUND,
+            flagneartime=CAL_VIS_EXTEND_FLAGNEARTIME,
+            flagnearfreq=CAL_VIS_EXTEND_FLAGNEARFREQ,
+            extendpols=CAL_VIS_EXTENDPOLS,
+            flagbackup=False)
+
+    debug_flags()
+
+def flag_target(target):
+    """rflag, tfcrop, (optionally) extend and BASED-flag a calibrated target."""
+    flagdata(vis=myms,
+        mode='rflag',
+        datacolumn='corrected',
+        field=target,
+        timedevscale=TARGET_VIS_RFLAG_TIMEDEVSCALE,
+        freqdevscale=TARGET_VIS_RFLAG_FREQDEVSCALE,
+        extendflags=EXTEND_AUTO,
+        flagbackup=False)
+
+    flagdata(vis=myms,
+        mode='tfcrop',
+        datacolumn='corrected',
+        field=target,
+        timecutoff=TARGET_VIS_TFCROP_TIMECUTOFF,
+        freqcutoff=TARGET_VIS_TFCROP_FREQCUTOFF,
+        extendflags=EXTEND_AUTO,
+        flagbackup=False)
+
+    if TARGET_VIS_EXTEND:
+        flagdata(vis=myms, mode='extend', growtime=TARGET_VIS_EXTEND_TIME, growfreq=TARGET_VIS_EXTEND_FREQ,
+            growaround=TARGET_VIS_EXTEND_GROWAROUND, flagneartime=TARGET_VIS_EXTEND_FLAGNEARTIME,
+            flagnearfreq=TARGET_VIS_EXTEND_FLAGNEARFREQ, extendpols=TARGET_VIS_EXTENDPOLS,
+            field=target, flagbackup=False)
+
+    if BASED_FLAGGER and 'target' in BASED_FLAGGER_FIELDS_LIST:
+        run_based_flagger(target, f'_{target}', f'target {target}',
+                          outlier_mode=BASED_FLAGGER_TARGET_OUTLIER_MODE)
+
+def clip_leakage(dftable):
+    """Flag leakage (Df) solutions with |D| > 0.1 (10%), far above MeerKAT's typical leakage."""
+    flagdata(vis=dftable, mode='clip', clipminmax=[0.0,0.1], flagbackup=False, datacolumn='CPARAM')
+
+def move_aside(table, message):
+    """
+    Rename `table` to its _bad name so it is never applied, replacing any
+    earlier _bad copy. `message` is logged with {} standing for the new name.
+    """
+    root, ext = os.path.splitext(table)
+    bad_table = f'{root}_bad{ext}'
+    print('  ' + message.format(bad_table))
+    if os.path.isdir(bad_table):
+        shutil.rmtree(bad_table)
+    shutil.move(table, bad_table)
+
+def save_flags(versionname):
+    """Save the current flags as `versionname`, replacing any earlier copy."""
+    flagmanager(vis=myms,
+        mode='delete',
+        versionname=versionname)
+
+    flagmanager(vis=myms,
+        mode='save',
+        versionname=versionname)
 
 
 # ---------------------------------------------------------------------------- #
@@ -282,52 +512,54 @@ def delay_field(field):
 # ---------------------------------------------------------------------------- #
 # ---------------------------------------------------------------------------- #
 
-if DELAY_FROM_PRIMARY:
+if CAL_1GC_DELAY_FROM_PRIMARY:
     print(f'Delays: solving K on the primary ({bpcal_name}) only; secondaries '
           f'and polang cal take those solutions, applied with '
           f'interp={DELAY_INTERP_CARRIED}')
 
 
-# ------- Setup names
+# ------- Gain table names
 
+def caltable(suffix):
+    return f'{GAINTABLES}/cal_1GC_{myms}.{suffix}'
 
-tt = stamp()
+# Stage 0 tables: solved first, used only to flag the calibrators
+ktab0, bptab0, gptab0, gtab0, dftab0 = (caltable(s) for s in ('K0', 'B0', 'Gp0', 'G0', 'Df0'))
 
-# Calibrator tables
-ktab0 = GAINTABLES+'/cal_1GC_'+myms+'.K0'
-bptab0 = GAINTABLES+'/cal_1GC_'+myms+'.B0'
-gptab0 = GAINTABLES+'/cal_1GC_'+myms+'.Gp0'
-gtab0 = GAINTABLES+'/cal_1GC_'+myms+'.G0'
-dftab0  = GAINTABLES+'/cal_1GC_'+myms+'.Df0'
+# Working tables: re-solved on the flagged data, applied to every field.
+# ftab is gtab bootstrapped onto the primary's flux scale by fluxscale.
+ktab, bptab, gptab, gtab, ftab, dftab = (caltable(s) for s in ('K', 'B', 'Gp', 'G', 'F', 'Df'))
+dftab_original = dftab   # dftab is repointed below if Df is re-solved with KCROSS
 
-ktab = GAINTABLES+'/cal_1GC_'+myms+'.K'
-bptab = GAINTABLES+'/cal_1GC_'+myms+'.B'
-gptab = GAINTABLES+'/cal_1GC_'+myms+'.Gp'
-gtab = GAINTABLES+'/cal_1GC_'+myms+'.G'
-ftab = GAINTABLES+'/cal_1GC_'+myms+'.F'
-dftab  = GAINTABLES+'/cal_1GC_'+myms+'.Df'
-dftab_original = dftab
+# Cross-hand tables, and the Df re-solved with KCROSS applied
+kcross, xftab, dftab6 = (caltable(s) for s in ('KCROSS', 'Xf', 'Df6'))
 
-kcross  = GAINTABLES+'/cal_1GC_'+myms+'.KCROSS'
-xftab  = GAINTABLES+'/cal_1GC_'+myms+'.Xf'
-dftab6 = GAINTABLES+'/cal_1GC_'+myms+'.Df6'
-
-# Restore the auto_cal flag version
+# Start from the flags 1GC_04 left (autoflagging of the calibrators' DATA), so a
+# re-run of this script never stacks on flags from an earlier run
 flagmanager(vis=myms,
         mode='restore',
         versionname='autoflag_cals_data')
 
-# Remove ftabs if they exist to prevent code from breaking
+# Last-minute manual flags (MANUAL_FLAGS above)
+if MANUAL_FLAGS:
+    print(f'Applying {len(MANUAL_FLAGS)} manual flag command(s):')
+    for cmd in MANUAL_FLAGS:
+        print(f'  {cmd}')
+    flagdata(vis=myms, mode='list', inpfile=list(MANUAL_FLAGS), flagbackup=False)
+
+# fluxscale fails if the F table already exists, so remove one left by an earlier run
 if os.path.isdir(ftab):
     print(f"Removing: {ftab}")
     shutil.rmtree(ftab)
 
-# ------- Set BP calibrator models
 
-# Check if MODEL_DATA column exists, if not initialize it
+# ------- Calibrator models
+
+# The primary's model goes into MODEL_DATA, which may not exist yet
 tb.open(myms)
-if 'MODEL_DATA' not in tb.colnames():
-    tb.close()
+has_model_data = 'MODEL_DATA' in tb.colnames()
+tb.close()
+if not has_model_data:
     # Dummy setjy call to initialize non-existing model data column
     setjy(vis=myms,
         standard='manual',
@@ -335,61 +567,40 @@ if 'MODEL_DATA' not in tb.colnames():
         fluxdensity=[1.0, 0, 0, 0],
         reffreq='1000MHz',
         usescratch=True)
-else:
-    tb.close()
 
-if primary_tag == '1934':
-    
-    # MeerKAT specific crystalball models for 1939 from B.Hugo: https://archive-gw-1.kat.ac.za/public/repository/10.48479/hhhy-4r55/index.htmlV
-    if band == 'L':
-        syscall = f"crystalball {myms} -f {bpcal_name} -sm {DATA}/crystalball/fitted.PKS1934.LBand.wsclean.cat.txt"
-        subprocess.run([syscall],shell=True)
+# MeerKAT specific crystalball models from B. Hugo, for L and UHF band:
+#   PKS 1934-638: https://archive-gw-1.kat.ac.za/public/repository/10.48479/hhhy-4r55/index.html
+#   PKS 0408-65:  https://archive-gw-1.kat.ac.za/public/repository/10.48479/ez63-vx81/index.html
+CRYSTALBALL_MODELS = {
+    ('1934', 'L'):   'fitted.PKS1934.LBand.wsclean.cat.txt',
+    ('1934', 'UHF'): 'fitted.PKS1934.UBand.wsclean.cat.txt',
+    ('0408', 'L'):   'fitted.PKS0407.LBand.wsclean.cat.txt',
+    ('0408', 'UHF'): 'fitted.PKS0407.UBand.wsclean.cat.txt',
+}
 
-    elif band == 'UHF':
-        syscall = f"crystalball {myms} -f {bpcal_name} -sm {DATA}/crystalball/fitted.PKS1934.UBand.wsclean.cat.txt"
-        subprocess.run([syscall],shell=True)
+if (primary_tag, band) in CRYSTALBALL_MODELS:
+    syscall = (f"crystalball {myms} -f {bpcal_name} "
+               f"-sm {DATA}/crystalball/{CRYSTALBALL_MODELS[(primary_tag, band)]}")
+    subprocess.run([syscall],shell=True)
 
-    else:
-        setjy(vis=myms,
-            field=bpcal_name,
-            standard='Stevens-Reynolds 2016',
-            scalebychan=True,
-            usescratch=True)
+elif primary_tag == '1934':
+    setjy(vis=myms,
+        field=bpcal_name,
+        standard='Stevens-Reynolds 2016',
+        scalebychan=True,
+        usescratch=True)
 
 elif primary_tag == '0408':
-
-    # MeerKAT specific crystalball models for 0408 from B.Hugo: https://archive-gw-1.kat.ac.za/public/repository/10.48479/ez63-vx81/index.html
-    if band == 'L':
-        syscall = f"crystalball {myms} -f {bpcal_name} -sm {DATA}/crystalball/fitted.PKS0407.LBand.wsclean.cat.txt"
-        subprocess.run([syscall],shell=True)
-
-    elif band == 'UHF':
-        syscall = f"crystalball {myms} -f {bpcal_name} -sm {DATA}/crystalball/fitted.PKS0407.UBand.wsclean.cat.txt"
-        subprocess.run([syscall],shell=True)
-    
-    else:
-        # OXKAT Version that uses config.py input
-        #bpcal_mod = CAL_1GC_0408_MODEL
-        #setjy(vis=myms,
-        #    field=bpcal_name,
-        #    standard='manual',
-        #    fluxdensity=bpcal_mod[0],
-        #    spix=bpcal_mod[1],
-        #    reffreq=bpcal_mod[2],
-        #    scalebychan=True,
-        #    usescratch=True)
-
-        # Recommendation from SARAO, i.e., https://skaafrica.atlassian.net/wiki/spaces/ESDKB/pages/1481408634/Flux+and+bandpass+calibration
-        # See script in tools/SARAO_0408_model.py to see where CASA parameters come from
-        setjy(vis=myms,
-            field=bpcal_name,
-            standard='manual',
-            fluxdensity=[6.9862, 0.0, 0.0, 0.0],
-            spix=[-1.2897, -0.2353, 0.0861],
-            reffreq='2.7GHz',
-            scalebychan=True,
-            usescratch=True)
-
+    # Recommendation from SARAO, i.e., https://skaafrica.atlassian.net/wiki/spaces/ESDKB/pages/1481408634/Flux+and+bandpass+calibration
+    # See script in tools/SARAO_0408_model.py to see where CASA parameters come from
+    setjy(vis=myms,
+        field=bpcal_name,
+        standard='manual',
+        fluxdensity=[6.9862, 0.0, 0.0, 0.0],
+        spix=[-1.2897, -0.2353, 0.0861],
+        reffreq='2.7GHz',
+        scalebychan=True,
+        usescratch=True)
 
 elif primary_tag == 'other':
     setjy(vis=myms,
@@ -398,8 +609,11 @@ elif primary_tag == 'other':
         scalebychan=True,
         usescratch=True)
 
-for i in range(0,len(pcal_names)):
-    pcal = pcal_names[i]
+# The secondaries (and, for the parallel-hand solves, the polang cal) get a
+# 1 Jy point-source placeholder; fluxscale puts their gains on the primary's
+# scale. The polang cal's real model (POLANG_MOD) is set before the cross-hand
+# solves further down.
+for pcal in pcal_names:
     if pcal != bpcal_name:
         setjy(vis =myms,
             field = pcal,
@@ -408,7 +622,6 @@ for i in range(0,len(pcal_names)):
             reffreq = '1000MHz',
             usescratch = True)
 
-# For parrellel hand solve; redefined further down (POLANG_MOD) before the cross-hand solves.
 if pacal_name != '' and pacal_name != bpcal_name and pacal_name not in pcal_names:
     setjy(vis=myms,
         field=pacal_name,
@@ -417,853 +630,384 @@ if pacal_name != '' and pacal_name != bpcal_name and pacal_name not in pcal_name
         reffreq='1000MHz',
         usescratch=True)
 
-# --------------------------------------------------------------- #
-# --------------------------------------------------------------- #
-# --------------------------- STAGE 0 ----------------------- #
-# --------------------------------------------------------------- #
-# --------------------------------------------------------------- #
+
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+# --------------------------- PRIMARY (K, B, Df) ----------------------------- #
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+
+def solve_primary(k, gp, bp, g, df, df_append):
+    """
+    The full chain on the primary: K, then Gp (applying K), B (K, Gp),
+    G (K, Gp, B) and Df (K, Gp, B, G). The bandpass is flagged before G is
+    solved against it, and Df solutions above 0.1 are clipped.
+    """
+
+    # ------- K (primary; no prior calibration). Delays use the full band and
+    # all baselines, so the uvrange and spw selections are left off
+    gaincal(vis=myms,
+        field=bpcal_name,
+        caltable=k,
+        # uvrange=primary_uvrange_use,
+        # spw=myspw,
+        refant=str(ref_ant),
+        gaintype='K',
+        solint='inf')
+
+    k_term = (k, bpcal_name, delay_interp(bpcal_name, bpcal_name))
+
+    # ------- Gp (primary; apply K) -- Type G, phase-only
+    gaincal(vis=myms,
+        field=bpcal_name,
+        uvrange=primary_uvrange_use,
+        spw=myspw,
+        caltable=gp,
+        refant=str(ref_ant),
+        gaintype='G',
+        solint='inf',
+        calmode='p',
+        minsnr=3,
+        **tables(k_term))
+
+    # ------- B (primary; apply K, Gp)
+    bandpass(vis=myms,
+        field=bpcal_name,
+        uvrange=primary_uvrange_use,
+        caltable=bp,
+        refant=str(ref_ant),
+        solint='inf',
+        combine='',
+        solnorm=False,
+        minblperant=4,
+        minsnr=3.0,
+        bandtype='B',
+        fillgaps=gapfill,
+        **tables(k_term, (gp, bpcal_name, 'linear')))
+
+    flag_bandpass(bp)
+    debug_flags()
+
+    # ------- G (primary; apply K, Gp, B) -- Type T, amp-only
+    gaincal(vis=myms,
+        field=bpcal_name,
+        uvrange=primary_uvrange_use,
+        spw=myspw,
+        caltable=g,
+        refant=str(ref_ant),
+        gaintype='T',
+        solint='inf',
+        calmode='a',
+        minsnr=3,
+        **tables(k_term, (gp, bpcal_name, 'linear'), (bp, bpcal_name, 'linear')))
+
+    # ------- Df (primary; apply K, Gp, B, G)
+    # The primary is unpolarised, so all of its cross-hand signal is leakage
+    polcal(vis=myms,
+        field=bpcal_name,
+        uvrange=primary_uvrange_use,
+        caltable=df,
+        refant=str(ref_ant),
+        solint='inf',
+        poltype='Df',
+        combine='scan',
+        **tables(k_term, (gp, bpcal_name, 'linear'), (bp, bpcal_name, 'linear'),
+                 (g, bpcal_name, 'linear')),
+        **({'append': False} if df_append is False else {}))
+
+    clip_leakage(df)
+    debug_flags()
 
 
-# ------- K0 (primary)
+# --------------------------- Stage 0 ------------------------------------- #
+# Solve on the primary as delivered, apply, and flag its residuals against the
+# model. These tables are only used for this flagging.
 
-gaincal(vis=myms,
-    field=bpcal_name,
-    caltable=ktab0,
-    # uvrange=primary_uvrange_use,
-    # spw=myspw,
-    refant=str(ref_ant),
-    gaintype='K',
-    solint='inf')
-
-
-# ------- Gp0 (primary; apply K0) -- Type G, phase-only
-
-gaincal(vis=myms,
-    field=bpcal_name,
-    uvrange=primary_uvrange_use,
-    spw=myspw,
-    caltable=gptab0,
-    refant=str(ref_ant),
-    gaintype='G',
-    solint='inf',
-    calmode='p',
-    minsnr=3,
-    gainfield=[bpcal_name],
-    interp=[delay_interp(bpcal_name, bpcal_name)],
-    gaintable=[ktab0])
-
-
-# ------- B0 (primary; apply K0, Gp0)
-
-bandpass(vis=myms,
-    field=bpcal_name,
-    uvrange=primary_uvrange_use,
-    caltable=bptab0,
-    refant=str(ref_ant),
-    solint='inf',
-    combine='',
-    solnorm=False,
-    minblperant=4,
-    minsnr=3.0,
-    bandtype='B',
-    fillgaps=gapfill,
-    gainfield=[bpcal_name, bpcal_name],
-    interp=[delay_interp(bpcal_name, bpcal_name), 'linear'],
-    gaintable=[ktab0, gptab0])
-
-# tfcrop on bandpass amplitude (CPARAM), all correlations
-flagdata(vis=bptab0, mode='tfcrop', datacolumn='CPARAM',
-    maxnpieces=BPCAL_CPARAM_TFCROP_MAXNPIECES,
-    timecutoff=BPCAL_CPARAM_TFCROP_TIMECUTOFF, freqcutoff=BPCAL_CPARAM_TFCROP_FREQCUTOFF,
-    extendflags=BPCAL_CPARAM_EXTENDFLAGS, flagbackup=False)
-
-# L-band only: rflag on bandpass amplitude (CPARAM) over a restricted frequency range
-if BPCAL_CPARAM_LBAND_RFLAG and band == 'L':
-    flagdata(vis=bptab0, mode='rflag', datacolumn='CPARAM', spw=BPCAL_CPARAM_LBAND_RFLAG_SPW,
-        timedevscale=BPCAL_CPARAM_LBAND_RFLAG_TIMEDEVSCALE, freqdevscale=BPCAL_CPARAM_LBAND_RFLAG_FREQDEVSCALE,
-        extendflags=BPCAL_CPARAM_EXTENDFLAGS, flagbackup=False)
-
-# rflag on bandpass amplitude (CPARAM), all correlations
-flagdata(vis=bptab0, mode='rflag', datacolumn='CPARAM',
-    timedevscale=BPCAL_CPARAM_RFLAG_TIMEDEVSCALE, freqdevscale=BPCAL_CPARAM_RFLAG_FREQDEVSCALE,
-    extendflags=BPCAL_CPARAM_EXTENDFLAGS, flagbackup=False)
-
-# tfcrop on bandpass phase only (ARG_Sol1,Sol2)
-if BPCAL_EXTRA_TFCROP:
-    flagdata(vis=bptab0, mode='tfcrop', datacolumn='CPARAM', correlation='ARG_Sol1,Sol2',
-        maxnpieces=BPCAL_ARG_TFCROP_MAXNPIECES,
-        timecutoff=BPCAL_ARG_TFCROP_TIMECUTOFF, freqcutoff=BPCAL_ARG_TFCROP_FREQCUTOFF,
-        extendflags=BPCAL_CPARAM_EXTENDFLAGS, flagbackup=False)
-
-# extend on the bandpass table (CPARAM)
-if BPCAL_CPARAM_EXTEND:
-    flagdata(vis=bptab0, mode='extend', extendpols=BPCAL_CPARAM_EXTENDPOLS,
-        growtime=BPCAL_CPARAM_EXTEND_TIME, growfreq=BPCAL_CPARAM_EXTEND_FREQ,
-        flagbackup=False)
-
-# DEBUGGING: summarize flags
-if DEBUG_PRINT_FLAGS:
-    print('DEBUG: PRINTING FLAGS')
-    flagdata(myms, mode='summary')
-
-# ------- G0 (primary; apply K0, Gp0, B0) -- Type T, amp-only
-
-gaincal(vis=myms,
-    field=bpcal_name,
-    uvrange=primary_uvrange_use,
-    spw=myspw,
-    caltable=gtab0,
-    refant=str(ref_ant),
-    gaintype='T',
-    solint='inf',
-    calmode='a',
-    minsnr=3,
-    gainfield=[bpcal_name, bpcal_name, bpcal_name],
-    interp=[delay_interp(bpcal_name, bpcal_name), 'linear', 'linear'],
-    gaintable=[ktab0, gptab0, bptab0])
-
-
-# -------- Solve for Df0 (apply K0, Gp0, B0, G0)
-
-polcal(vis=myms,
-    field=bpcal_name,
-    uvrange=primary_uvrange_use,
-    caltable=dftab0,
-    refant=str(ref_ant),
-    solint='inf',
-    poltype='Df',
-    combine='scan',
-    gaintable=[ktab0, gptab0, bptab0, gtab0],
-    gainfield=[bpcal_name, bpcal_name, bpcal_name, bpcal_name],
-    interp=[delay_interp(bpcal_name, bpcal_name), 'linear', 'linear', 'linear'],
-    append=False)
-
-flagdata(vis=dftab0, mode='clip', clipminmax=[0.0,0.1], flagbackup=False, datacolumn='CPARAM')
-
-# DEBUGGING: summarize flags
-if DEBUG_PRINT_FLAGS:
-    print('DEBUG: PRINTING FLAGS')
-    flagdata(myms, mode='summary')
+solve_primary(ktab0, gptab0, bptab0, gtab0, dftab0, df_append=False)
 
 # ------- Correct primary data with K0, Gp0, B0, G0, Df0
-
 applycal(vis=myms,
-    gaintable=[ktab0, gptab0, bptab0, gtab0, dftab0],
     field=bpcal_name,
     parang=False,
-    gainfield=[bpcal_name, bpcal_name, bpcal_name, bpcal_name, bpcal_name],
-    interp=[delay_interp(bpcal_name, bpcal_name), 'linear', 'linear', 'linear', 'linear'],
-    flagbackup=False)
+    flagbackup=False,
+    **tables((ktab0, bpcal_name, delay_interp(bpcal_name, bpcal_name)),
+             (gptab0, bpcal_name, 'linear'),
+             (bptab0, bpcal_name, 'linear'),
+             (gtab0, bpcal_name, 'linear'),
+             (dftab0, bpcal_name, 'linear')))
 
-# DEBUGGING: summarize flags
-if DEBUG_PRINT_FLAGS:
-    print('DEBUG: PRINTING FLAGS')
-    flagdata(myms, mode='summary')
-
+debug_flags()
 
 # ------- Flag primary on CORRECTED_DATA - MODEL_DATA
-
-# rflag on CORRECTED_DATA - MODEL_DATA
-flagdata(vis=myms,
-    mode='rflag',
-    datacolumn='residual',
-    field=bpcal_name,
-    timedevscale=CAL_VIS_RFLAG_TIMEDEVSCALE,
-    freqdevscale=CAL_VIS_RFLAG_FREQDEVSCALE,
-    extendflags=EXTEND_AUTO,
-    flagbackup=False)
-
-# tfcrop on CORRECTED_DATA - MODEL_DATA
-flagdata(vis=myms,
-    mode='tfcrop',
-    datacolumn='residual',
-    field=bpcal_name,
-    maxnpieces=CAL_VIS_TFCROP_MAXNPIECES,
-    timecutoff=CAL_VIS_TFCROP_TIMECUTOFF,
-    freqcutoff=CAL_VIS_TFCROP_FREQCUTOFF,
-    extendflags=EXTEND_AUTO,
-    flagbackup=False)
-
-# extend on bpcal
-if CAL_VIS_EXTEND:
-    flagdata(vis=myms,
-        mode='extend',
-        growtime=CAL_VIS_EXTEND_TIME,
-        growfreq=CAL_VIS_EXTEND_FREQ,
-        growaround=CAL_VIS_EXTEND_GROWAROUND,
-        flagneartime=CAL_VIS_EXTEND_FLAGNEARTIME,
-        flagnearfreq=CAL_VIS_EXTEND_FLAGNEARFREQ,
-        extendpols=CAL_VIS_EXTENDPOLS)
-
-# DEBUGGING: summarize flags
-if DEBUG_PRINT_FLAGS:
-    print('DEBUG: PRINTING FLAGS')
-    flagdata(myms, mode='summary')
-
-flagmanager(vis=myms,
-        mode='delete',
-        versionname='bpcal_residual_flags')
-
-flagmanager(vis=myms,
-        mode='save',
-        versionname='bpcal_residual_flags')
-
-# ------- BASED flagger (primary)
+flag_calibrator(bpcal_name, 'residual')
+save_flags('bpcal_residual_flags')
 
 if BASED_FLAGGER and 'primary' in BASED_FLAGGER_FIELDS_LIST:
-    based_cmd = (f"python_dask {TOOLS}/basedflagger.py "
-                 f"{myms} {bpcal_name} "
-                 f"--correlation-products {BASED_FLAGGER_CORRELATION_PRODUCTS} "
-                 f"--antenna-flag-cap {BASED_FLAGGER_ANTENNA_FLAG_CAP} --outlier-mode {BASED_FLAGGER_OUTLIER_MODE} "
-                 f"--save-dir {VISPLOTS}/ --output-suffix _bpcal"
-                 + BASED_FLAGGER_PHASE_ARG + BASED_FLAGGER_ALL_FIELDS_ARG)
-    print(f'Running BASED flagger on primary: {based_cmd}')
-    based_run = subprocess.run([based_cmd], shell=True)
-    apply_based_flags(myms, 'baseline_flags_bpcal.txt', bpcal_name, based_run.returncode)
-    plot_post_based(myms, bpcal_name, '_bpcal')
+    run_based_flagger(bpcal_name, '_bpcal', 'primary',
+                      flag_fields_arg=BASED_FLAGGER_ALL_FIELDS_ARG)
 
 
-# ---------------------------------------------------------------------------------------- #
-# ---------------------------------------------------------------------------------------- #
-# --------------------------- Working Table (Primary)  --------------------------- #
-# ---------------------------------------------------------------------------------------- #
-# ---------------------------------------------------------------------------------------- #
+# --------------------------- Working tables ------------------------------ #
+# Re-solve the full chain on the flagged primary. K, B and Df from here are
+# applied to every field.
+
+solve_primary(ktab, gptab, bptab, gtab, dftab, df_append=None)
 
 
-# ------- K (primary; no prior calibration)
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+# ---------------------- SECONDARIES + POLANG CAL (Gp, G, K) ----------------- #
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
 
-gaincal(vis=myms,
-    field=bpcal_name,
-    caltable=ktab,
-    # uvrange=primary_uvrange_use,
-    # spw=myspw,
-    refant=str(ref_ant),
-    gaintype='K',
-    solint='inf')
+# Every calibrator other than the primary: the polang cal first, then the
+# secondaries (a secondary that is also the primary or the polang cal is only
+# solved once).
+cal_fields = (([pacal_name] if pacal_name != '' else [])
+              + [pcal for pcal in pcal_names if pcal != bpcal_name and pcal != pacal_name])
 
+def solve_calibrator(field, gp, g, k):
+    """
+    Phase (Gp), then amplitude (G), then delay (K) solutions on a secondary or
+    the polang cal, against the primary's working K, B and Df. All three are
+    appended to tables already holding the primary's solutions. K is skipped
+    with CAL_1GC_DELAY_FROM_PRIMARY.
+    """
+    from_primary = [(ktab, bpcal_name, delay_interp(field, bpcal_name)),
+                    (bptab, bpcal_name, 'linear'),
+                    (dftab, bpcal_name, 'linear')]
 
-# -------- Gp (primary; apply K) -- Type G, phase-only
-
-gaincal(vis=myms,
-    field=bpcal_name,
-    uvrange=primary_uvrange_use,
-    spw=myspw,
-    caltable=gptab,
-    refant=str(ref_ant),
-    gaintype='G',
-    solint='inf',
-    calmode='p',
-    minsnr=3,
-    gaintable=[ktab],
-    gainfield=[bpcal_name],
-    interp=[delay_interp(bpcal_name, bpcal_name)])
-
-
-# ------- B (primary; apply K, Gp)
-
-bandpass(vis=myms,
-    field=bpcal_name,
-    uvrange=primary_uvrange_use,
-    caltable=bptab,
-    refant=str(ref_ant),
-    solint='inf',
-    combine='',
-    solnorm=False,
-    minblperant=4,
-    minsnr=3.0,
-    bandtype='B',
-    fillgaps=gapfill,
-    gaintable=[ktab, gptab],
-    gainfield=[bpcal_name, bpcal_name],
-    interp=[delay_interp(bpcal_name, bpcal_name), 'linear'])
-
-# tfcrop on bandpass amplitude (CPARAM), all correlations
-flagdata(vis=bptab, mode='tfcrop', datacolumn='CPARAM',
-    maxnpieces=BPCAL_CPARAM_TFCROP_MAXNPIECES,
-    timecutoff=BPCAL_CPARAM_TFCROP_TIMECUTOFF, freqcutoff=BPCAL_CPARAM_TFCROP_FREQCUTOFF,
-    extendflags=BPCAL_CPARAM_EXTENDFLAGS, flagbackup=False)
-
-# L-band only: rflag on bandpass amplitude (CPARAM) over a restricted frequency range
-if BPCAL_CPARAM_LBAND_RFLAG and band == 'L':
-    flagdata(vis=bptab, mode='rflag', datacolumn='CPARAM', spw=BPCAL_CPARAM_LBAND_RFLAG_SPW,
-        timedevscale=BPCAL_CPARAM_LBAND_RFLAG_TIMEDEVSCALE, freqdevscale=BPCAL_CPARAM_LBAND_RFLAG_FREQDEVSCALE,
-        extendflags=BPCAL_CPARAM_EXTENDFLAGS, flagbackup=False)
-
-# rflag on bandpass amplitude (CPARAM), all correlations
-flagdata(vis=bptab, mode='rflag', datacolumn='CPARAM',
-    timedevscale=BPCAL_CPARAM_RFLAG_TIMEDEVSCALE, freqdevscale=BPCAL_CPARAM_RFLAG_FREQDEVSCALE,
-    extendflags=BPCAL_CPARAM_EXTENDFLAGS, flagbackup=False)
-
-# tfcrop on bandpass phase only (ARG_Sol1,Sol2)
-if BPCAL_EXTRA_TFCROP:
-    flagdata(vis=bptab, mode='tfcrop', datacolumn='CPARAM', correlation='ARG_Sol1,Sol2',
-        maxnpieces=BPCAL_ARG_TFCROP_MAXNPIECES,
-        timecutoff=BPCAL_ARG_TFCROP_TIMECUTOFF, freqcutoff=BPCAL_ARG_TFCROP_FREQCUTOFF,
-        extendflags=BPCAL_CPARAM_EXTENDFLAGS, flagbackup=False)
-
-# extend on the bandpass table (CPARAM)
-if BPCAL_CPARAM_EXTEND:
-    flagdata(vis=bptab, mode='extend', extendpols=BPCAL_CPARAM_EXTENDPOLS,
-        growtime=BPCAL_CPARAM_EXTEND_TIME, growfreq=BPCAL_CPARAM_EXTEND_FREQ,
-        flagbackup=False)
-
-# DEBUGGING: summarize flags
-if DEBUG_PRINT_FLAGS:
-    print('DEBUG: PRINTING FLAGS')
-    flagdata(myms, mode='summary')
-
-# -------- Ga (primary; apply K, Gp, B) -- Type T, amp-only
-
-gaincal(vis=myms,
-    field=bpcal_name,
-    uvrange=primary_uvrange_use,
-    spw=myspw,
-    caltable=gtab,
-    refant=str(ref_ant),
-    gaintype='T',
-    solint='inf',
-    calmode='a',
-    minsnr=3,
-    gaintable=[ktab, gptab, bptab],
-    gainfield=[bpcal_name, bpcal_name, bpcal_name],
-    interp=[delay_interp(bpcal_name, bpcal_name), 'linear', 'linear'])
-
-
-# -------- Solve for Df (primary; apply K, Gp, B, Ga)
-
-polcal(vis=myms,
-    field=bpcal_name,
-    uvrange=primary_uvrange_use,
-    caltable=dftab,
-    refant=str(ref_ant),
-    solint='inf',
-    poltype='Df',
-    combine='scan',
-    gaintable=[ktab, gptab, bptab, gtab],
-    gainfield=[bpcal_name, bpcal_name, bpcal_name, bpcal_name],
-    interp=[delay_interp(bpcal_name, bpcal_name), 'linear', 'linear', 'linear'])
-
-flagdata(vis=dftab, mode='clip', clipminmax=[0.0,0.1], flagbackup=False, datacolumn='CPARAM')
-
-# DEBUGGING: summarize flags
-if DEBUG_PRINT_FLAGS:
-    print('DEBUG: PRINTING FLAGS')
-    flagdata(myms, mode='summary')
-
-
-# -------------------------------------------------------------------------------------------------------- #
-# -------------------------------------------------------------------------------------------------------- #
-# --------------------------- Initial Table (Secondary + Pol. Cal.)  ---------------------------- #
-# -------------------------------------------------------------------------------------------------------- #
-# -------------------------------------------------------------------------------------------------------- #
-
-if pacal_name != '':
-
-    # ------- Gp0 (polcal; apply B, Df, K from primary) -- Type G, phase-only
-
+    # ------- Gp (apply K, B, Df from primary) -- Type G, phase-only
     gaincal(vis=myms,
-        field=pacal_name,
+        field=field,
         uvrange=myuvrange,
         spw=myspw,
-        caltable=gptab0,
+        caltable=gp,
         refant=str(ref_ant),
         gaintype='G',
         solint='inf',
         calmode='p',
         minsnr=3,
-        gaintable=[ktab, bptab, dftab],
-        gainfield=[bpcal_name, bpcal_name, bpcal_name],
-        interp=[delay_interp(pacal_name, bpcal_name), 'linear', 'linear'],
-        append=True)
+        append=True,
+        **tables(*from_primary))
 
-    # ------- G0 (polcal; apply B, Df, K from primary, Gp0 from polcal) -- Type T, amp-only
-
+    # ------- G (apply K, B, Df from primary, Gp from this field) -- Type T, amp-only
     gaincal(vis=myms,
-        field=pacal_name,
+        field=field,
         uvrange=myuvrange,
         spw=myspw,
-        caltable=gtab0,
+        caltable=g,
         refant=str(ref_ant),
         gaintype='T',
         solint='inf',
         calmode='a',
         minsnr=3,
-        gaintable=[ktab, bptab, dftab, gptab0],
-        gainfield=[bpcal_name, bpcal_name, bpcal_name, pacal_name],
-        interp=[delay_interp(pacal_name, bpcal_name), 'linear', 'linear', 'linear'],
-        append=True)
+        append=True,
+        **tables(*from_primary, (gp, field, 'linear')))
 
-    # ------- K0 (polcal; apply B, Df from primary, Gp0, G0 from polcal)
-
-    if not DELAY_FROM_PRIMARY:
+    # ------- K (apply B, Df from primary, Gp, G from this field), full band and
+    # all baselines as for the primary
+    if not CAL_1GC_DELAY_FROM_PRIMARY:
         gaincal(vis=myms,
-            field=pacal_name,
-            caltable=ktab0,
+            field=field,
+            caltable=k,
             # uvrange=myuvrange,
             # spw=myspw,
             refant=str(ref_ant),
             gaintype='K',
             solint='inf',
-            gaintable=[bptab, dftab, gptab0, gtab0],
-            gainfield=[bpcal_name, bpcal_name, pacal_name, pacal_name],
-            interp=['linear', 'linear', 'linear', 'linear'],
-            append=True)
+            append=True,
+            **tables((bptab, bpcal_name, 'linear'),
+                     (dftab, bpcal_name, 'linear'),
+                     (gp, field, 'linear'),
+                     (g, amp_field(field), 'linear')))
 
-# ----- Loop over secondaries
 
-for i in range(0,len(pcal_names)):
+# --------------------------- Stage 0 ------------------------------------- #
+# Solve, apply and flag each calibrator. These tables are only used for the
+# flagging.
 
-    pcal = pcal_names[i]
+for field in cal_fields:
+    solve_calibrator(field, gptab0, gtab0, ktab0)
 
-    # ------- Check if pcal is the same as bpcal_name or pacal_name
-    if pcal == bpcal_name or pcal == pacal_name:
-        # If so, skip to the next iteration as it is already in the working tables
-        continue
+for field in cal_fields:
 
-    # ------- Gp0 (pcal; apply B, Df, K from primary) -- Type G, phase-only
-
-    gaincal(vis=myms,
-        field=pcal,
-        uvrange=myuvrange,
-        spw=myspw,
-        caltable=gptab0,
-        refant=str(ref_ant),
-        gaintype='G',
-        solint='inf',
-        calmode='p',
-        minsnr=3,
-        gaintable=[ktab, bptab, dftab],
-        gainfield=[bpcal_name, bpcal_name, bpcal_name],
-        interp=[delay_interp(pcal, bpcal_name), 'linear', 'linear'],
-        append=True)
-
-    # ------- G0 (pcal; apply B, Df, K from primary, Gp0 from pcal) -- Type T, amp-only
-
-    gaincal(vis=myms,
-        field=pcal,
-        uvrange=myuvrange,
-        spw=myspw,
-        caltable=gtab0,
-        refant=str(ref_ant),
-        gaintype='T',
-        solint='inf',
-        calmode='a',
-        minsnr=3,
-        gaintable=[ktab, bptab, dftab, gptab0],
-        gainfield=[bpcal_name, bpcal_name, bpcal_name, pcal],
-        interp=[delay_interp(pcal, bpcal_name), 'linear', 'linear', 'linear'],
-        append=True)
-
-    # ------- K0 (pcal; apply B, Df from primary, Gp0, G0 from pcal)
-
-    if not DELAY_FROM_PRIMARY:
-        gaincal(vis=myms,
-            field=pcal,
-            caltable=ktab0,
-            # uvrange=myuvrange,
-            # spw=myspw,
-            refant=str(ref_ant),
-            gaintype='K',
-            solint='inf',
-            gaintable=[bptab, dftab, gptab0, gtab0],
-            gainfield=[bpcal_name, bpcal_name, pcal, pcal],
-            interp=['linear', 'linear', 'linear', 'linear'],
-            append=True)
-
-if pacal_name != '':
-    # -------- Applycal (polcal; B, Df from primary, K0, Gp0, G0 from polcal) and Flag
-    
+    # -------- Applycal (B, Df from primary, K0, Gp0, G0 from this field) and Flag
     applycal(vis=myms,
-        gaintable=[ktab0, bptab, gptab0, gtab0, dftab],
-        field=pacal_name,
+        field=field,
         parang=False,
-        gainfield=[delay_field(pacal_name), bpcal_name, pacal_name, pacal_name, bpcal_name],
-        interp=[delay_interp(pacal_name, delay_field(pacal_name)), 'linear', 'linear', 'linear', 'linear'],
-        flagbackup=False)
+        flagbackup=False,
+        **tables((ktab0, delay_field(field), delay_interp(field, delay_field(field))),
+                 (bptab, bpcal_name, 'linear'),
+                 (gptab0, field, 'linear'),
+                 (gtab0, amp_field(field), 'linear'),
+                 (dftab, bpcal_name, 'linear')))
 
-    # DEBUGGING: summarize flags
-    if DEBUG_PRINT_FLAGS:
-        print('DEBUG: PRINTING FLAGS')
-        flagdata(myms, mode='summary')
+    debug_flags()
+    flag_calibrator(field, 'corrected')
 
-    # rflag on pacal
-    flagdata(vis=myms,
-        mode='rflag',
-        datacolumn='corrected',
-        field=pacal_name,
-        timedevscale=CAL_VIS_RFLAG_TIMEDEVSCALE,
-        freqdevscale=CAL_VIS_RFLAG_FREQDEVSCALE,
-        extendflags=EXTEND_AUTO,
-        flagbackup=False)
-
-    # tfcrop on pacal
-    flagdata(vis=myms,
-        mode='tfcrop',
-        datacolumn='corrected',
-        field=pacal_name,
-        maxnpieces=CAL_VIS_TFCROP_MAXNPIECES,
-        timecutoff=CAL_VIS_TFCROP_TIMECUTOFF,
-        freqcutoff=CAL_VIS_TFCROP_FREQCUTOFF,
-        extendflags=EXTEND_AUTO,
-        flagbackup=False)
-
-    # extend on pacal
-    if CAL_VIS_EXTEND:
-        flagdata(vis=myms,
-            mode='extend',
-            growtime=CAL_VIS_EXTEND_TIME,
-            growfreq=CAL_VIS_EXTEND_FREQ,
-            growaround=CAL_VIS_EXTEND_GROWAROUND,
-            flagneartime=CAL_VIS_EXTEND_FLAGNEARTIME,
-            flagnearfreq=CAL_VIS_EXTEND_FLAGNEARFREQ,
-            extendpols=CAL_VIS_EXTENDPOLS)
-
-    # DEBUGGING: summarize flags
-    if DEBUG_PRINT_FLAGS:
-        print('DEBUG: PRINTING FLAGS')
-        flagdata(myms, mode='summary')
-
-    # ------- BASED flagger (pacal)
-
-    if BASED_FLAGGER and 'pacal' in BASED_FLAGGER_FIELDS_LIST:
-        based_cmd = (f"python_dask {TOOLS}/basedflagger.py "
-                     f"{myms} {pacal_name} "
-                     f"--correlation-products {BASED_FLAGGER_CORRELATION_PRODUCTS} "
-                     f"--antenna-flag-cap {BASED_FLAGGER_ANTENNA_FLAG_CAP} --outlier-mode {BASED_FLAGGER_OUTLIER_MODE} "
-                     f"--save-dir {VISPLOTS}/ --output-suffix _pacal"
-                     + BASED_FLAGGER_PHASE_ARG + BASED_FLAGGER_ALL_FIELDS_ARG)
-        print(f'Running BASED flagger on pacal: {based_cmd}')
-        based_run = subprocess.run([based_cmd], shell=True)
-        apply_based_flags(myms, 'baseline_flags_pacal.txt', pacal_name, based_run.returncode)
-        plot_post_based(myms, pacal_name, '_pacal')
+    # The polang cal's flags are passed on to every field; a secondary's only
+    # to the targets paired with it
+    if field == pacal_name:
+        if BASED_FLAGGER and 'pacal' in BASED_FLAGGER_FIELDS_LIST:
+            run_based_flagger(field, '_pacal', 'pacal',
+                              flag_fields_arg=BASED_FLAGGER_ALL_FIELDS_ARG)
+    elif BASED_FLAGGER and 'secondary' in BASED_FLAGGER_FIELDS_LIST:
+        paired_targets = [t for t, c in zip(targets, target_cal_map) if c == field]
+        run_based_flagger(field, f'_{field}', f'secondary {field}',
+                          flag_fields_arg=based_flag_fields_arg(paired_targets))
 
 
-# ----- Loop over secondaries
+# --------------------------- Working tables ------------------------------ #
+# Re-solve on the flagged calibrators. These are the solutions applied.
 
-for i in range(0,len(pcal_names)):
+for field in cal_fields:
+    solve_calibrator(field, gptab, gtab, ktab)
 
-    pcal = pcal_names[i]
-
-    # ------- Check if pcal is the same as bpcal_name or pacal_name
-    if pcal == bpcal_name or pcal == pacal_name:
-        # If so, skip to the next iteration as it is already in the working tables
-        continue
-
-    # -------- Applycal (pcal; B, Df from primary, K0, Gp0, G0 from pcal) and Flag
-
-    applycal(vis=myms,
-        gaintable=[ktab0, bptab, gptab0, gtab0, dftab],
-        field=pcal,
-        parang=False,
-        gainfield=[delay_field(pcal), bpcal_name, pcal, pcal, bpcal_name],
-        interp=[delay_interp(pcal, delay_field(pcal)), 'linear', 'linear', 'linear', 'linear'],
-        flagbackup=False)
-
-    # DEBUGGING: summarize flags
-    if DEBUG_PRINT_FLAGS:
-        print('DEBUG: PRINTING FLAGS')
-        flagdata(myms, mode='summary')
-
-    # rflag on secondary
-    flagdata(vis=myms,
-        mode='rflag',
-        datacolumn='corrected',
-        field=pcal,
-        timedevscale=CAL_VIS_RFLAG_TIMEDEVSCALE,
-        freqdevscale=CAL_VIS_RFLAG_FREQDEVSCALE,
-        extendflags=EXTEND_AUTO,
-        flagbackup=False)
-
-    # tfcrop on secondary
-    flagdata(vis=myms,
-        mode='tfcrop',
-        datacolumn='corrected',
-        field=pcal,
-        maxnpieces=CAL_VIS_TFCROP_MAXNPIECES,
-        timecutoff=CAL_VIS_TFCROP_TIMECUTOFF,
-        freqcutoff=CAL_VIS_TFCROP_FREQCUTOFF,
-        extendflags=EXTEND_AUTO,
-        flagbackup=False)
-
-    # extend on secondary
-    if CAL_VIS_EXTEND:
-        flagdata(vis=myms,
-            mode='extend',
-            growtime=CAL_VIS_EXTEND_TIME,
-            growfreq=CAL_VIS_EXTEND_FREQ,
-            growaround=CAL_VIS_EXTEND_GROWAROUND,
-            flagneartime=CAL_VIS_EXTEND_FLAGNEARTIME,
-            flagnearfreq=CAL_VIS_EXTEND_FLAGNEARFREQ,
-            extendpols=CAL_VIS_EXTENDPOLS)
-
-    # DEBUGGING: summarize flags
-    if DEBUG_PRINT_FLAGS:
-        print('DEBUG: PRINTING FLAGS')
-        flagdata(myms, mode='summary')
-
-    # ------- BASED flagger (secondary)
-
-    if BASED_FLAGGER and 'secondary' in BASED_FLAGGER_FIELDS_LIST:
-        based_cmd = (f"python_dask {TOOLS}/basedflagger.py "
-                     f"{myms} {pcal} "
-                     f"--correlation-products {BASED_FLAGGER_CORRELATION_PRODUCTS} "
-                     f"--antenna-flag-cap {BASED_FLAGGER_ANTENNA_FLAG_CAP} --outlier-mode {BASED_FLAGGER_OUTLIER_MODE} "
-                     f"--save-dir {VISPLOTS}/ --output-suffix _{pcal}"
-                     + BASED_FLAGGER_PHASE_ARG
-                     + based_flag_fields_arg([t for t, c in zip(targets, target_cal_map) if c == pcal]))
-        print(f'Running BASED flagger on secondary {pcal}: {based_cmd}')
-        based_run = subprocess.run([based_cmd], shell=True)
-        apply_based_flags(myms, f'baseline_flags_{pcal}.txt', pcal, based_run.returncode)
-        plot_post_based(myms, pcal, f'_{pcal}')
-
-# -------------------------------------------------------------------------------------------------------- #
-# -------------------------------------------------------------------------------------------------------- #
-# --------------------------- Working Table (Secondary + Pol. Cal.)  ------------------------ #
-# -------------------------------------------------------------------------------------------------------- #
-# -------------------------------------------------------------------------------------------------------- #
-
-if pacal_name != '':   
- 
-    # ------- Gp (polcal; apply B, Df, K from primary) -- Type G, phase-only
-
-    gaincal(vis=myms,
-        field=pacal_name,
-        uvrange=myuvrange,
-        spw=myspw,
-        caltable=gptab,
-        refant=str(ref_ant),
-        gaintype='G',
-        solint='inf',
-        calmode='p',
-        minsnr=3,
-        gaintable=[ktab, bptab, dftab],
-        gainfield=[bpcal_name, bpcal_name, bpcal_name],
-        interp=[delay_interp(pacal_name, bpcal_name), 'linear', 'linear'],
-        append=True)
-
-    # ------- G (polcal; apply B, Df, K from primary, Gp from polcal) -- Type T, amp-only
-
-    gaincal(vis=myms,
-        field=pacal_name,
-        uvrange=myuvrange,
-        spw=myspw,
-        caltable=gtab,
-        refant=str(ref_ant),
-        gaintype='T',
-        solint='inf',
-        calmode='a',
-        minsnr=3,
-        gaintable=[ktab, bptab, dftab, gptab],
-        gainfield=[bpcal_name, bpcal_name, bpcal_name, pacal_name],
-        interp=[delay_interp(pacal_name, bpcal_name), 'linear', 'linear', 'linear'],
-        append=True)
-
-    # ------- K (polcal; apply B, Df from primary, Gp, G from polcal)
-
-    if not DELAY_FROM_PRIMARY:
-        gaincal(vis=myms,
-            field=pacal_name,
-            caltable=ktab,
-            # uvrange=myuvrange,
-            # spw=myspw,
-            refant=str(ref_ant),
-            gaintype='K',
-            solint='inf',
-            gaintable=[bptab, dftab, gptab, gtab],
-            gainfield=[bpcal_name, bpcal_name, pacal_name, pacal_name],
-            interp=['linear', 'linear', 'linear', 'linear'],
-            append=True)
-
-            
-for i in range(0,len(pcal_names)):
-
-    pcal = pcal_names[i]
-
-    # ------- Check if pcal is the same as bpcal_name or pacal_name
-    if pcal == bpcal_name or pcal == pacal_name:
-        # If so, skip to the next iteration as it is already in the working tables
-        continue
-
-    # ------- Gp (pcal; apply B, Df, K from primary) -- Type G, phase-only
-
-    gaincal(vis=myms,
-        field=pcal,
-        uvrange=myuvrange,
-        spw=myspw,
-        caltable=gptab,
-        refant=str(ref_ant),
-        gaintype='G',
-        solint='inf',
-        calmode='p',
-        minsnr=3,
-        gaintable=[ktab, bptab, dftab],
-        gainfield=[bpcal_name, bpcal_name, bpcal_name],
-        interp=[delay_interp(pcal, bpcal_name), 'linear', 'linear'],
-        append=True)
-
-    # ------- G (pcal; apply B, Df, K from primary, Gp from pcal) -- Type T, amp-only
-
-    gaincal(vis=myms,
-        field=pcal,
-        uvrange=myuvrange,
-        spw=myspw,
-        caltable=gtab,
-        refant=str(ref_ant),
-        gaintype='T',
-        solint='inf',
-        calmode='a',
-        minsnr=3,
-        gaintable=[ktab, bptab, dftab, gptab],
-        gainfield=[bpcal_name, bpcal_name, bpcal_name, pcal],
-        interp=[delay_interp(pcal, bpcal_name), 'linear', 'linear', 'linear'],
-        append=True)
-
-    # ------- K (pcal; apply B, Df from primary, Gp, G from pcal)
-
-    if not DELAY_FROM_PRIMARY:
-        gaincal(vis=myms,
-            field=pcal,
-            caltable=ktab,
-            # uvrange=myuvrange,
-            # spw=myspw,
-            refant=str(ref_ant),
-            gaintype='K',
-            solint='inf',
-            gaintable=[bptab, dftab, gptab, gtab],
-            gainfield=[bpcal_name, bpcal_name, pcal, pcal],
-            interp=['linear', 'linear', 'linear', 'linear'],
-            append=True)
-
-# --- Apply fluxscaling to G but only if there are calibration fields other than the primary
-if len([pcal for pcal in pcal_names if pcal != bpcal_name]) > 0 or pacal_name != '':
-    
-    # --- Apply fluxscaling to G
+# ------- Flux scale: bootstrap every calibrator's G onto the primary's scale.
+# With the primary as the only calibrator there is nothing to scale, so G is
+# applied as it is.
+if cal_fields:
     fluxscale(vis=myms,
         caltable=gtab,
         fluxtable=ftab,
         reference=bpcal_name,
         append=False,
         transfer='')
-
-# If there is no need to apply flux scaling, we can set ftab to gtab as the only calibrator is the primary    
 else:
     ftab = gtab
 
-# -------------------------------------------------------------------------------------------------------- #
-# -------------------------------------------------------------------------------------------------------- #
-# --------------------------- CROSS-HAND Tables (PA CAL)  ------------------------------------------------ #
-# -------------------------------------------------------------------------------------------------------- #
-# -------------------------------------------------------------------------------------------------------- #
+
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+# ---------------------- CROSS-HAND (KCROSS, Xf; POLANG CAL) ----------------- #
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+
+def solve_kcross(scan=None):
+    """
+    KCROSS (cross-hand delay) on the polang cal, applying its K, Gp, G and the
+    primary's B. `scan` restricts the solve to a comma-separated scan list.
+    """
+    gaincal(vis = myms,
+        field = pacal_name,
+        **({'scan': scan} if scan is not None else {}),
+        spw = kcross_spw,
+        caltable = kcross,
+        refant = str(ref_ant),
+        solint = 'inf',
+        combine = combine_param,
+        gaintype='KCROSS',
+        parang = True,
+        append = False,
+        **tables((ktab, delay_field(pacal_name), delay_interp(pacal_name, delay_field(pacal_name))),
+                 (gptab, pacal_name, 'linear'),
+                 (bptab, bpcal_name, 'linear'),
+                 (gtab, amp_field(pacal_name), 'linear')))
+
+def solve_df_with_kcross(df):
+    """
+    Re-solve Df on the primary with KCROSS applied, into `df`.
+
+    CASA enforces the apply order KCROSS -> Df -> Xf, and these tables do not
+    commute, so Df must be re-solved whenever KCROSS is applied; otherwise the
+    original (KCROSS-free) Df is incoherent with the applied KCROSS/Xf terms.
+    """
+    polcal(vis=myms,
+        field=bpcal_name,
+        uvrange=primary_uvrange_use,
+        caltable=df,
+        refant=str(ref_ant),
+        solint='inf',
+        poltype='Df',
+        combine='scan',
+        **tables((ktab, bpcal_name, delay_interp(bpcal_name, bpcal_name)),
+                 (gptab, bpcal_name, 'linear'),
+                 (bptab, bpcal_name, 'linear'),
+                 (gtab, bpcal_name, 'linear'),
+                 (kcross, pacal_name, 'linear')))
+
+    clip_leakage(df)
+
+def solve_xf(xf_terms, scan=None):
+    """Xf (cross-hand phase) on the polang cal; `scan` restricts the solve to a scan list."""
+    polcal(vis = myms,
+        field = pacal_name,
+        **({'scan': scan} if scan is not None else {}),
+        uvrange = myuvrange,
+        caltable = xftab,
+        refant = str(ref_ant),
+        solint = f'inf,{XF_CHANINT}ch',
+        poltype='Xf',
+        combine = combine_param,
+        append = False,
+        **tables(*xf_terms))
 
 
 if pacal_name != '':
- 
-    # ------- Set PA calibrator models
 
+    # ------- Polang cal model: replaces the 1 Jy placeholder used for its
+    # parallel-hand solves with the polarised model (POLANG_MOD in config.py)
     setjy(vis=myms,
         field=pacal_name,
         standard='manual',
         fluxdensity = POLANG_MOD,
         usescratch=True)
 
-    # -------- Solve for Cross-hand phase terms
+    # -------- Cross-hand terms. XF_MODE picks the solver: 'casa' (KCROSS + Xf
+    # here), 'manual' (tools/manual_XF_solver.py), or 'auto' (CASA, falling back
+    # to manual if no scan passes the phase-continuity check below)
     if XF_MODE not in ['casa', 'manual', 'auto']:
         print(f"Cross-hand phase mode ({XF_MODE}) not a valid option, defauling to 'auto'")
         XF_MODE = 'auto'
 
     manual_XF = False
-    
+
     # Force manual mode for UHF band
     if band == 'UHF':
         print("UHF band detected, forcing manual XF mode")
         manual_XF = True
         XF_MODE = 'manual'
-    
+
     if XF_MODE == 'casa' or XF_MODE == 'auto':
 
         print(f"Cross-hand phase mode is {XF_MODE}; solving CASA based solutions")
-        
-        # Setup combine parameter
+
         combine_param = 'scan' if XF_AVG_SCAN else ''
         kcross_spw = '*:1.0~1.65GHz' if band == 'L' else ''
 
-        # ------- KCROSS (polcal; apply K, Gp, B, Ga)
+        # ------- KCROSS (polang cal; apply its K, Gp, G and the primary's B)
         # Always solve KCROSS (cheap computation), skip flag only controls application
         print(f"  Solving for KCROSS (cross-hand delay) {'[will NOT be applied]' if XF_SKIP_KCROSS else '[will be applied]'}")
-        gaincal(vis = myms,
-            field = pacal_name,
-            spw = kcross_spw,
-            caltable = kcross,
-            refant = str(ref_ant),
-            solint = 'inf',
-            combine = combine_param,
-            gaintype='KCROSS',
-            parang = True,
-            gaintable=[ktab, gptab, bptab, gtab],
-            gainfield=[delay_field(pacal_name), pacal_name, bpcal_name, pacal_name],
-            interp = [delay_interp(pacal_name, delay_field(pacal_name)),'linear','linear','linear'],
-            append = False)
+        solve_kcross()
 
-        # If skipping KCROSS, immediately move it to bad name and never use it
         if XF_SKIP_KCROSS:
-            bad_kcross = kcross.replace('.KCROSS', '_bad.KCROSS')
-            print(f"  Moving KCROSS to: {bad_kcross} (will not be used)")
-            if os.path.isdir(bad_kcross):
-                shutil.rmtree(bad_kcross)
-            shutil.move(kcross, bad_kcross)
+            # Moved aside straight away, so it is never applied
+            move_aside(kcross, 'Moving KCROSS to: {} (will not be used)')
         else:
-            # ------- Re-solve Df (primary; apply K, Gp, B, Ga, KCROSS) into a separate table
-            # CASA enforces the apply order KCROSS -> Df -> Xf, and these tables do not
-            # commute, so Df must be re-solved now that KCROSS exists -- otherwise the
-            # original (KCROSS-free) Df would be incoherent with the applied KCROSS/Xf terms.
             print(f"  Re-solving Df (leakage) with KCROSS included: {dftab6}")
-            polcal(vis=myms,
-                field=bpcal_name,
-                uvrange=primary_uvrange_use,
-                caltable=dftab6,
-                refant=str(ref_ant),
-                solint='inf',
-                poltype='Df',
-                combine='scan',
-                gaintable=[ktab, gptab, bptab, gtab, kcross],
-                gainfield=[bpcal_name, bpcal_name, bpcal_name, bpcal_name, pacal_name],
-                interp=[delay_interp(bpcal_name, bpcal_name), 'linear', 'linear', 'linear', 'linear'])
+            solve_df_with_kcross(dftab6)
+            dftab = dftab6   # active Df is now the KCROSS-informed table
 
-            flagdata(vis=dftab6, mode='clip', clipminmax=[0.0,0.1], flagbackup=False, datacolumn='CPARAM')
+        # -------- Xf (polang cal; apply its K, Gp, G, the primary's B, Df, and KCROSS if used)
+        print(f"  Solving for Xf (cross-hand phase) {'WITHOUT' if XF_SKIP_KCROSS else 'with'} KCROSS")
+        xf_terms = [(ktab, delay_field(pacal_name), delay_interp(pacal_name, delay_field(pacal_name))),
+                    (gptab, pacal_name, 'linear'),
+                    (bptab, bpcal_name, 'linear'),
+                    (gtab, amp_field(pacal_name), 'linear'),
+                    (dftab, bpcal_name, 'linear')]
+        if not XF_SKIP_KCROSS:
+            xf_terms.append((kcross, pacal_name, 'linear'))
+        solve_xf(xf_terms)
 
-            # Active Df is now the KCROSS-informed table
-            dftab = dftab6
-
-        # -------- Xf (polcal; apply Bp, Df, Gp, G, K, [KCROSS] (polcal))
-        # Build gaintable list based on skip flag
-        if XF_SKIP_KCROSS:
-            print("  Solving for Xf (cross-hand phase) WITHOUT KCROSS")
-        else:
-            print("  Solving for Xf (cross-hand phase) with KCROSS")
-        xf_gaintable = [ktab, gptab, bptab, gtab, dftab] + ([] if XF_SKIP_KCROSS else [kcross])
-        xf_gainfield = [delay_field(pacal_name), pacal_name, bpcal_name, pacal_name, bpcal_name] + ([] if XF_SKIP_KCROSS else [pacal_name])
-        xf_interp = [delay_interp(pacal_name, delay_field(pacal_name)),'linear','linear','linear','linear'] + ([] if XF_SKIP_KCROSS else ['linear'])
-        
-        polcal(vis = myms,
-            field = pacal_name,
-            uvrange = myuvrange,
-            caltable = xftab,
-            refant = str(ref_ant),
-            solint = f'inf,{XF_CHANINT}ch',
-            poltype='Xf',
-            combine = combine_param,
-            gaintable=xf_gaintable,
-            gainfield=xf_gainfield,
-            interp=xf_interp,
-            append = False)
-
-        # Cross hand calibration tables for applycal
+        # Cross-hand tables, fields and interp for the final applycal
         cross_table = [xftab] if XF_SKIP_KCROSS else [kcross, xftab]
         cross_field = [pacal_name] if XF_SKIP_KCROSS else [pacal_name, pacal_name]
         cross_interp = ['linear'] if XF_SKIP_KCROSS else ['linear', 'linear']
 
-        # Always check if the cross-hand phase is continuous per scan
-        # Get the cross-hand phase            
+        # ------- Continuity check: a cross-hand phase that jumps by more than
+        # XF_AUTO_ANG_JUMP between channels within a scan has gone wrong
+        # (usually a 180 deg ambiguity), so that scan is not trusted.
         tb.open(xftab)
         gains = tb.getcol('CPARAM')
         flags = tb.getcol('FLAG')
@@ -1273,14 +1017,13 @@ if pacal_name != '':
         print(f"Gains shape: {gains.shape}")
         print(f"Unique scans: {np.unique(scans)}")
 
-        # Process per scan
         unique_scans = np.unique(scans)
         manual_XF_per_scan = {}
 
         for scan in unique_scans:
             scan_mask = (scans == scan)
-           
-            # Get gains for this scan (median over time axis)
+
+            # Median over time within the scan, unflagged channels only
             scan_gains = np.nanmedian(gains[0, :, scan_mask].T, axis=-1)
             scan_flags = np.nanmedian(flags[0, :, scan_mask].T, axis=-1).astype(bool)
             scan_gains = scan_gains[~scan_flags]
@@ -1290,9 +1033,8 @@ if pacal_name != '':
                 print(f"Scan {scan}: fewer than 2 unflagged channels, continuous = False")
                 continue
 
-            # Check continuity
-            phases = np.angle(scan_gains)
-            phase_diffs = np.diff(phases)
+            # Largest channel-to-channel phase jump, wrapped to +-180 deg
+            phase_diffs = np.diff(np.angle(scan_gains))
             phase_diffs = np.arctan2(np.sin(phase_diffs), np.cos(phase_diffs))
             max_jump = np.max(np.abs(np.degrees(phase_diffs)))
 
@@ -1301,112 +1043,52 @@ if pacal_name != '':
 
             print(f"Scan {scan}: max jump = {max_jump:.2f}°, continuous = {is_continuous}")
 
-        # Determine which scans are continuous
         continuous_scans = [scan for scan in unique_scans if not manual_XF_per_scan[scan]]
         discontinuous_scans = [scan for scan in unique_scans if manual_XF_per_scan[scan]]
 
         print("\n" + "="*60)
-        
+
         if len(continuous_scans) == len(unique_scans):
             # Case 1: All scans are continuous
             print(f"✓ All {len(unique_scans)} scan(s) are phase continuous")
             print("  Proceeding with standard XF calibration")
-            
+
         elif len(continuous_scans) > 0:
-            # Case 2: Some scans are continuous, some are not
+            # Case 2: Some scans are continuous -- re-solve on those only
             print(f"✓ {len(continuous_scans)} scan(s) are phase continuous: {continuous_scans}")
             print(f"✗ {len(discontinuous_scans)} scan(s) failed continuity check: {discontinuous_scans}")
-            
-            # Move bad Xf table
-            bad_xftab = xftab.replace('.Xf', '_bad.Xf')
-            print(f"  Moving original Xf table to: {bad_xftab}")
-            if os.path.isdir(bad_xftab):
-                shutil.rmtree(bad_xftab)
-            shutil.move(xftab, bad_xftab)
+            good_scans = ','.join(map(str, continuous_scans))
+
+            move_aside(xftab, 'Moving original Xf table to: {}')
 
             # Only handle KCROSS if it's being used (not already moved to _bad)
             if not XF_SKIP_KCROSS:
-                # Move bad KCROSS table
-                bad_kcross = kcross.replace('.KCROSS', '_bad.KCROSS')
-                print(f"  Moving original KCROSS table to: {bad_kcross}")
-                if os.path.isdir(bad_kcross):
-                    shutil.rmtree(bad_kcross)
-                shutil.move(kcross, bad_kcross)
-                
-                # Remake KCROSS with only continuous scans
+                move_aside(kcross, 'Moving original KCROSS table to: {}')
+
                 print(f"  Remaking KCROSS table using only continuous scans: {continuous_scans}")
-                gaincal(vis = myms,
-                    field = pacal_name,
-                    scan = ','.join(map(str, continuous_scans)),
-                    spw = kcross_spw,
-                    caltable = kcross,
-                    refant = str(ref_ant),
-                    solint = 'inf',
-                    combine = combine_param,
-                    gaintype='KCROSS',
-                    parang = True,
-                    gaintable=[ktab, gptab, bptab, gtab],
-                    gainfield=[delay_field(pacal_name), pacal_name, bpcal_name, pacal_name],
-                    interp = [delay_interp(pacal_name, delay_field(pacal_name)),'linear','linear','linear'],
-                    append = False)
+                solve_kcross(scan=good_scans)
 
                 # dftab already points at dftab6 from the first KCROSS-informed solve
                 # above -- overwrite it again with the continuous-scans-only KCROSS.
                 print(f"  Re-solving Df (leakage) with KCROSS included, overwriting: {dftab}")
-                polcal(vis=myms,
-                    field=bpcal_name,
-                    uvrange=primary_uvrange_use,
-                    caltable=dftab,
-                    refant=str(ref_ant),
-                    solint='inf',
-                    poltype='Df',
-                    combine='scan',
-                    gaintable=[ktab, gptab, bptab, gtab, kcross],
-                    gainfield=[bpcal_name, bpcal_name, bpcal_name, bpcal_name, pacal_name],
-                    interp=[delay_interp(bpcal_name, bpcal_name), 'linear', 'linear', 'linear', 'linear'])
+                solve_df_with_kcross(dftab)
 
-                flagdata(vis=dftab, mode='clip', clipminmax=[0.0,0.1], flagbackup=False, datacolumn='CPARAM')
-
-            # Remake Xf table with only continuous scans
             print(f"  Remaking Xf table using only continuous scans: {continuous_scans}")
-            polcal(vis = myms,
-                field = pacal_name,
-                scan = ','.join(map(str, continuous_scans)),
-                uvrange = myuvrange,
-                caltable = xftab,
-                refant = str(ref_ant),
-                solint = f'inf,{XF_CHANINT}ch',
-                poltype='Xf',
-                combine = combine_param,
-                gaintable=xf_gaintable,
-                gainfield=xf_gainfield,
-                interp=xf_interp,
-                append = False)
-            
+            solve_xf(xf_terms, scan=good_scans)
+
         else:
-            # Case 3: No scans are continuous
+            # Case 3: No scans are continuous -- hand over to the manual solver
             print(f"✗ None of the {len(unique_scans)} scan(s) are phase continuous")
-            
-            # Move bad Xf table
-            bad_xftab = xftab.replace('.Xf', '_bad.Xf')
-            print(f"  Moving original Xf table to: {bad_xftab}")
-            if os.path.isdir(bad_xftab):
-                shutil.rmtree(bad_xftab)
-            shutil.move(xftab, bad_xftab)
+
+            move_aside(xftab, 'Moving original Xf table to: {}')
 
             # Only move KCROSS if it's being used (not already moved to _bad)
             if not XF_SKIP_KCROSS:
-                bad_kcross = kcross.replace('.KCROSS', '_bad.KCROSS')
-                print(f"  Moving original KCROSS table to: {bad_kcross}")
-                if os.path.isdir(bad_kcross):
-                    shutil.rmtree(bad_kcross)
-                shutil.move(kcross, bad_kcross)
+                move_aside(kcross, 'Moving original KCROSS table to: {}')
 
-                # KCROSS is abandoned -- revert to the original (KCROSS-free) Df table
                 print(f"  Reverting Df to original table (KCROSS abandoned): {dftab_original}")
                 dftab = dftab_original
 
-            # Fall back to manual solver (can handle both single and multiple scans)
             print(f"  Falling back to manual XF solver ({len(unique_scans)} scan(s))")
             manual_XF = True
 
@@ -1414,9 +1096,10 @@ if pacal_name != '':
 
     if XF_MODE == 'manual' or manual_XF:
         print(f"Cross-hand phase mode is {XF_MODE} (or auto detected a large phase jump? {manual_XF}); solving manual solutions")
+        # Run in this namespace: the solver reads (and may reset) its tables here
         exec(open('tools/manual_XF_solver.py').read())
 
-        # Cross hand calibration tables
+        # The manual solver writes a single Xf table, no KCROSS
         cross_table = [xftab]
         cross_field = [pacal_name]
         cross_interp = ['linear']
@@ -1453,229 +1136,86 @@ if pacal_name != '':
         print(f'  [XF] Phase degeneracy resolved to reference {XF_REFERENCE_PHASE} deg: '
               f'{_n_flip} channel(s) flipped.')
 
+    # CAL_1GC_APPLYPARANG_CAL controls parang for the polang cal and the
+    # secondaries, CAL_1GC_APPLYPARANG for the targets
+    parang_cal = CAL_1GC_APPLYPARANG_CAL
+    parang_target = CAL_1GC_APPLYPARANG
 
-# ------------------------------------------------------------------------------ #
-# ------------------------------------------------------------------------------ #
-# --------------------------- Applycal (All Fields)  ----------------------- #
-# ------------------------------------------------------------------------------ #
-# ------------------------------------------------------------------------------ #
+else:
 
-# ------- BPCAL
-
-applycal(vis = myms,
-    gaintable = [ktab, gptab, bptab, ftab, dftab_original],
-    field = bpcal_name,
-    parang = False,
-    gainfield = [bpcal_name, bpcal_name, bpcal_name, bpcal_name, bpcal_name],
-    interp = [delay_interp(bpcal_name, bpcal_name),'linear','linear','linear','linear'],
-    flagbackup=False)
-
-
-# ----- If no polarization angle calibrator apply subset of tables and kill script
-
-if pacal_name == '':
-
-    # --- Optional: apply an external Xf table to secondaries/targets even with no local
-    # polarization angle calibrator to solve one from. Never applied to BPCAL.
-    override_cross_table = []
-    override_cross_field = []
-    override_cross_interp = []
-    override_parang_cal = False
-    override_parang_target = False
+    # --- No polang cal, so no Xf is solved. Optionally apply an external Xf
+    # table to the secondaries and targets (never the primary). Without one,
+    # nothing rotates the data into the sky frame, so parang is not applied.
+    cross_table = []
+    cross_field = []
+    cross_interp = []
+    parang_cal = False
+    parang_target = False
     if str(XF_OVERRIDE_TABLE) != '':
         print(f'  [XF] No polarization angle calibrator, but XF_OVERRIDE_TABLE is set -- '
               f'applying external Xf table to secondaries and targets only: {XF_OVERRIDE_TABLE}')
-        override_cross_table = [XF_OVERRIDE_TABLE]
-        override_cross_field = ['']
-        override_cross_interp = ['nearest,linear']
-        override_parang_cal = CAL_1GC_APPLYPARANG_CAL
-        override_parang_target = CAL_1GC_APPLYPARANG
+        cross_table = [XF_OVERRIDE_TABLE]
+        cross_field = ['']
+        cross_interp = ['nearest,linear']
+        parang_cal = CAL_1GC_APPLYPARANG_CAL
+        parang_target = CAL_1GC_APPLYPARANG
 
-    # ------- Secondaries
 
-    for i in range(0,len(pcal_names)):
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
+# ---------------------------- APPLYCAL (ALL FIELDS) ------------------------- #
+# ---------------------------------------------------------------------------- #
+# ---------------------------------------------------------------------------- #
 
-        pcal = pcal_names[i]
-
-        # ------- Check if pcal is the same as bpcal_name or pacal_name
-        if pcal == bpcal_name or pcal == pacal_name:
-            # If so, skip to the next iteration as it is already in the working tables
-            continue
-
-        applycal(vis = myms,
-            gaintable = [ktab, gptab, bptab, ftab, dftab] + override_cross_table,
-            field = pcal,
-            parang = override_parang_cal,
-            gainfield = [delay_field(pcal), pcal, bpcal_name, pcal, bpcal_name] + override_cross_field,
-            interp = [delay_interp(pcal, delay_field(pcal)),'linear','linear','linear','linear'] + override_cross_interp,
-            flagbackup=False)
-
-    # ------- Targets
-    for i in range(0,len(targets)):
-
-        target = targets[i]
-        related_pcal = target_cal_map[i]
-        amp_pcal = target_amp_cal_map[i]
-
-        applycal(vis=myms,
-                gaintable = [ktab, gptab, bptab, ftab, dftab] + override_cross_table,
-                field=target,
-                parang=override_parang_target,
-                gainfield = [delay_field(related_pcal), related_pcal, bpcal_name, amp_pcal, bpcal_name] + override_cross_field,
-                interp = [delay_interp(target, delay_field(related_pcal)),'linear','linear','linear','linear'] + override_cross_interp,
-                flagbackup=False)
-
-        # Flag target
-        flagdata(vis=myms,
-            mode='rflag',
-            datacolumn='corrected',
-            field=target,
-            timedevscale=TARGET_VIS_RFLAG_TIMEDEVSCALE,
-            freqdevscale=TARGET_VIS_RFLAG_FREQDEVSCALE,
-            extendflags=EXTEND_AUTO,
-            flagbackup=False)
-
-        flagdata(vis=myms,
-            mode='tfcrop',
-            datacolumn='corrected',
-            field=target,
-            timecutoff=TARGET_VIS_TFCROP_TIMECUTOFF,
-            freqcutoff=TARGET_VIS_TFCROP_FREQCUTOFF,
-            extendflags=EXTEND_AUTO,
-            flagbackup=False)
-
-        if TARGET_VIS_EXTEND:
-            flagdata(vis=myms, mode='extend', growtime=TARGET_VIS_EXTEND_TIME, growfreq=TARGET_VIS_EXTEND_FREQ,
-                growaround=TARGET_VIS_EXTEND_GROWAROUND, flagneartime=TARGET_VIS_EXTEND_FLAGNEARTIME,
-                flagnearfreq=TARGET_VIS_EXTEND_FLAGNEARFREQ, extendpols=TARGET_VIS_EXTENDPOLS,
-                field=target, flagbackup=False)
-
-        # ------- BASED flagger (target)
-
-        if BASED_FLAGGER and 'target' in BASED_FLAGGER_FIELDS_LIST:
-            based_cmd = (f"python_dask {TOOLS}/basedflagger.py "
-                         f"{myms} {target} "
-                         f"--correlation-products {BASED_FLAGGER_CORRELATION_PRODUCTS} "
-                         f"--antenna-flag-cap {BASED_FLAGGER_ANTENNA_FLAG_CAP} --outlier-mode {BASED_FLAGGER_TARGET_OUTLIER_MODE} "
-                         f"--save-dir {VISPLOTS}/ --output-suffix _{target}" + BASED_FLAGGER_PHASE_ARG)
-            print(f'Running BASED flagger on target {target}: {based_cmd}')
-            based_run = subprocess.run([based_cmd], shell=True)
-            apply_based_flags(myms, f'baseline_flags_{target}.txt', target, based_run.returncode)
-            plot_post_based(myms, target, f'_{target}')
-
-    # ---- Save flags
-
-    flagmanager(vis=myms,
-        mode='delete',
-        versionname='1GC_flags')
-
-    flagmanager(vis=myms,
-        mode='save',
-        versionname='1GC_flags')
-
-    sys.exit('Ending Early! No polarization angle calibrator')
-
-# -------- Full polarization  # CAL_1GC_APPLYPARANG_CAL controls parang for PACAL/secondaries and
-# CAL_1GC_APPLYPARANG controls it for targets from here; above is XF-less path (no sky-frame rotation needed)
-
-# ------- PACAL
-
-applycal(vis = myms,
-        field = pacal_name,
-        parang = CAL_1GC_APPLYPARANG_CAL,
-        gaintable = [ktab, gptab, bptab, ftab, dftab] + cross_table,
-        gainfield = [delay_field(pacal_name), pacal_name, bpcal_name, pacal_name, bpcal_name] + cross_field,
-        interp = [delay_interp(pacal_name, delay_field(pacal_name)),'linear','linear','linear','linear'] + cross_interp,
-        flagbackup=False)
-
-# ------- Secondaries
-
-for i in range(0,len(pcal_names)):
-
-    pcal = pcal_names[i]
-
-    # ------- Check if pcal is the same as bpcal_name or pacal_name
-    if pcal == bpcal_name or pcal == pacal_name:
-        # If so, skip to the next iteration as it is already in the working tables
-        continue
-
-    applycal(vis = myms,
-        field = pcal,
-        parang = CAL_1GC_APPLYPARANG_CAL,
-        gaintable = [ktab, gptab, bptab, ftab, dftab] + cross_table,
-        gainfield = [delay_field(pcal), pcal, bpcal_name, pcal, bpcal_name] + cross_field,
-        interp = [delay_interp(pcal, delay_field(pcal)),'linear','linear','linear','linear'] + cross_interp,
-        flagbackup=False)
-
-# ------- Targets
-for i in range(0,len(targets)):
-
-    target = targets[i]
-    related_pcal = target_cal_map[i]
-    amp_pcal = target_amp_cal_map[i]
-
+def apply_all(field, phase_from, amp_from, parang):
+    """
+    Apply the working tables to `field`, taking phases from `phase_from` and
+    amplitudes from `amp_from`; delays follow `phase_from` unless
+    CAL_1GC_DELAY_FROM_PRIMARY. B and Df always come from the primary, the
+    cross-hand terms from the polang cal.
+    """
     applycal(vis=myms,
-                field=target,
-                parang=CAL_1GC_APPLYPARANG,
-                gaintable = [ktab, gptab, bptab, ftab, dftab] + cross_table,
-                gainfield = [delay_field(related_pcal), related_pcal, bpcal_name, amp_pcal, bpcal_name] + cross_field,
-                interp = [delay_interp(target, delay_field(related_pcal)),'linear','linear','linear','linear'] + cross_interp,
-                flagbackup=False)
+        field=field,
+        parang=parang,
+        flagbackup=False,
+        gaintable=[ktab, gptab, bptab, ftab, dftab] + cross_table,
+        gainfield=[delay_field(phase_from), phase_from, bpcal_name, amp_from, bpcal_name] + cross_field,
+        interp=[delay_interp(field, delay_field(phase_from)), 'linear', 'linear', 'linear', 'linear'] + cross_interp)
 
-    # Flag target
-    flagdata(vis=myms,
-        mode='rflag',
-        datacolumn='corrected',
-        field=target,
-        timedevscale=TARGET_VIS_RFLAG_TIMEDEVSCALE,
-        freqdevscale=TARGET_VIS_RFLAG_FREQDEVSCALE,
-        extendflags=EXTEND_AUTO,
-        flagbackup=False)
+# ------- Primary: its own tables, the original Df, no cross-hand terms
+applycal(vis=myms,
+    field=bpcal_name,
+    parang=False,
+    flagbackup=False,
+    **tables((ktab, bpcal_name, delay_interp(bpcal_name, bpcal_name)),
+             (gptab, bpcal_name, 'linear'),
+             (bptab, bpcal_name, 'linear'),
+             (ftab, bpcal_name, 'linear'),
+             (dftab_original, bpcal_name, 'linear')))
 
-    flagdata(vis=myms,
-        mode='tfcrop',
-        datacolumn='corrected',
-        field=target,
-        timecutoff=TARGET_VIS_TFCROP_TIMECUTOFF,
-        freqcutoff=TARGET_VIS_TFCROP_FREQCUTOFF,
-        extendflags=EXTEND_AUTO,
-        flagbackup=False)
+# ------- Polang cal and secondaries: their own solutions
+if pacal_name != '':
+    apply_all(pacal_name, pacal_name, amp_field(pacal_name), parang_cal)
 
-    if TARGET_VIS_EXTEND:
-        flagdata(vis=myms, mode='extend', growtime=TARGET_VIS_EXTEND_TIME, growfreq=TARGET_VIS_EXTEND_FREQ,
-            growaround=TARGET_VIS_EXTEND_GROWAROUND, flagneartime=TARGET_VIS_EXTEND_FLAGNEARTIME,
-            flagnearfreq=TARGET_VIS_EXTEND_FLAGNEARFREQ, extendpols=TARGET_VIS_EXTENDPOLS,
-            field=target, flagbackup=False)
+for pcal in pcal_names:
+    if pcal == bpcal_name or pcal == pacal_name:
+        continue   # already calibrated above
+    apply_all(pcal, pcal, amp_field(pcal), parang_cal)
 
-    # ------- BASED flagger (target)
+# ------- Targets: delays and phases from their paired secondary (target_cal_map),
+# amplitudes per target_amp_cal_map, then target flagging
+for i, target in enumerate(targets):
+    apply_all(target, target_cal_map[i], target_amp_cal_map[i], parang_target)
+    flag_target(target)
 
-    if BASED_FLAGGER and 'target' in BASED_FLAGGER_FIELDS_LIST:
-        based_cmd = (f"python_dask {TOOLS}/basedflagger.py "
-                     f"{myms} {target} "
-                     f"--correlation-products {BASED_FLAGGER_CORRELATION_PRODUCTS} "
-                     f"--antenna-flag-cap {BASED_FLAGGER_ANTENNA_FLAG_CAP} --outlier-mode {BASED_FLAGGER_TARGET_OUTLIER_MODE} "
-                     f"--save-dir {VISPLOTS}/ --output-suffix _{target}" + BASED_FLAGGER_PHASE_ARG)
-        print(f'Running BASED flagger on target {target}: {based_cmd}')
-        based_run = subprocess.run([based_cmd], shell=True)
-        apply_based_flags(myms, f'baseline_flags_{target}.txt', target, based_run.returncode)
-        plot_post_based(myms, target, f'_{target}')
-
-# ---- Apply aggressive flags if desired
+# ---- Aggressive flagging of CAL_1GC_BL_FREQS (CAL_1GC_AGGRESSIVE_FLAGS in config.py)
 if CAL_1GC_AGGRESSIVE_FLAGS and CAL_1GC_BL_FREQS != []:
-
-    flagspw = ','.join(CAL_1GC_BL_FREQS)
-
     flagdata(vis = myms,
         mode = 'manual',
-        spw = flagspw,
+        spw = ','.join(CAL_1GC_BL_FREQS),
         flagbackup=False)
 
-# ---- Save flags
+save_flags('1GC_flags')
 
-flagmanager(vis=myms,
-    mode='delete',
-    versionname='1GC_flags')
-
-flagmanager(vis=myms,
-    mode='save',
-    versionname='1GC_flags')
+if pacal_name == '':
+    sys.exit('Ending Early! No polarization angle calibrator')

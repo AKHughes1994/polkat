@@ -102,12 +102,8 @@ def main():
                 ref_ant_arg = 0
 
     # UV taper settings
-    if not cfg.WSC_TAPERMASK:
-        tukeytaper = False
-        minuvl     = ''
-    else:
-        tukeytaper = cfg.WSC_TUKEYTAPER
-        minuvl     = cfg.WSC_MINUVL
+    tukeytaper = cfg.WSC_TUKEYTAPER
+    minuvl     = cfg.WSC_MINUVL
 
     # ------------------------------------------------------------------------------
     # Validate config

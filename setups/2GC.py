@@ -76,17 +76,11 @@ def main():
     target_ms = project_info['target_ms']
 
 
-    # Determine if the blind/datamask images are going to be tapered
-    if not cfg.WSC_TAPERMASK:
-        tukeytaper = False
-        minuvl = ''
-        maxuvl = ''
-        print(gen.col('UV Range')+f'Full UV range will be used for masking/self-calibration')
-    else:
-        tukeytaper = cfg.WSC_TUKEYTAPER
-        minuvl = cfg.WSC_MINUVL   
-        maxuvl = cfg.WSC_MAXUVL
-        print(gen.col('UV Range')+f'Restricted UV range will be used for masking/self-calibration: [{minuvl}, {maxuvl}]')
+    # The imaging UV cut and taper are used for the blind/datamask images and self-calibration
+    tukeytaper = cfg.WSC_TUKEYTAPER
+    minuvl = cfg.WSC_MINUVL
+    maxuvl = cfg.WSC_MAXUVL
+    print(gen.col('UV Range')+f'UV range used for masking/self-calibration: [{minuvl}, {maxuvl}]')
 
     # ------------------------------------------------------------------------------
     #

@@ -1473,15 +1473,18 @@ dftab = GAINTABLES + '/cal_1GC_' + myms + '.Df'
 xftab = GAINTABLES + '/cal_1GC_' + myms + '.Xf'
 
 # The K table holds the calibrator's own delays unless 1GC_05 ran with
-# DELAY_FROM_PRIMARY, in which case the primary's are interpolated across.
+# CAL_1GC_DELAY_FROM_PRIMARY, in which case the primary's are interpolated across.
 if caltable_has_field(ktab, myms, pacal_name):
     k_field, k_interp = pacal_name, 'nearest'
 else:
     k_field, k_interp = bpcal_name, 'linear'
 print(f"Delays from {k_field} (interp={k_interp})")
 
+# Amplitudes from the primary if CAL_1GC_AMP_FROM_PRIMARY (config.py), as in 1GC_05
+g_field = bpcal_name if CAL_1GC_AMP_FROM_PRIMARY else pacal_name
+
 pre_xf_tables = dict(gaintable=[ktab, bptab, gptab, gtab, dftab],
-                     gainfield=[k_field, bpcal_name, pacal_name, pacal_name, bpcal_name],
+                     gainfield=[k_field, bpcal_name, pacal_name, g_field, bpcal_name],
                      interp=[k_interp, 'linear', 'linear', 'linear', 'linear'])
 
 applycal(vis=myms, field=pacal_name, parang=False, flagbackup=False, **pre_xf_tables)

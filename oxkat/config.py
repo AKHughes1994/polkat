@@ -257,6 +257,9 @@ PRE_FIELDS = ''  # Comma-separated list of fields to select from raw MS
 PRE_SCANS = ''                       # Comma-separated list of scans to select from raw MS
 PRE_NCHANS = 1024                    # Integer number of channels for working MS
 PRE_TIMEBIN = '8s'                   # Integration time for working MS
+PRE_MIN_GOOD_WEIGHT_FRAC = 0.3       # Fraction of the primary's unflagged WEIGHT_SPECTRUM (and WEIGHT) values
+                                     # that must be positive; below it the working MS's weights are
+                                     # reinitialised (PRE_casa_average_to_1k_add_wtspec.py)
 
 
 
@@ -374,6 +377,14 @@ CAL_1GC_BAD_SECONDARIES = []
 # calmode='a' table) from the primary; delays and phases still come from the
 # secondary. False takes all three from the primary.
 CAL_1GC_REPLACE_SECONDARY_AMP_ONLY = False
+# Delays (K) from the primary only. No K is solved on the polang cal or the
+# secondaries; the primary's delays are applied to every field instead.
+CAL_1GC_DELAY_FROM_PRIMARY = False
+# Amplitudes (the fluxscaled calmode='a' table) from the primary for every field:
+# polang cal, secondaries and targets. Their own amplitude solves still run, so
+# fluxscale still reports their flux densities, but are never applied. Delays and
+# phases are unaffected. Assumes antenna amplitude gains are stable over the track.
+CAL_1GC_AMP_FROM_PRIMARY = False
 
 # Parallactic angle correction during 1GC.
 # If True, CASA applies the P-Jones correction as part of the 1GC solve.
@@ -567,10 +578,6 @@ WSC_INTERVALSOUT = False  # Number of output time intervals (-intervals-out); Fa
 # --- Inner UV taper (suppress short-spacing artefacts) ---
 WSC_TUKEYTAPER  = 3000.0  # Inner Tukey taper in wavelengths (-taper-inner-tukey);
                           # suppresses emission on scales larger than ~1/taper radians
-WSC_TAPERMASK   = True    # If False, WSC_MINUVL/MAXUVL/TUKEYTAPER applied only to the
-                          # final self-calibrated image; masking and self-cal use full UV
-                          # range. If True, UV cuts also applied during blind masking and
-                          # self-calibration.
 
 # --- Parallelism ---
 WSC_PARALLELREORDERING = 8  # Number of parallel threads for MS reordering (-parallel-reordering)
@@ -720,7 +727,9 @@ WSC_LOCALRMS      = False    # Local RMS map for adaptive masking during main de
 #   '<value>m'  — a physical length in metres; converted to wavelengths per band (frequency-dependent)
 #   '<value>'   — already in wavelengths; used directly with no frequency scaling
 WSC_BASELINE_CUT = True
-WSC_BASELINE_CUTLENGTH = '500m'  # Default: exclude baselines shorter than 500 m for imaging
+# Default: exclude baselines shorter than 500 m for imaging, or 100 m at S-band,
+# where the RFI environment is much cleaner and the short baselines can be kept
+WSC_BASELINE_CUTLENGTH = '100m' if str(BAND).startswith('S') else '500m'
 
 if WSC_BASELINE_CUT:
     _cutlen = str(WSC_BASELINE_CUTLENGTH).strip()
